@@ -14,12 +14,14 @@
 //! - `ipv6`: IPv6 の全体の勝敗と「初めて見るホストで IPv6 を先頭に置くか」の判断 (`Ipv6Policy`)
 //! - `happy_eyeballs`: 候補列へ並行に繋ぐ本体 (要求ごとに通る熱い経路) と間隔 (`PROXY_HE_STAGGER_MS`)
 //! - `connect`: 名前解決と組み合わせた入口と、serve-stale の古い答えで繋げなかったときの繋ぎ直し
+//! - `negative`: 確立が続けて時間切れになった宛先を覚えて、しばらく待たずに断る表 (T36.8)
 
 mod addrs;
 mod connect;
 mod happy_eyeballs;
 mod ipv6;
 mod listen;
+mod negative;
 
 #[cfg(test)]
 mod ipv6_tests;
@@ -45,3 +47,7 @@ pub use listen::STD_BACKLOG;
 #[cfg(test)]
 use listen::{DEFAULT_BACKLOG_CAP, bind_all_with};
 pub use listen::{bind_all, default_backlog, describe_listener};
+pub use negative::{
+    DEFAULT_CONNECT_NEGATIVE, connect_negative_counters, connect_negative_status_json, is_skipped,
+    set_connect_negative,
+};

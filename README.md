@@ -246,6 +246,7 @@ check: ok (everything this proxy reads is readable)
 | `PROXY_MIN_TRANSFER_BPS` | `1024` | 転送中の最小の速さ (バイト/秒)。下回り続けたら切る。`0` で切らない |
 | `PROXY_MIN_TRANSFER_WINDOW_SECS` | `30` | 最小の速さを判定する窓 (相手を待った秒) |
 | `PROXY_CONNECT_TIMEOUT_SECS` | `3` | オリジンへの TCP の確立だけの締め切り (秒。`CONNECT` と forward) |
+| `PROXY_CONNECT_NEGATIVE_SECS` | `30` | 確立が 2 回続けて時間切れになった宛先を、この秒数のあいだ待たずに `504` で断る (`0` で覚えない) |
 | `PROXY_HEADER_TIMEOUT_SECS` | `10` | 要求行とヘッダーを読み終えるまでの総時間の締め切り (秒)。越えたら `408` (1 バイトも来ない接続は黙って閉じる)。`0` で無し |
 | `PROXY_HE_STAGGER_MS` | `250` | Happy Eyeballs で次の候補を試し始めるまでの間隔 (ms、10〜2000) |
 | `PROXY_KEEPALIVE_SECS` | `15` | クライアント接続を次の要求まで待つ時間 (秒) |
@@ -325,7 +326,7 @@ check: ok (everything this proxy reads is readable)
 
 `.env` は起動後も監視していて、保存すると再起動なしで読み直します (`$HOME` を inotify で監視、使えないファイルシステムでは
 30 秒ごとの mtime 確認)。即時に反映されるのは `PROXY_ALLOW_HOSTS` / `PROXY_DENY_HOSTS` / `PROXY_TIMEOUT_SECS` /
-`PROXY_CONNECT_TIMEOUT_SECS` / `PROXY_HEADER_TIMEOUT_SECS` /
+`PROXY_CONNECT_TIMEOUT_SECS` / `PROXY_CONNECT_NEGATIVE_SECS` / `PROXY_HEADER_TIMEOUT_SECS` /
 `PROXY_KEEPALIVE_SECS` / `PROXY_LOG_LEVEL` / `PROXY_MAX_CONNS` / `PROXY_MAX_THREADS` /
 `PROXY_ALLOW_CLIENTS` / `PROXY_ENDPOINTS_READONLY` / `PROXY_MAX_CONNS_PER_CLIENT` などで、
 既存の keep-alive 接続には次の接続から効きます (どの値を当てたかは `/status` の `settings.applied` に出ます)。ポート・bind・
@@ -431,6 +432,21 @@ Pterodactyl 以外で root 実行の場合は `/var/cache` を優先します。
   Happy Eyeballs の締め切りも同じ値なので、締め切りで抜けた接続は `/errors` に `cause: "timeout"` で残ります。
   **名前解決の時間は含みません** (名前を引いたあとの `connect` に効きます)。
   `.env` で即時反映
+- **`PROXY_CONNECT_NEGATIVE_SECS`** (既定 `30`。T36.8)
+  **同じ宛先 (`host:port`) への確立が 2 回続けて時間切れ**になったら、この秒数のあいだは繋ぎに行かずに
+  **すぐ `504 Gateway Timeout`** を返します (`CONNECT` と forward の両方。`0` で覚えない = 毎回 `PROXY_CONNECT_TIMEOUT_SECS` まで待って `502`)。
+  時間切れでない結末 (繋がった・断られた・経路が無い) がはさまれば「続けて」ではありません。
+  **期限が過ぎたら 1 本だけ通して試し**ます (その 1 本が走っている間も、ほかは断り続けます)。繋がれば忘れて普通に戻り、
+  また時間切れならそこから同じ秒数だけ断り直します。生き返った宛先は、最長でこの秒数 (+ 試しの 1 本) だけ `504` が続きます。
+  入れた理由 (2026-11-12、利用者の判断): tokyo で死んだメールサーバー宛ての時間切れが 108〜127 件/時あり、
+  1 本ごとに締め切り (3 秒) を丸ごと待たせていました。CPU は 1 本あたり約 0.2 ms と小さく (T36.0)、効くのは主に待ちです。
+  覚える宛先は 256 まで (溢れたら最後の時間切れが一番古い宛先を忘れます)。表が空のあいだは確立 1 本につき原子の読み 1 回だけで、
+  表に何か載っていれば確立 1 本につき鍵 1 回 (プールから出す forward は確立しないので通りません)。
+  断った 1 本も `/errors` と `/hosts` に `cause: "timeout"`・`status: 504` で残ります。表の様子は `/status` の `connect_negative`
+  (`secs`・`entries` = 覚えている宛先・`blocked` = いま断っている宛先・`skipped` = 断った本数・`opened` = 断る期限を置いた回数・
+  `probes` = 期限が過ぎて通した試しの本数・`recovered` = 試しが繋がって忘れた回数・`evicted` = 溢れて忘れた回数。数は通算) と、
+  `/metrics` の `sorahost_connect_negative_entries` / `sorahost_connect_negative_skipped_total` に出ます。
+  `.env` で即時反映 (`0` にするとその場で表を捨てます)
 - **`PROXY_HEADER_TIMEOUT_SECS`** (既定 `10`)
   **要求行とヘッダーを読み終えるまでの総時間**の締め切り (秒)。越えたら `408 Request Timeout` を返して閉じます。
   `PROXY_TIMEOUT_SECS` の読み取りタイムアウトは「無通信の締め切り」で、**読めるたびに待ち直す**ので、

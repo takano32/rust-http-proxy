@@ -361,13 +361,15 @@ pub(super) fn canary_status_json() -> String {
 pub(super) fn push_env(out: &mut String, extra: &StatusExtras<'_>, cache_json: &str) {
     let _ = write!(
         out,
-        "\"log_level\":\"{}\",\"settings\":{},\"dns\":{},\"canary\":{},\"ipv6\":{},\"blocklist\":{},\"state_file\":{},\"capabilities\":{},\"cache\":{},",
+        "\"log_level\":\"{}\",\"settings\":{},\"dns\":{},\"canary\":{},\"ipv6\":{},\"connect_negative\":{},\"blocklist\":{},\"state_file\":{},\"capabilities\":{},\"cache\":{},",
         crate::log::current_level().as_str().trim(),
         extra.settings,
         crate::dns::status_json(),
         // 利用者の要求が無い時間帯の名前解決と TCP 接続 (最後の 1 回。T14.10)
         canary_status_json(),
         crate::net::ipv6_status_json(),
+        // 続けて時間切れになった宛先を待たずに断る表 (T36.8)
+        crate::net::connect_negative_status_json(),
         extra.blocklist,
         extra.state_file,
         crate::sysinfo::capabilities::status_json(),

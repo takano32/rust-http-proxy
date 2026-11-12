@@ -92,6 +92,12 @@ pub struct Config {
     /// `http::Shared::connect_timeout` (TCP の確立だけ。T28.8) の 2 か所で、forward の読み書きと
     /// blocklist の取得は `timeout` のまま。
     pub connect_timeout: Duration,
+    /// 確立が続けて時間切れになった宛先 (`host:port`) を待たずに 504 で断る長さ
+    /// (`PROXY_CONNECT_NEGATIVE_SECS`、既定 30 秒、`0` で覚えない。T36.8)。
+    ///
+    /// 同じ宛先が 2 回続けて時間切れになったら、この長さのあいだは繋ぎに行かない。過ぎたら 1 本だけ通して
+    /// 試す。起動時と `.env` の再読込で `net::set_connect_negative` へ渡す (表は `proxy-net-conn` が持つ)
+    pub connect_negative: Duration,
     /// 要求行とヘッダーを読み終えるまでの締め切り (`PROXY_HEADER_TIMEOUT_SECS`、既定 10 秒、`0` で無し。T28.0)。
     ///
     /// **1 バイト目が来てから最後のヘッダーまでの総時間**を縛る (`SO_RCVTIMEO` は読めるたびに

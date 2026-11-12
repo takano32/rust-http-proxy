@@ -172,7 +172,7 @@ struct Attempt<'a> {
     started: Instant,
 }
 
-/// 繋げなかった CONNECT を断る: 502 (名前解決の締め切りなら 504) を書き、WARN と統計・
+/// 繋げなかった CONNECT を断る: 502 (名前解決の締め切りと、続けて時間切れの宛先を待たずに断ったときは 504) を書き、WARN と統計・
 /// `/errors` と `/recent` の個票・アクセスログを出す (呼び元は [`Reported`] で包んで返す)。
 fn refuse_connect(
     client: &mut TcpStream,
@@ -181,8 +181,9 @@ fn refuse_connect(
     stages: StageMs,
     dns_before: u64,
 ) {
-    // 名前解決が締め切りを過ぎた (または上限で断った) ときは 504 (T32.11)
-    let (code, reason): (u16, &str) = if dns::is_timeout(e) {
+    // 名前解決が締め切りを過ぎた (または上限で断った) ときは 504 (T32.11)。
+    // 確立が続けて時間切れになった宛先を、繋ぎに行かずに断ったときも 504 (T36.8)
+    let (code, reason): (u16, &str) = if dns::is_timeout(e) || net::is_skipped(e) {
         (504, "Gateway Timeout")
     } else {
         (502, "Bad Gateway")

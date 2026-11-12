@@ -1,12 +1,14 @@
 //! 名前解決と組み合わせた接続の入口 (`connect` / `connect_with` / `connect_resolved`) と、
-//! serve-stale の古い答えで繋げなかったときの繋ぎ直し (T21.3)。本体は [`super::happy_eyeballs`]。
+//! serve-stale の古い答えで繋げなかったときの繋ぎ直し (T21.3)、続けて時間切れになった宛先を
+//! 待たずに断る門 (T36.8。表は [`super::negative`])。本体は [`super::happy_eyeballs`]。
 
 use std::io;
 use std::net::{IpAddr, SocketAddr, TcpStream};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::happy_eyeballs::connect_candidates;
 use super::ipv6_enabled;
+use super::negative::{Gate, NEGATIVE, skipped_error};
 use crate::hostport::split_host_port_ref;
 use crate::log_debug;
 
@@ -22,7 +24,29 @@ pub fn connect(addr_str: &str, timeout: Duration) -> io::Result<TcpStream> {
 /// 引かない。`PROXY_DNS_TTL_SECS=0` でも `getaddrinfo` は 1 回だけで、判定と接続が
 /// 必ず同じ答えを使う)。`None` (IP リテラル、`PROXY_ALLOW_LOCAL=on` で判定を飛ばした、
 /// 判定を経ない経路) のときは今までどおりここで解決する。
+///
+/// 同じ宛先が続けて時間切れになっていれば、繋ぎに行かずに [`super::is_skipped`] の
+/// `TimedOut` で断る (T36.8。`PROXY_CONNECT_NEGATIVE_SECS`)。表が空なら原子の読み 1 回だけ。
+/// ここは `#[inline]` にしない (呼び手の中に門ごと展開されると、呼び手の側に枠が 1 つ増えて
+/// 確立 1 本あたり約 40 Ir 増えた。本体は下の `connect_with_inner` を中に畳む)。
 pub fn connect_with(
+    addr_str: &str,
+    resolved: Option<&crate::dns::Resolved<'_>>,
+    timeout: Duration,
+) -> io::Result<TcpStream> {
+    let gate = NEGATIVE.admit(addr_str, Instant::now);
+    if let Gate::Skip(left) = gate {
+        return Err(skipped_error(left));
+    }
+    let result = connect_with_inner(addr_str, resolved, timeout);
+    let timed_out = matches!(&result, Err(e) if e.kind() == io::ErrorKind::TimedOut);
+    NEGATIVE.settle(addr_str, gate, timed_out, Instant::now);
+    result
+}
+
+/// [`connect_with`] の本体 (名前解決と、serve-stale の古い答えで繋げなかったときの繋ぎ直し)。
+#[inline(always)]
+fn connect_with_inner(
     addr_str: &str,
     resolved: Option<&crate::dns::Resolved<'_>>,
     timeout: Duration,

@@ -84,6 +84,8 @@ fn apply_runtime_knobs(config: &Config) {
     net::set_ipv6_enabled(config.ipv6);
     // Happy Eyeballs の間隔 (T17.6)。起動時に 1 回だけ (要求の経路は atomic を 1 回読むだけ)
     net::set_stagger(config.he_stagger);
+    // 続けて時間切れになった宛先を待たずに断る長さ (T36.8。再読込でも当て直す)
+    net::set_connect_negative(config.connect_negative);
     proxy_server::dns::set_ttl(config.dns_ttl);
     proxy_server::dns::set_negative_ttl(config.dns_negative);
     proxy_server::dns::set_warm_window(config.dns_warm);

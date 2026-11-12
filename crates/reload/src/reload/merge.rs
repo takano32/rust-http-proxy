@@ -48,6 +48,14 @@ fn merge_access(next: &mut Config, old: &Config, fresh: &Config, applied: &mut V
             .adopt(&fresh.sources, "PROXY_CONNECT_TIMEOUT_SECS");
         applied.push("PROXY_CONNECT_TIMEOUT_SECS");
     }
+    // 続けて時間切れになった宛先を断る長さ (T36.8)。`0` にしたら表を捨てる (その場で断らなくなる)
+    if fresh.connect_negative != old.connect_negative {
+        next.connect_negative = fresh.connect_negative;
+        next.sources
+            .adopt(&fresh.sources, "PROXY_CONNECT_NEGATIVE_SECS");
+        crate::net::set_connect_negative(fresh.connect_negative);
+        applied.push("PROXY_CONNECT_NEGATIVE_SECS");
+    }
     // 要求行とヘッダーの締め切り (T28.0)。`connect_timeout` と同じく実効値で比べる
     // (未設定のまま `PROXY_TIMEOUT_SECS` が 10 秒を跨いで動いたときもここに入る)。
     // 待ち受けに継承させた読み取りタイムアウトは、次の accept で食い違いを見て当て直す

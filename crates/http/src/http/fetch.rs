@@ -369,8 +369,9 @@ fn connect_failed<T>(
 ) -> Stage<T> {
     let (shared, cache, conn_id) = (x.shared, x.cache, x.ctx.conn_id);
     let (req_framing, server_addr) = (x.req_framing, x.server_addr);
-    // 名前解決が締め切りを過ぎた (または上限で断った) ときは 504 (T32.11)
-    let (code, reason) = if crate::dns::is_timeout(&e) {
+    // 名前解決が締め切りを過ぎた (または上限で断った) ときは 504 (T32.11)。
+    // 確立が続けて時間切れになった宛先を、繋ぎに行かずに断ったときも 504 (T36.8)
+    let (code, reason) = if crate::dns::is_timeout(&e) || crate::net::is_skipped(&e) {
         (504, "Gateway Timeout")
     } else {
         (502, "Bad Gateway")

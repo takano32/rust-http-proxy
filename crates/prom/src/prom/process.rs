@@ -31,7 +31,7 @@ pub(super) fn dns_metrics(out: &mut String) {
     line(out, "warm_names", "", crate::dns::warm_count());
 }
 
-/// Happy Eyeballs の族ごとの勝敗 (`ipv6_*`)。
+/// Happy Eyeballs の族ごとの勝敗 (`ipv6_*`) と、確立の時間切れの表 (`connect_negative_*`。T36.8)。
 pub(super) fn ipv6_metrics(out: &mut String) {
     // Happy Eyeballs の族ごとの勝敗 (T12.1)。`v4_first` は `/status` に出す
     header(
@@ -56,6 +56,22 @@ pub(super) fn ipv6_metrics(out: &mut String) {
         "Connections where IPv6 was tried but IPv4 established first",
     );
     line(out, "ipv6_losses_total", "", losses);
+    // 続けて時間切れになった宛先を待たずに断る表 (T36.8。`PROXY_CONNECT_NEGATIVE_SECS`)
+    let [entries, skipped] = crate::net::connect_negative_counters();
+    header(
+        out,
+        "connect_negative_entries",
+        "gauge",
+        "Targets remembered after connect timeouts (PROXY_CONNECT_NEGATIVE_SECS)",
+    );
+    line(out, "connect_negative_entries", "", entries);
+    header(
+        out,
+        "connect_negative_skipped_total",
+        "counter",
+        "Connects refused with 504 without trying, after the target timed out twice in a row",
+    );
+    line(out, "connect_negative_skipped_total", "", skipped);
 }
 
 /// ブロックリスト (`blocklist_*`)。

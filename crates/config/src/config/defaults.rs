@@ -35,6 +35,7 @@ impl Config {
             // `timeout` が 3 秒より短ければそちらに合わせる。T15.6 (2))。ここで入れておくと
             // `Config::new` を呼ぶ既存の所 (テストと `/config` の組み立て) が自動で追随する
             connect_timeout: connect_timeout_for(timeout, None),
+            connect_negative: crate::net::DEFAULT_CONNECT_NEGATIVE,
             // 未設定のときの実効値は `header_timeout_for` (既定 10 秒と `timeout` の小さい方。T28.0)
             header_timeout: header_timeout_for(timeout, None),
             he_stagger: crate::net::DEFAULT_STAGGER,

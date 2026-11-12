@@ -1220,6 +1220,11 @@
   - `PROXY_TIMEOUT_SECS` による接続および読み書きタイムアウト制御
   - `PROXY_CONNECT_TIMEOUT_SECS` で **オリジンへの TCP の確立だけ** (`CONNECT` と、T28.8 から forward も) に短い締め切りを置いています
     (**既定 3 秒**。未設定なら 3 秒と `PROXY_TIMEOUT_SECS` の小さい方)
+  - `PROXY_CONNECT_NEGATIVE_SECS` で、**確立が 2 回続けて時間切れになった宛先 (`host:port`) を覚え**、
+    その秒数のあいだは繋ぎに行かずに**すぐ `504 Gateway Timeout`** を返します (**既定 30 秒**、`0` で覚えない。`CONNECT` と forward。T36.8)。
+    期限が過ぎたら 1 本だけ通して試し、繋がれば忘れ、また時間切れなら同じ秒数だけ断り直します。
+    死んだ宛先へ毎回 3 秒待たせていたのを止めるためで、生き返った宛先は最長でその秒数だけ `504` が続きます。
+    表の様子は `/status` の `connect_negative` と `/metrics` の `sorahost_connect_negative_*` に出ます
   - `PROXY_HEADER_TIMEOUT_SECS` で**要求行とヘッダーを読み終えるまでの総時間**に締め切りを置いています
     (**既定 10 秒**。越えたら `408 Request Timeout` で閉じる。黙ったまま・1 バイトずつ送る接続 (slowloris) 対策。
     1 バイトも来ない先張りの接続は 408 を返さずに黙って閉じ、`/status` の `silent_closes` に数える。T33.0)

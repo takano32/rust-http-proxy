@@ -76,6 +76,7 @@ impl Config {
         add("PROXY_TIMEOUT_SECS", secs(self.timeout));
         // 実効値 (未設定なら既定の 3 秒と `PROXY_TIMEOUT_SECS` の小さい方が出る。T15.6、T28.43)
         add("PROXY_CONNECT_TIMEOUT_SECS", secs(self.connect_timeout));
+        add("PROXY_CONNECT_NEGATIVE_SECS", secs(self.connect_negative));
         // 実効値 (未設定なら既定の 10 秒と `PROXY_TIMEOUT_SECS` の小さい方。T28.0)
         add("PROXY_HEADER_TIMEOUT_SECS", secs(self.header_timeout));
         add(
@@ -377,13 +378,14 @@ mod tests {
     /// キャッシュ) で、`/config` と `--check` がこの順に並べる。割る前の順をそのまま書き写した。
     #[test]
     fn settings_keys_keep_the_readme_order() {
-        const KEYS: [&str; 81] = [
+        const KEYS: [&str; 82] = [
             "SERVER_PORT",
             "PROXY_BIND",
             "PROXY_IPV6",
             "PROXY_LISTEN_BACKLOG",
             "PROXY_TIMEOUT_SECS",
             "PROXY_CONNECT_TIMEOUT_SECS",
+            "PROXY_CONNECT_NEGATIVE_SECS",
             "PROXY_HEADER_TIMEOUT_SECS",
             "PROXY_HE_STAGGER_MS",
             "PROXY_KEEPALIVE_SECS",

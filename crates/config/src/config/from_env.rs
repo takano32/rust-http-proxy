@@ -90,6 +90,11 @@ impl Config {
                 connect_timeout_for(self.timeout, Some(Duration::from_secs(secs)));
             src.mark("PROXY_CONNECT_TIMEOUT_SECS");
         }
+        // 続けて時間切れになった宛先を待たずに断る長さ (T36.8。`0` で覚えない)
+        if let Some(secs) = bad.num::<u64>("PROXY_CONNECT_NEGATIVE_SECS") {
+            self.connect_negative = Duration::from_secs(secs);
+            src.mark("PROXY_CONNECT_NEGATIVE_SECS");
+        }
         // 要求行とヘッダーの締め切り (T28.0)。書かなければ `Config::new` の既定のまま
         if let Some(secs) =
             envfile::var("PROXY_HEADER_TIMEOUT_SECS").and_then(|s| s.trim().parse::<u64>().ok())
