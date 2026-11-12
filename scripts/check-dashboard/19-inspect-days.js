@@ -165,9 +165,14 @@ if (insNew.eventRows({ events: [] }, 200).available !== true) fail('口はある
 if (insNew.eventRows({ events: [{}] }, 200).rows[0].at !== 0) fail('無いキーは 0 のはず');
 if (insNew.eventRows({ events: evList }, 2).rows.length !== 2) fail('出来事を n で絞れていない');
 // **手元のプロキシの本物の出力** (`snapshot-local.json` の `events`。anomaly 入り)
+// 画面 (`renderEvents`) は新しい方から 200 件だけを表にする。デプロイ先の `/events` は 512 件の環が満杯なので、
+// 件数は「全部」ではなく「全部と 200 の小さい方」と比べる (T36.4。前は全部と比べて、実データで NG になっていた)
 const localEv = insNew.eventRows(snap.events, 200);
 if (!localEv.available) fail(path.basename(snapFile) + ' の /events が読めていない');
-if (localEv.rows.length !== ((snap.events || {}).events || []).length) fail('本物の出来事の件数が合わない');
+const localEvAll = ((snap.events || {}).events || []).length;
+if (localEv.rows.length !== Math.min(localEvAll, 200)) {
+  fail('本物の出来事の件数が合わない: ' + localEv.rows.length + ' 件 (全部 ' + localEvAll + ' 件、表は 200 件まで)');
+}
 for (let i = 1; i < localEv.rows.length; i++) {
   if (localEv.rows[i - 1].at < localEv.rows[i].at) fail('本物の出来事が新しい順でない');
 }
@@ -375,7 +380,8 @@ setTimeout(() => {
   // 全部ある版: 3 枚に行が出て、`/daily` と `/snapshots` を実際に引いている
   if (withAll.rows('daily') !== 9) fail('煙試験: 「今日」の行が 9 でない: ' + withAll.rows('daily'));
   if (withAll.rows('weekly') !== 7) fail('煙試験: 「今週」の行が 7 でない: ' + withAll.rows('weekly'));
-  if (withAll.rows('events') !== ((snap.events || {}).events || []).length) {
+  // 表は新しい方から 200 件まで (`renderEvents` の `eventRows(j,200)`。T36.4)
+  if (withAll.rows('events') !== Math.min(((snap.events || {}).events || []).length, 200)) {
     fail('煙試験: 「出来事と異常」の行が実出力の件数と違う: ' + withAll.rows('events'));
   }
   if (!withAll.asked.some((u) => u.indexOf('/daily') === 0)) fail('煙試験: /daily を引いていない');
