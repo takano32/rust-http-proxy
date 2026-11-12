@@ -54,35 +54,21 @@
 
 **試験と CI**
 
-- [ ] **T36.20 `cargo doc` の壊れたリンクを直し、CI で警告を落とす**
-  - 目的: クレートを割る前の経路を指す intra-doc のリンクが残っている (T34.2 のレビュー)。clippy は見ない。
-  - やること: リンクを直し、CI に `RUSTDOCFLAGS=-D warnings cargo doc --no-deps` を足す。
-  - 値打ち: 低〜中。
-- [ ] **T36.21 Linux 以外の版 (`tunnel/portable.rs` ほか) が組めるかを CI で見る**
-  - 目的: T34.9・T34.14 で動かしたが、ターゲットが無くてコンパイルを確かめていない。
-  - やること: CI で `cargo check --target` を 1 つ (たとえば aarch64-apple-darwin) 回す。入れられなければ、理由を書いて閉じる。
-  - 値打ち: 低〜中。
-- [ ] **T36.22 時間や速さに頼る試験の残りを直す**
-  - 対象:
-    - `min_transfer_test` の `a_client_just_above_the_minimum_gets_the_whole_body` (強い負荷で 3 回中 2 回落ちた)。
-    - canary の `a_probe_measures_a_real_connect_and_a_refused_one` (壁時計で 2 ms 以下)。
-    - profile の `the_busiest_thread_comes_first_in_threads_top` (2 秒回すスレッドが先頭に来る前提)。
-    - selfbench の CONNECT の段のあとの 50 ms の sleep。
-  - 受け入れ基準: 空回り 12 本の負荷の下で 20 回ずつ通る。主張は弱めない。
-  - 値打ち: 中 (CI の揺れ)。
-- [ ] **T36.23 `slow_transfer_closed` がプロセスに 1 つなので、並んで走る試験で混ざる**
-  - やること: `Metrics` の欄に移すか、試験の側で差分を自分の接続だけで読む。
-  - 値打ち: 低。
-- [ ] **T36.24 試験の一時ディレクトリを、試験の終わりに消す**
-  - 目的: `scratch_dir`・`fresh_dir` は pid ごとの置き場を /tmp に残す。回すたびに溜まる (T34.162)。この機械には `/var/cache/rust-http-proxy` も残っている。
-  - やること: Drop で消す番人を返すか、起動のときに古い pid の置き場を掃除する。
-  - 値打ち: 低。
-- [ ] **T36.25 取り込みの途中で main の CI が版の確かめで赤くなるのを防ぐ**
-  - 目的: タスク 34 の取り込みのあいだ、main は 12 回続けて赤だった (版をそろえたのは最後)。そのあいだ、ほかの失敗が隠れる。
-  - やること: 取り込みのたびに `crate-versions.py --fix` を回す手順にするか、`ledger-close.py` が版の食い違いを知らせる。
-  - 値打ち: 中。
-
 **運用 (利用者の判断が要る)**
+
+- [ ] **T36.29 最小の速さの見張りが、一定の間隔で読むクライアントを実際より遅く見て切る**
+  - 目的: T36.22 の作業で見つかった。min_transfer_test の読み手を 64 KiB ごとに 69 ms (平均 0.94 MB/s、下限 384 KiB/s の 2.4 倍) にすると、プロキシからは約 238 KB/s に見えて、20 回とも切られた。40 ms 刻みなら通る。本番で、ほどほどの速さの利用者が切られうる。
+  - やること: `crates/base/src/minrate.rs` の、送信キューの量を差し引く計算 (`SIOCOUTQ`、`queued_now − queued_at_start`) と、待ちの時間の数え方を調べて直す。
+  - 受け入れ基準: 69 ms 刻みの読み手 (下限の 2.4 倍) が切られない結合試験。直す前に落ちる。下限より遅い読み手は、今までどおり切られる。熱い経路なので Ir は +0.5% 以内。
+  - 値打ち: **高** (正規の利用者を切りうる)。
+- [ ] **T36.30 実バイナリを起こす試験が、root だと `/var/cache/rust-http-proxy` を使って溜める**
+  - 目的: `ProxyProcess` は `HOME` を一時ディレクトリに向けるが、root では既定の置き場に `/var/cache` が先に選ばれる (T36.22 で見つけた。この機械に 32 MB)。試験どうしでキャッシュを共有してしまう。
+  - やること: `ProxyProcess` が `PROXY_CACHE_DIR=<home>/cache` を渡す。`/config` の出どころを見る試験は、それに合わせる。
+  - 値打ち: 中 (試験の独立)。
+- [ ] **T36.31 Linux 以外でビルドすると出る「使っていない」の警告 5 件を消す**
+  - 対象: net-conn の `listen.rs` (`DEFAULT_BACKLOG_CAP`・`backlog_from_somaxconn`)、http の `deliver.rs` (`BufRead`・`mut`)、tunnel の `open.rs` (`established`)。
+  - やること: `#[cfg(target_os = "linux")]` を付ける。済んだら CI の `check-other-target` を `-D warnings` にする。
+  - 値打ち: 低。
 
 - [ ] **T36.99 締める (タスク 36 の版を走らせたあとに見る・決める・書く)**
   - 前提: 本体を変える小タスクがあればデプロイが要る。版は、本体を最後に変えた小タスクの番号にする。デプロイそのものは利用者が決める。判定表は `T35` のまま。足すなら `T36`。
