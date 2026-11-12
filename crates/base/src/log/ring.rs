@@ -113,7 +113,8 @@ impl LogRing {
         // いまある行を古い順に抜き出す (置き場の確保は残す)
         let start = self.start();
         self.buf.rotate_left(start);
-        let held: Vec<Line> = self.buf.drain(..).collect();
+        // `split_off(0)` は中身を新しい Vec に移し、元の置き場の確保はそのまま残す
+        let held: Vec<Line> = self.buf.split_off(0);
         self.next = 0;
         for line in lines.into_iter().chain(held) {
             self.push(line);
