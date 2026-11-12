@@ -499,12 +499,8 @@ impl Cache {
         let Some(pr) = probe.as_mut() else {
             return (PTERODACTYL_UNKNOWN_QUOTA_DISK, None, None);
         };
-        let (confirmed, mut cap) = pr.tick(
-            self.now(),
-            self.disk.usage().0,
-            self.disk.owned(),
-            self.disk.take_fill_failed(),
-        );
+        let (confirmed, mut cap) =
+            pr.tick(self.now(), self.disk.owned(), self.disk.take_fill_failed());
         // 実際のファイルシステムの空きは超えられない
         if let Some(real) = sysinfo::fs_info(self.disk.dir()) {
             let real_keep = margins.disk.keep_free(floor_for(real.total, DISK_FLOOR), 0);

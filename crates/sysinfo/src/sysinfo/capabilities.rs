@@ -73,14 +73,9 @@ pub struct Capabilities {
 }
 
 impl Capabilities {
-    /// `resolver_ms` **以外**が全部読めるか (`--check` の終了コードはこれで決める)。
+    /// 読めなかったものの名前 (`resolver_ms` は含めない。空なら `--check` は 0 で終わる)。
     /// 名前解決を外すのは、リゾルバが遅い / 外に出られない環境でも
     /// プロキシとしては動く (そして それ自体が測りたい数字) ため。
-    pub fn all_readable(&self) -> bool {
-        self.missing().is_empty()
-    }
-
-    /// 読めなかったものの名前 (`resolver_ms` は含めない)。
     pub fn missing(&self) -> Vec<&'static str> {
         [
             ("proc_syscall", self.proc_syscall),
@@ -518,7 +513,7 @@ mod tests {
             assert!(json.contains(key), "{} が無い: {}", key, json);
         }
         assert!(json.contains("\"resolver_ms\":9"), "{}", json);
-        assert!(!caps.all_readable());
+        assert!(!caps.missing().is_empty());
         assert_eq!(caps.missing(), vec!["cgroup_cpu", "cgroup_pressure"]);
         // 名前解決が失敗していても終了コードには効かない
         let ok = Capabilities {
@@ -527,7 +522,7 @@ mod tests {
             resolver_ms: None,
             ..caps
         };
-        assert!(ok.all_readable());
+        assert!(ok.missing().is_empty());
         assert!(ok.to_json().contains("\"resolver_ms\":null"));
         // 新しい欄は**いちばん末尾** (既存の鍵の順は 1 つも動かさない)
         assert!(

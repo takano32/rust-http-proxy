@@ -159,12 +159,12 @@ impl DiskProbe {
         self.learned.is_none() && (self.cap > self.confirmed || self.found.is_some())
     }
 
-    /// 毎プローブ呼ぶ。`entries` は実データ、`owned` は実データ + バラスト、`fill_failed` は
+    /// 毎プローブ呼ぶ。`owned` は実データ + バラスト、`fill_failed` は
     /// 直前のバラスト伸長が (ENOSPC 等で) 失敗したか。戻り値は (実データの上限, 全体の上限)。
-    pub fn tick(&mut self, now: u64, entries: u64, owned: u64, fill_failed: bool) -> (u64, u64) {
-        // `entries` は今どの段でも使っていない (T34.63 で使っていなかった `tick_slow` の引数を外した)。
-        // 公開の形は呼ぶ側 (cache) に合わせて残す
-        let _ = entries;
+    ///
+    /// 実データの量 (`entries`) は、どの段でも使っていなかったので引数から外した (T36.17。
+    /// T34.63 で `tick_slow` の引数を外したときは、公開の形を呼ぶ側に合わせて残していた)。
+    pub fn tick(&mut self, now: u64, owned: u64, fill_failed: bool) -> (u64, u64) {
         let mut changed = false;
         if now.saturating_sub(self.alive) >= HEARTBEAT_SECS {
             self.alive = now;
@@ -294,26 +294,20 @@ mod tests {
         assert_eq!(p.mode(), Mode::Fast);
         assert_eq!((p.confirmed(), p.cap()), (START, START));
         // バラストが追いついたら 512 MiB ずつ上げる
-        assert_eq!(p.tick(1_001, 0, START, false), (START, START + FAST_STEP));
+        assert_eq!(p.tick(1_001, START, false), (START, START + FAST_STEP));
         assert_eq!(
-            p.tick(1_002, 0, START + FAST_STEP, false),
+            p.tick(1_002, START + FAST_STEP, false),
             (START, START + 2 * FAST_STEP)
         );
         // 伸びが 2 回連続で止まったら (FS の空きの都合) そこが候補: cap は保持量に戻る
         let held = START + FAST_STEP + 100 * MIB;
-        assert_eq!(
-            p.tick(1_003, 0, held, false),
-            (START, START + 2 * FAST_STEP)
-        );
-        assert_eq!(
-            p.tick(1_004, 0, held, false),
-            (START, START + 2 * FAST_STEP)
-        );
-        assert_eq!(p.tick(1_005, 0, held, false), (START, held));
+        assert_eq!(p.tick(1_003, held, false), (START, START + 2 * FAST_STEP));
+        assert_eq!(p.tick(1_004, held, false), (START, START + 2 * FAST_STEP));
+        assert_eq!(p.tick(1_005, held, false), (START, held));
         assert!(p.probing());
         // 10 分待って確定 → 実データもそこまで
-        assert_eq!(p.tick(1_100, 0, held, false), (START, held));
-        assert_eq!(p.tick(1_005 + CONFIRM_SECS, 0, held, false), (held, held));
+        assert_eq!(p.tick(1_100, held, false), (START, held));
+        assert_eq!(p.tick(1_005 + CONFIRM_SECS, held, false), (held, held));
         assert_eq!(p.learned(), Some(held));
         assert!(!p.probing());
         // 再起動しても学習済み
@@ -325,8 +319,8 @@ mod tests {
     fn fast_mode_stops_when_fallocate_fails() {
         let path = fresh_path("shp-probe-fast-fail.state");
         let mut p = DiskProbe::load(&path, 1_000);
-        p.tick(1_001, 0, START, false);
-        let (_, cap) = p.tick(1_002, 0, START + 200 * MIB, true);
+        p.tick(1_001, START, false);
+        let (_, cap) = p.tick(1_002, START + 200 * MIB, true);
         assert_eq!(cap, START + 200 * MIB);
         assert!(p.probing());
     }
@@ -335,8 +329,8 @@ mod tests {
     fn being_stopped_during_fast_mode_switches_to_slow() {
         let path = fresh_path("shp-probe-fast-killed.state");
         let mut p = DiskProbe::load(&path, 10_000);
-        p.tick(10_001, 0, START, false);
-        p.tick(10_000 + HEARTBEAT_SECS, 0, START + FAST_STEP, false); // 生存記録
+        p.tick(10_001, START, false);
+        p.tick(10_000 + HEARTBEAT_SECS, START + FAST_STEP, false); // 生存記録
         // ここで Wings に止められて再起動
         let again = DiskProbe::load(&path, 10_100);
         assert_eq!(again.mode(), Mode::Slow);
@@ -351,19 +345,19 @@ mod tests {
     fn slow_mode_raises_every_confirmation_and_learns_when_stopped_after_a_raise() {
         let path = fresh_path("shp-probe-slow.state");
         let mut p = DiskProbe::load(&path, 10_000);
-        p.tick(10_000 + HEARTBEAT_SECS, 0, START, false);
+        p.tick(10_000 + HEARTBEAT_SECS, START, false);
         let mut p = DiskProbe::load(&path, 10_100); // 早期途切れ → slow
         assert_eq!(p.mode(), Mode::Slow);
         // 最初の 512 MiB は 10 分後に確認済みになり、すぐ次の 512 MiB を (バラストで) 探る
         assert_eq!(
-            p.tick(10_100 + CONFIRM_SECS, 0, 0, false),
+            p.tick(10_100 + CONFIRM_SECS, 0, false),
             (START, START + FAST_STEP)
         );
         // 10 分止められなければ確認済みになり、また 512 MiB 上げる
-        let (entries, cap) = p.tick(10_100 + 2 * CONFIRM_SECS + 1, 0, START + FAST_STEP, false);
+        let (entries, cap) = p.tick(10_100 + 2 * CONFIRM_SECS + 1, START + FAST_STEP, false);
         assert_eq!((entries, cap), (START + FAST_STEP, START + 2 * FAST_STEP));
         let raised = 10_100 + 2 * CONFIRM_SECS + 1;
-        p.tick(raised + HEARTBEAT_SECS, 0, START + FAST_STEP, false); // 生存記録
+        p.tick(raised + HEARTBEAT_SECS, START + FAST_STEP, false); // 生存記録
         // 上げた直後に止められた → 確認済みを学習
         let again = DiskProbe::load(&path, raised + 120);
         assert_eq!(again.learned(), Some(START + FAST_STEP));
@@ -378,13 +372,13 @@ mod tests {
     fn slow_mode_two_early_stops_mean_a_tiny_allocation() {
         let path = fresh_path("shp-probe-slow-tiny.state");
         let mut p = DiskProbe::load(&path, 5_000);
-        p.tick(5_000 + HEARTBEAT_SECS, 0, START, false);
+        p.tick(5_000 + HEARTBEAT_SECS, START, false);
         let mut again = DiskProbe::load(&path, 6_000); // → slow (early stop #0 in slow terms)
         assert_eq!(again.mode(), Mode::Slow);
-        again.tick(6_000 + HEARTBEAT_SECS, 0, 0, false);
+        again.tick(6_000 + HEARTBEAT_SECS, 0, false);
         let mut third = DiskProbe::load(&path, 7_000); // slow で 1 回目の早期途切れ
         assert_eq!(third.learned(), None);
-        third.tick(7_000 + HEARTBEAT_SECS, 0, 0, false);
+        third.tick(7_000 + HEARTBEAT_SECS, 0, false);
         let fourth = DiskProbe::load(&path, 8_000); // 2 回目 → 最低値
         assert_eq!(fourth.learned(), Some(FLOOR));
         assert_eq!(fourth.cap(), FLOOR);
