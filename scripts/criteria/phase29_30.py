@@ -120,6 +120,37 @@ def _p29_profile_sides(c, th):
     return out, None
 
 
+def conn_per_resolved_sides(c, th):
+    """`_p29_conn_per_resolved_request` の材料: `({誰: {"us", "all", "req", "fail"}}, [出どころ], None)` か `(None, None, 理由)`。
+
+    `us` は `conn` 役の CPU ÷ 名前解決に成功した要求、`all` は要求の全数あたり (T36.2 で行から割った。
+    T36 の行が同じ材料を機械の速さの物差しで割るため)。
+    """
+    sides, why = _p29_profile_sides(c, th)
+    if sides is None:
+        return None, None, why
+    got, srcs = {}, []
+    for who, snap, p, src in sides:
+        v = profile_roles_us(p)
+        win = profile_window(p)
+        if v is None or win is None or "conn" not in v[0]:
+            return None, None, f"{who}の `/profile` に `t`・`threads`・`requests`・`cpu_us` か `conn` の役割が無い"
+        fails = dns_failures_between(snap, win[0], win[1] + (p.get("interval_secs") or 60))
+        if fails is None:
+            return None, None, f"{who}の雪像の `/history?res=3600` に `errors_by_cause` (の `dns`) が無い。名前解決の失敗が数えられない"
+        by, _, req, secs = v
+        ok = req - fails
+        if ok <= 0:
+            return None, None, f"{who}の `/profile` の窓で名前解決に成功した要求が 0 本"
+        got[who] = {"us": by["conn"] / ok, "all": by["conn"] / req if req else None, "req": req, "fail": fails}
+        srcs.append(f"{who}: {src} {secs / 3600:,.1f} 時間、要求 {n(req)} 本のうち名前解決の失敗 {n(fails)} 本 "
+                    f"({fails / req * 100 if req else 0:.0f}%)")
+    return got, srcs, None
+
+
+CONN_PER_RESOLVED_SRC = "`/profile` の `conn` の `cpu_us` ÷ (要求 − `/history?res=3600` の `errors_by_cause.dns`)。"
+
+
 def _p29_conn_per_resolved_request(c, th):
     """T.32.29 (b): `conn` 役の CPU ÷ **名前解決に成功した要求**が前の版の `conn_per_resolved_factor` 倍未満。
 
@@ -130,34 +161,49 @@ def _p29_conn_per_resolved_request(c, th):
     k = th["conn_per_resolved_factor"]
     label = (f"`conn` 役の CPU ÷ **名前解決に成功した要求**が前の版の {k} 倍未満 (T.32.29。要求の全数で割った値は表示だけ)")
     limit = f"< 前 ×{k}"
-    sides, why = _p29_profile_sides(c, th)
-    if sides is None:
+    got, srcs, why = conn_per_resolved_sides(c, th)
+    if got is None:
         return (label, limit, "—", UNKNOWN, why)
-    got, srcs = {}, []
-    for who, snap, p, src in sides:
-        v = profile_roles_us(p)
-        win = profile_window(p)
-        if v is None or win is None or "conn" not in v[0]:
-            return (label, limit, "—", UNKNOWN, f"{who}の `/profile` に `t`・`threads`・`requests`・`cpu_us` か `conn` の役割が無い")
-        fails = dns_failures_between(snap, win[0], win[1] + (p.get("interval_secs") or 60))
-        if fails is None:
-            return (label, limit, "—", UNKNOWN,
-                    f"{who}の雪像の `/history?res=3600` に `errors_by_cause` (の `dns`) が無い。名前解決の失敗が数えられない")
-        by, _, req, secs = v
-        ok = req - fails
-        if ok <= 0:
-            return (label, limit, "—", UNKNOWN, f"{who}の `/profile` の窓で名前解決に成功した要求が 0 本")
-        got[who] = {"us": by["conn"] / ok, "all": by["conn"] / req if req else None, "req": req, "fail": fails}
-        srcs.append(f"{who}: {src} {secs / 3600:,.1f} 時間、要求 {n(req)} 本のうち名前解決の失敗 {n(fails)} 本 "
-                    f"({fails / req * 100 if req else 0:.0f}%)")
     a, b = got["後"], got["前"]
     r = a["us"] / b["us"] if b["us"] else None
     if r is None:
         return (label, limit, "—", UNKNOWN, "。".join(srcs) + "。前の `conn` 役の CPU が 0")
     shown = (f"**{b['us']:,.0f} → {a['us']:,.0f}** us/名前解決に成功した要求 (**{r:.2f}** 倍)。"
              f"表示だけ: 要求の全数あたり {b['all']:,.0f} → {a['all']:,.0f} us")
-    return (label, limit, shown, MET if r < k else MISSED,
-            "`/profile` の `conn` の `cpu_us` ÷ (要求 − `/history?res=3600` の `errors_by_cause.dns`)。" + "。".join(srcs))
+    return (label, limit, shown, MET if r < k else MISSED, CONN_PER_RESOLVED_SRC + "。".join(srcs))
+
+
+def idle_cost_sides(c, th):
+    """`_p29_idle_cost` の材料: `({誰: us/秒}, {誰: {役割: 割合}}, [出どころ], None)` か `(None, None, None, 理由)`。
+
+    T36.2 で行から割った (T36 の行が同じ材料を機械の速さの物差しで割るため)。
+    """
+    sides, why = _p29_profile_sides(c, th)
+    if sides is None:
+        return None, None, None, why
+    got, shares, srcs = {}, {}, []
+    for who, snap, p, src in sides:
+        v = profile_roles_us(p)
+        if v is None or not v[3]:
+            return None, None, None, f"{who}の `/profile` に `threads`・`requests`・`cpu_us` が無い"
+        by, cpu, _, secs = v
+        got[who] = (cpu - by.get("conn", 0) - by.get("accept", 0)) / secs
+        shares[who] = {role: (by[role] / cpu if cpu and role in by else None) for role in th["idle_roles"]}
+        srcs.append(f"{who}: {src} {secs / 3600:,.1f} 時間")
+    return got, shares, srcs, None
+
+
+def idle_role_shares(th, shares):
+    """`profile-sample`・`cache-probe` の割合の前後 (`["`profile-sample` 13.3% → 11.7%", …]`)。"""
+    parts = []
+    for role in th["idle_roles"]:
+        sb, sa = shares["前"][role], shares["後"][role]
+        if sa is not None and sb is not None:
+            parts.append(f"`{role}` {sb * 100:.1f}% → {sa * 100:.1f}%")
+    return parts
+
+
+IDLE_COST_SRC = "`/profile` の全体の `cpu_us` − `conn` − `accept` を秒で割ったもの。"
 
 
 def _p29_idle_cost(c, th):
@@ -170,32 +216,18 @@ def _p29_idle_cost(c, th):
     label = (f"暇なときの費用: 裏の役割 (`conn`・`accept` 以外) の CPU が前の版の {k} 倍未満 (us/秒。T.32.29。"
              "`profile-sample`・`cache-probe` の割合は表示だけ)")
     limit = f"< 前 ×{k}"
-    sides, why = _p29_profile_sides(c, th)
-    if sides is None:
+    got, shares, srcs, why = idle_cost_sides(c, th)
+    if got is None:
         return (label, limit, "—", UNKNOWN, why)
-    got, shares, srcs = {}, {}, []
-    for who, snap, p, src in sides:
-        v = profile_roles_us(p)
-        if v is None or not v[3]:
-            return (label, limit, "—", UNKNOWN, f"{who}の `/profile` に `threads`・`requests`・`cpu_us` が無い")
-        by, cpu, _, secs = v
-        got[who] = (cpu - by.get("conn", 0) - by.get("accept", 0)) / secs
-        shares[who] = {role: (by[role] / cpu if cpu and role in by else None) for role in th["idle_roles"]}
-        srcs.append(f"{who}: {src} {secs / 3600:,.1f} 時間")
     a, b = got["後"], got["前"]
     if not b:
         return (label, limit, "—", UNKNOWN, "。".join(srcs) + "。前の裏の役割の CPU が 0")
     r = a / b
-    parts = []
-    for role in th["idle_roles"]:
-        sb, sa = shares["前"][role], shares["後"][role]
-        if sa is not None and sb is not None:
-            parts.append(f"`{role}` {sb * 100:.1f}% → {sa * 100:.1f}%")
+    parts = idle_role_shares(th, shares)
     shown = f"**{b:,.0f} → {a:,.0f}** us/秒 (**{r:.2f}** 倍)"
     if parts:
         shown += "。表示だけ: " + "・".join(parts)
-    return (label, limit, shown, MET if r < k else MISSED,
-            "`/profile` の全体の `cpu_us` − `conn` − `accept` を秒で割ったもの。" + "。".join(srcs))
+    return (label, limit, shown, MET if r < k else MISSED, IDLE_COST_SRC + "。".join(srcs))
 
 
 def history_since_start(snap, res, keys):

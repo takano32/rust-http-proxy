@@ -29,7 +29,10 @@ from .phase29_30 import (
     _p29_idle_cost, _p29_miss_band, _p30_dns_slow, _p30_refresh_per_name,
 )
 from .t35 import _t35_events, _t35_heap
-from .t36 import _t36_connect_errors, _t36_dns_slow, _t36_heap
+from .t36 import (
+    _t36_conn_per_resolved_request, _t36_connect_errors, _t36_dns_slow, _t36_heap, _t36_idle_cost,
+    _t36_machine_speed,
+)
 
 
 # ---------------------------------------------------------------- (9) 判定表
@@ -294,8 +297,11 @@ CRITERIA["T35"] = T35_TH
 
 # T36 = T35 の 26 行のうち 9 番目 (heap) を、キャッシュの持ち物に加えて名前解決の表の持ち物 (`dns.entries` ×
 # 1 名前あたりの大きさ) も引いた残りで読む行に (T36.1)、11 番目 (`dns_slow`) と 13 番目 (接続のエラー) を前の期間が
-# 0 件でも読める下限つきの行に (T36.3) 差し替えたもの。並びは同じ。**T35 以前の並びと文面は 1 つも動かない**
-RULES["T36"] = replaced(RULES["T35"], {9: _t36_heap, 11: _t36_dns_slow, 13: _t36_connect_errors})
+# 0 件でも読める下限つきの行に (T36.3)、5 番目 (`conn` 役の CPU) と 25 番目 (暇なときの費用) を機械の速さの物差し
+# (`history` 役の us/秒) で前と後を割ってから比べる行に (T36.2) 差し替え、27 番目 (末尾) に物差しの前後の比を出す
+# 表示だけの行を足したもの (T36.2)。1〜26 番目の並びは同じ。**T35 以前の並びと文面は 1 つも動かない**
+RULES["T36"] = replaced(RULES["T35"], {5: _t36_conn_per_resolved_request, 9: _t36_heap, 11: _t36_dns_slow,
+                                       13: _t36_connect_errors, 25: _t36_idle_cost}) + (_t36_machine_speed,)
 T36_TH = dict(T35_TH)
 CRITERIA["T36"] = T36_TH
 

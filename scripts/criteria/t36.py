@@ -1,13 +1,18 @@
-# 判定表 (`scripts/snapshot_criteria.py`) の **T36 の行** (T36.1・T36.3)。
+# 判定表 (`scripts/snapshot_criteria.py`) の **T36 の行** (T36.1・T36.2・T36.3)。
 #
 # T35 の 26 行のうち、heap の行 (9 番目) を、キャッシュの持ち物に加えて**名前解決の表の持ち物**も引いた残りで
 # 読む行 (T36.1) と、前の期間が 0 件だと読めなかった `dns_slow` (11 番目) と接続のエラー (13 番目) を下限つきで
-# 読む行 (T36.3)。並べるのは `RULES` (`criteria/rules.py`)。**T35 以前の行と文面は 1 つも動かさない**。
+# 読む行 (T36.3) と、CPU の 2 行 (5・25 番目) を**機械の速さの物差しで割ってから**比べる行と、物差しそのものの
+# 前後を出す表示だけの行 (27 番目。T36.2)。並べるのは `RULES` (`criteria/rules.py`)。
+# **T35 以前の行と文面は 1 つも動かさない**。
 
-from .common import MET, MISSED, UNKNOWN, n, part, stamp
+from .common import MET, MISSED, SHOWN, UNKNOWN, n, part, stamp
 from .phase14_18 import mb, memory_of, uptime_text
 from .phase23_25 import _p24_heap
-from .phase29_30 import _p29_connect_errors, _p30_dns_slow, dns_slow_windows, history_since_start
+from .phase29_30 import (
+    CONN_PER_RESOLVED_SRC, IDLE_COST_SRC, _p29_connect_errors, _p29_profile_sides, _p30_dns_slow,
+    conn_per_resolved_sides, dns_slow_windows, history_since_start, idle_cost_sides, idle_role_shares,
+)
 from .t35 import ALLOC_KEY, cache_owned_range
 
 
@@ -185,3 +190,158 @@ def _t36_dns_slow(c, th):
     return (label, limit, shown, MET if a < floor else MISSED,
             f"前の版に成功したミスで立った窓が無いので、後の平均 {a:,.0f} ms を絶対値の閾 {floor} ms と比べた "
             f"(T36.3。tokyo の 2026-11-08 までのスナップショットの平均 144〜334 ms の最大の 1.5 倍)。" + src.replace(NO_BEFORE, "", 1))
+
+
+# --- T36.2: CPU の 2 行を、機械の速さの物差しで割ってから比べる (5・25 番目の行と、表示だけの 27 番目の行) ---
+#
+# T36.0 で、毎秒決まった仕事しかしない役割の CPU まで 0.34.165 → 0.35.12 で 1.4〜1.7 倍になっていた。機械の側で
+# 同じ仕事の値段が変わると、CPU の 2 行は、コードが同じでも届かずになる。そこで前と後のそれぞれを、同じ期間の
+# **決まった仕事の値段**で割ってから比べる。
+#
+# 物差しは **`history` 役の CPU ÷ その役の標本の数** (us/秒。標本は `profile-sample` が毎秒 1 回取るので、
+# 標本の数 = スレッドが生きていた秒)。`history` は 5 秒に 1 回、窓を閉じて標本を積む決まった仕事をする
+# (`crates/metrics/src/tick.rs`)。もう 1 つの候補だった `profile-sample` 役の CPU ÷ 読んだスレッドの標本の数
+# (全役割の `threads` の標本の和) は、暇な秒には全スレッドを読まずに前の状態を積む (T32.37) ので、1 標本の値段が
+# 要求の量で動く。tokyo の 3 枚 (0.34.165 の締め・0.35.12 の締め・2026-11-12) の `/profile` を 1 時間ずつ割って
+# 比べると、時間ごとの揺れ (変動係数) は `history` が 0.086・0.018・0.029、`profile-sample` が 0.180・0.053・0.050、
+# 時間ごとの要求の数との相関は `history` が +0.65・+0.30・+0.50、`profile-sample` が +0.81・+0.84・+0.72 だった。
+# `profile-sample` の値は表示だけの行に参考で並べる。
+
+# 物差しに使う役割 (毎回決まった仕事をする裏の役割)
+MACHINE_ROLE = "history"
+# 参考に並べる役割 (毎秒、生きているスレッドの数だけ `/proc` を読む)
+SAMPLER_ROLE = "profile-sample"
+
+
+def machine_cost(p):
+    """`/profile` の JSON 1 つから、機械の速さの物差しを読む (T36.2)。
+
+    返すのは `{"us": history の us/秒, "cpu": history の cpu_us の和, "samples": history の標本の和,
+    "sampler": profile-sample の us ÷ 全役割の標本 (読めなければ None)}`。`history` の役割か標本が無ければ None。
+    役割ごとの `threads` は `[cpu_us, 標本の数, [状態ごとの数…]]` (標本 0 の役割は `0`)。
+    """
+    keys = p.get("keys") or []
+    roles = p.get("roles") or []
+    rows = p.get("samples") or []
+    if "threads" not in keys or MACHINE_ROLE not in roles:
+        return None
+    ti = keys.index("threads")
+    cpu = [0] * len(roles)
+    samples = [0] * len(roles)
+    for r in rows:
+        threads = r[ti] if ti < len(r) else None
+        for i in range(len(roles)):
+            t = threads[i] if isinstance(threads, list) and i < len(threads) else None
+            if isinstance(t, list) and len(t) >= 2:
+                cpu[i] += t[0] or 0
+                samples[i] += t[1] or 0
+    hi = roles.index(MACHINE_ROLE)
+    if not samples[hi]:
+        return None
+    total = sum(samples)
+    si = roles.index(SAMPLER_ROLE) if SAMPLER_ROLE in roles else None
+    sampler = cpu[si] / total if si is not None and total else None
+    return {"us": cpu[hi] / samples[hi], "cpu": cpu[hi], "samples": samples[hi], "sampler": sampler}
+
+
+def machine_sides(c, th):
+    """前と後の物差し (`{誰: machine_cost}`, None) か (None, 判定できない理由)。材料は CPU の 2 行と同じ `/profile`。"""
+    sides, why = _p29_profile_sides(c, th)
+    if sides is None:
+        return None, why
+    got = {}
+    for who, _, p, _ in sides:
+        m = machine_cost(p)
+        if m is None or not m["us"]:
+            return None, f"{who}の `/profile` に `{MACHINE_ROLE}` 役の CPU か標本が無い (機械の速さの物差しが読めない)"
+        got[who] = m
+    return got, None
+
+
+def machine_text(m):
+    """物差しの前後の比の文 (出どころの欄の末尾に付ける)。"""
+    b, a = m["前"]["us"], m["後"]["us"]
+    return (f"機械の速さの物差し (`{MACHINE_ROLE}` 役の CPU ÷ その役の標本の数) は前 {b:,.1f} → 後 {a:,.1f} us/秒 "
+            f"({a / b:.2f} 倍)。後の値に前 ÷ 後の物差しを掛けて、前の機械の値段に直してから比べた (T36.2)")
+
+
+def _t36_conn_per_resolved_request(c, th):
+    """T36.2: `conn` 役の CPU ÷ 名前解決に成功した要求を、**機械の速さの物差しで割ってから**前の版と比べる。
+
+    材料は phase29 の行 (`conn_per_resolved_sides`) と同じ。後の値に `前の物差し ÷ 後の物差し` を掛けて
+    前の機械の値段に直し、その比が `conn_per_resolved_factor` 倍未満なら満たした。割る前の値は表示だけ。
+    """
+    k = th["conn_per_resolved_factor"]
+    label = (f"`conn` 役の CPU ÷ **名前解決に成功した要求**を**機械の速さの物差しで割って**、前の版の {k} 倍未満 "
+             f"(T36.2。物差しは `{MACHINE_ROLE}` 役の us/秒。割る前の値と要求の全数あたりは表示だけ)")
+    limit = f"< 前 ×{k} (物差しで割って)"
+    got, srcs, why = conn_per_resolved_sides(c, th)
+    if got is None:
+        return (label, limit, "—", UNKNOWN, why)
+    m, why = machine_sides(c, th)
+    if m is None:
+        return (label, limit, "—", UNKNOWN, why)
+    a, b = got["後"], got["前"]
+    if not b["us"]:
+        return (label, limit, "—", UNKNOWN, "。".join(srcs) + "。前の `conn` 役の CPU が 0")
+    scale = m["前"]["us"] / m["後"]["us"]
+    fixed = a["us"] * scale
+    r, raw = fixed / b["us"], a["us"] / b["us"]
+    shown = (f"**{b['us']:,.0f} → {fixed:,.0f}** us/名前解決に成功した要求 (前の機械の値段に直した。**{r:.2f}** 倍)。"
+             f"表示だけ: 割る前 {b['us']:,.0f} → {a['us']:,.0f} us ({raw:.2f} 倍)、"
+             f"要求の全数あたり {b['all']:,.0f} → {a['all']:,.0f} us")
+    return (label, limit, shown, MET if r < k else MISSED,
+            CONN_PER_RESOLVED_SRC + "。".join(srcs) + "。" + machine_text(m))
+
+
+def _t36_idle_cost(c, th):
+    """T36.2: 暇なときの費用 (裏の役割の us/秒) を、**機械の速さの物差しで割ってから**前の版と比べる。
+
+    材料は phase29 の行 (`idle_cost_sides`) と同じ。後の値を前の機械の値段に直して、その比が `idle_cost_factor`
+    倍未満なら満たした。割る前の値と `profile-sample`・`cache-probe` の割合は表示だけ。
+    """
+    k = th["idle_cost_factor"]
+    label = (f"暇なときの費用: 裏の役割 (`conn`・`accept` 以外) の CPU を**機械の速さの物差しで割って**、前の版の {k} 倍未満 "
+             f"(us/秒。T36.2。物差しは `{MACHINE_ROLE}` 役の us/秒。割る前の値と `profile-sample`・`cache-probe` の割合は表示だけ)")
+    limit = f"< 前 ×{k} (物差しで割って)"
+    got, shares, srcs, why = idle_cost_sides(c, th)
+    if got is None:
+        return (label, limit, "—", UNKNOWN, why)
+    m, why = machine_sides(c, th)
+    if m is None:
+        return (label, limit, "—", UNKNOWN, why)
+    a, b = got["後"], got["前"]
+    if not b:
+        return (label, limit, "—", UNKNOWN, "。".join(srcs) + "。前の裏の役割の CPU が 0")
+    fixed = a * m["前"]["us"] / m["後"]["us"]
+    r = fixed / b
+    shown = (f"**{b:,.0f} → {fixed:,.0f}** us/秒 (前の機械の値段に直した。**{r:.2f}** 倍)。"
+             f"表示だけ: 割る前 {b:,.0f} → {a:,.0f} us/秒 ({a / b:.2f} 倍)")
+    parts = idle_role_shares(th, shares)
+    if parts:
+        shown += "・" + "・".join(parts)
+    return (label, limit, shown, MET if r < k else MISSED, IDLE_COST_SRC + "。".join(srcs) + "。" + machine_text(m))
+
+
+def _t36_machine_speed(c, th):
+    """T36.2 (表示だけ): 機械の速さの物差し (`history` 役の CPU ÷ その役の標本の数) の前後の比。
+
+    5 番目と 25 番目の行は、これで前と後を割ってから比べる。参考に `profile-sample` 役の CPU ÷ 読んだスレッドの
+    標本の数 (全役割の標本の和) も並べる (暇な秒を読み飛ばすので要求の量で動き、物差しには使わない)。
+    """
+    label = (f"機械の速さの物差し: `{MACHINE_ROLE}` 役の CPU ÷ その役の標本の数 (us/秒) の前後の比 "
+             "(T36.2。`conn` 役の CPU と暇なときの費用の行は、前と後をこれで割ってから比べる)")
+    limit = "—"
+    m, why = machine_sides(c, th)
+    if m is None:
+        return (label, limit, "—", SHOWN, why)
+    b, a = m["前"], m["後"]
+    shown = f"**{b['us']:,.1f} → {a['us']:,.1f}** us/秒 (**{a['us'] / b['us']:.2f}** 倍)"
+    if b["sampler"] and a["sampler"]:
+        shown += (f"。参考: `{SAMPLER_ROLE}` 役の CPU ÷ 読んだスレッドの標本 {b['sampler']:,.2f} → {a['sampler']:,.2f} us "
+                  f"({a['sampler'] / b['sampler']:.2f} 倍)")
+    src = "。".join(f"{who}: `{MACHINE_ROLE}` 役の `cpu_us` {v['cpu']:,.0f} us ÷ 標本 {v['samples']:,.0f}"
+                   for who, v in (("前", b), ("後", a)))
+    return (label, limit, shown, SHOWN,
+            src + f"。**閾を置かない**: 機械の側の値段の変わりを見るための行。`{MACHINE_ROLE}` は 5 秒に 1 回の決まった"
+            f"仕事をする。`{SAMPLER_ROLE}` は暇な秒に全スレッドを読まない (T32.37) ので、1 標本の値段が要求の量で動く")

@@ -3283,12 +3283,12 @@ class RulesOrder(unittest.TestCase):
         ),
         "T36": (
             "_p20_watch_host", "_p22_refresh_rate", "_p29_miss_band", "_p20_timeout",
-            "_p29_conn_per_resolved_request", "_p20_warm_max", "_t35_events", "_p17_cgroup", "_t36_heap",
+            "_t36_conn_per_resolved_request", "_p20_warm_max", "_t35_events", "_p17_cgroup", "_t36_heap",
             "_p21_request_probes", "_t36_dns_slow", "_p22_stale_retries", "_t36_connect_errors",
             "_p22_connect_errors_shown", "_p30_refresh_per_name", "_p25_silent_restarts", "_p24_connect_tail",
             "_p26_header_timeouts", "_p26_log_errors", "_p26_local_blocks", "_p26_connect_cut",
-            "_p26_rejected", "_p28_trim_works", "_p29_cgroup_cpu_shown", "_p29_idle_cost",
-            "_p26_origin_warn_per_minute",
+            "_p26_rejected", "_p28_trim_works", "_p29_cgroup_cpu_shown", "_t36_idle_cost",
+            "_p26_origin_warn_per_minute", "_t36_machine_speed",
         ),
     }
 
@@ -3509,9 +3509,9 @@ class Criteria36Heap(unittest.TestCase):
 
     def test_T36_replaces_the_heap_row_of_T35(self):
         t35, t36 = sd.RULES["T35"], sd.RULES["T36"]
-        self.assertEqual(len(t36), 26)
-        # 9 番目 (T36.1)。11・13 番目は T36.3 (`Criteria36ZeroBefore`)
-        self.assertEqual([i for i in range(26) if t35[i] is not t36[i]], [8, 10, 12])
+        self.assertEqual(len(t36), 27)
+        # 9 番目 (T36.1)。11・13 番目は T36.3 (`Criteria36ZeroBefore`)、5・25・27 番目は T36.2 (`Criteria36MachineSpeed`)
+        self.assertEqual([i for i in range(26) if t35[i] is not t36[i]], [4, 8, 10, 12, 24])
         self.assertIs(t36[8], sc._t36_heap)
         self.assertEqual(sc.T36_TH, sc.T35_TH)
         self.assertEqual(sc.criteria_name("T36"), "T36")
@@ -3582,7 +3582,7 @@ class Criteria36ZeroBefore(unittest.TestCase):
 
     def test_T36_replaces_the_two_rows_of_T35(self):
         t35, t36 = sd.RULES["T35"], sd.RULES["T36"]
-        self.assertEqual([i for i in range(26) if t35[i] is not t36[i]], [8, 10, 12])
+        self.assertEqual([i for i in range(26) if t35[i] is not t36[i]], [4, 8, 10, 12, 24])
         self.assertIs(t36[10], sc._t36_dns_slow)
         self.assertIs(t36[12], sc._t36_connect_errors)
         self.assertEqual((sc.CONNECT_ERROR_FLOOR, sc.DNS_SLOW_AVG_FLOOR_MS), (0.001, 500))
@@ -3631,6 +3631,115 @@ class Criteria36ZeroBefore(unittest.TestCase):
             self.assertEqual(self.dns_slow(a, b)[2:], sc._p30_dns_slow({"a": a, "b": b}, sc.PHASE30)[2:])
 
 
+class Criteria36MachineSpeed(unittest.TestCase):
+    """`--criteria T36` (T36.2): CPU の 2 行を、機械の速さの物差し (`history` 役の us/秒) で割ってから比べる。"""
+
+    T0 = 1_800_000_000
+    snap = Criteria29Rows.snap
+
+    def profile(self, slow=1.0, conn_us_per_ok=1000, bg_us_per_sec=900, req_per_min=30, fail_share=0.4,
+                history_us_per_sec=80, hours=24, history=True):
+        """`/profile?res=60` の作り物。`slow` 倍だけ機械が遅いと、同じ仕事の CPU がどの役割も `slow` 倍になる。
+
+        役割は accept・conn・profile-sample・other・history。`history` と `profile-sample` は 1 本 (60 標本/分)、
+        全役割の標本は 1 分に 600 (= 10 本ぶん)。裏の役割 (`conn`・`accept` 以外) の和は `bg_us_per_sec`。
+        """
+        roles = ["accept", "conn", "profile-sample", "other"] + (["history"] if history else [])
+        rows = []
+        for i in range(int(hours * 60)):
+            ok = req_per_min * (1 - fail_share)
+            conn = conn_us_per_ok * ok * slow
+            hist = history_us_per_sec * 60 * slow if history else 0
+            bg = bg_us_per_sec * 60 * slow - hist
+            threads = [[1000, 60, []], [conn, 120, []], [bg * 0.2, 60, []], [bg * 0.8, 300, []]]
+            if history:
+                threads.append([hist, 60, []])
+            rows.append([self.T0 + 60 * i, req_per_min, 1000 + conn + bg + hist, threads])
+        return {"interval_secs": 60, "keys": ["t", "requests", "cpu_us", "threads"], "roles": roles, "samples": rows}
+
+    def c(self, pa, pb):
+        return {"a": self.snap(pa, 720), "b": self.snap(pb, 720)}
+
+    def test_T36_replaces_the_two_cpu_rows_and_adds_the_yardstick(self):
+        t36 = sd.RULES["T36"]
+        self.assertIs(t36[4], sc._t36_conn_per_resolved_request)
+        self.assertIs(t36[24], sc._t36_idle_cost)
+        self.assertIs(t36[26], sc._t36_machine_speed)
+        self.assertEqual(sc.MACHINE_ROLE, "history")
+
+    def test_machine_cost_is_history_cpu_per_sample(self):
+        m = sc.machine_cost(self.profile(slow=1.5, hours=1))
+        self.assertAlmostEqual(m["us"], 120.0)
+        self.assertEqual((m["cpu"], m["samples"]), (120 * 3600, 3600))
+        # 参考の `profile-sample` は全役割の標本 (1 分に 600) で割る
+        self.assertAlmostEqual(m["sampler"], (900 - 80) * 60 * 1.5 * 0.2 / 600)
+        # 標本 0 の役割は `0` 1 文字 (`[cpu, samples, states]` でない)
+        p = self.profile(hours=1)
+        for r in p["samples"]:
+            r[3][4] = 0
+        self.assertIsNone(sc.machine_cost(p))
+        self.assertIsNone(sc.machine_cost(self.profile(hours=1, history=False)))
+        self.assertIsNone(sc.machine_cost({"keys": ["t"], "roles": ["history"], "samples": []}))
+
+    def test_a_slower_machine_alone_is_met_after_dividing(self):
+        # 0.34.165 → 0.35.12 の形: コードは同じで、機械だけが 1.36 倍遅い。割る前は 2 行とも届かず
+        c = self.c(self.profile(), self.profile(slow=1.36))
+        self.assertEqual(sc._p29_conn_per_resolved_request(c, sc.T36_TH)[3], sd.MISSED)
+        self.assertEqual(sc._p29_idle_cost(c, sc.T36_TH)[3], sd.MISSED)
+        row = sc._t36_conn_per_resolved_request(c, sc.T36_TH)
+        self.assertEqual(row[3], sd.MET, row)
+        self.assertIn("**1,000 → 1,000** us/名前解決に成功した要求 (前の機械の値段に直した。**1.00** 倍)", row[2])
+        self.assertIn("表示だけ: 割る前 1,000 → 1,360 us (1.36 倍)、要求の全数あたり 600 → 816 us", row[2])
+        self.assertIn("機械の速さの物差し (`history` 役の CPU ÷ その役の標本の数) は前 80.0 → 後 108.8 us/秒 (1.36 倍)",
+                      row[4])
+        self.assertIn("要求 43,200 本のうち名前解決の失敗 17,280 本 (40%)", row[4])
+        self.assertIn("機械の速さの物差しで割って**、前の版の 1.1 倍未満 (T36.2。", row[0])
+        self.assertEqual(row[1], "< 前 ×1.1 (物差しで割って)")
+        row = sc._t36_idle_cost(c, sc.T36_TH)
+        self.assertEqual(row[3], sd.MET, row)
+        self.assertIn("**900 → 900** us/秒 (前の機械の値段に直した。**1.00** 倍)。表示だけ: 割る前 900 → 1,224 us/秒 (1.36 倍)",
+                      row[2])
+
+    def test_more_work_on_the_same_machine_is_still_missed(self):
+        # 機械が同じで `conn` の仕事が 1.2 倍・裏の役割が 1.15 倍なら、割っても届かず
+        pa = self.profile()
+        c = self.c(pa, self.profile(conn_us_per_ok=1200, bg_us_per_sec=1035))
+        row = sc._t36_conn_per_resolved_request(c, sc.T36_TH)
+        self.assertEqual(row[3], sd.MISSED, row)
+        self.assertIn("(前の機械の値段に直した。**1.20** 倍)", row[2])
+        row = sc._t36_idle_cost(c, sc.T36_TH)
+        self.assertEqual(row[3], sd.MISSED, row)
+        self.assertIn("**900 → 1,035** us/秒", row[2])
+        # 機械が 1.36 倍遅く、そのうえ `conn` の仕事が 1.2 倍なら、割ったあとに 1.2 倍が残る
+        row = sc._t36_conn_per_resolved_request(self.c(pa, self.profile(slow=1.36, conn_us_per_ok=1200)), sc.T36_TH)
+        self.assertEqual(row[3], sd.MISSED, row)
+        self.assertIn("**1.20** 倍", row[2])
+
+    def test_the_yardstick_row_is_shown_only(self):
+        row = sc._t36_machine_speed(self.c(self.profile(), self.profile(slow=1.36)), sc.T36_TH)
+        self.assertEqual(row[3], sd.SHOWN, row)
+        self.assertEqual(row[1], "—")
+        self.assertIn("**80.0 → 108.8** us/秒 (**1.36** 倍)", row[2])
+        self.assertIn("参考: `profile-sample` 役の CPU ÷ 読んだスレッドの標本 16.40 → 22.30 us (1.36 倍)", row[2])
+        self.assertIn("前: `history` 役の `cpu_us` 6,912,000 us ÷ 標本 86,400", row[4])
+        self.assertIn("**閾を置かない**", row[4])
+
+    def test_without_the_history_role_or_long_material_it_cannot_be_judged(self):
+        pa = self.profile()
+        c = self.c(pa, self.profile(slow=1.36, history=False))
+        for rule in (sc._t36_conn_per_resolved_request, sc._t36_idle_cost):
+            row = rule(c, sc.T36_TH)
+            self.assertEqual(row[3], sd.UNKNOWN, row)
+            self.assertIn("後の `/profile` に `history` 役の CPU か標本が無い", row[4])
+        row = sc._t36_machine_speed(c, sc.T36_TH)
+        self.assertEqual((row[2], row[3]), ("—", sd.SHOWN))
+        # 12 時間に満たない材料は、phase29 の行と同じ理由で判定できず
+        short = self.c(pa, self.profile(hours=6))
+        for rule, base in ((sc._t36_conn_per_resolved_request, sc._p29_conn_per_resolved_request),
+                           (sc._t36_idle_cost, sc._p29_idle_cost)):
+            self.assertEqual(rule(short, sc.T36_TH)[2:], base(short, sc.T36_TH)[2:])
+
+
 T3599_BEFORE = os.path.join(DEPLOYED, "tokyo", "2026-11-07T214622Z-shutdown-snapshot.json")
 T3599_AFTER = os.path.join(DEPLOYED, "tokyo", "2026-11-09T215159Z-snapshot.json")
 T36_NOW = os.path.join(DEPLOYED, "tokyo", "2026-11-12T100706Z-snapshot.json")
@@ -3664,6 +3773,37 @@ class Deployed36(unittest.TestCase):
         self.assertIn("**219** ms (13 回、立った 2 件)", rows[10][2])
         self.assertEqual(rows[12][3], sd.MET, rows[12])
         self.assertIn("0.00000 (0 / 9,981) → **0.00029** (13 / 45,577)", rows[12][2])
+
+
+T36_PROFILES = [os.path.join(DEPLOYED, "tokyo", f"{t}-{k}.json")
+                for t in ("2026-11-07T135149Z", "2026-11-09T215159Z", "2026-11-12T100706Z")
+                for k in ("snapshot", "profile_res_60")]
+
+
+@unittest.skipUnless(all(os.path.exists(x) for x in T36_PROFILES),
+                     "tokyo の実データが無い (status/tokyo/ の 0.34.165・0.35.12 の締めと 2026-11-12 の `/profile`)")
+class Deployed36MachineSpeed(unittest.TestCase):
+    """T36.2 の受け入れ基準: 0.34.165・0.35.12 の締めと 2026-11-12 の 3 枚で、CPU の 2 行を物差しで割った結果。"""
+
+    def rows(self, i, j):
+        sa, pa, sb, pb = T36_PROFILES[2 * i], T36_PROFILES[2 * i + 1], T36_PROFILES[2 * j], T36_PROFILES[2 * j + 1]
+        argv = [sa, sb, "--no-dns", "--criteria", "T36", "--profile-before", pa, "--profile", pb]
+        return build(argv)["criteria"]["rows"]
+
+    def test_the_three_snapshots(self):
+        for i, j, yard, conn, idle in (
+                (0, 1, "**81.3 → 110.5** us/秒 (**1.36** 倍)", ("**1.39** 倍", sd.MISSED), ("**1.21** 倍", sd.MISSED)),
+                (1, 2, "**110.5 → 112.4** us/秒 (**1.02** 倍)", ("**0.99** 倍", sd.MET), ("**0.98** 倍", sd.MET)),
+                (0, 2, "**81.3 → 112.4** us/秒 (**1.38** 倍)", ("**1.38** 倍", sd.MISSED), ("**1.19** 倍", sd.MISSED))):
+            with self.subTest(before=i, after=j):
+                rows = self.rows(i, j)
+                self.assertEqual(len(rows), 27)
+                self.assertIn(yard, rows[26][2])
+                self.assertEqual(rows[26][3], sd.SHOWN)
+                self.assertIn(conn[0], rows[4][2])
+                self.assertEqual(rows[4][3], conn[1], rows[4])
+                self.assertIn(idle[0], rows[24][2])
+                self.assertEqual(rows[24][3], idle[1], rows[24])
 
 
 class CriteriaAliases(unittest.TestCase):

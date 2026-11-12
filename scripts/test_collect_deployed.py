@@ -272,7 +272,9 @@ class CollectBeforeZeroTest(unittest.TestCase):
         d, out, _ = self.run_collect(criteria=None)
         tail = self.judged(out)
         self.assertIn("## 6. 完了の定義に対する判定 (snapshot-diff.py --criteria T36)", tail)
-        self.assertIn("26 行の並びと材料は T35 と同じです", tail)
+        self.assertIn("1〜26 行の並びと材料は T35 と同じで、27 行目に表示だけの行を 1 つ足しました", tail)
+        # T36.2: CPU の 2 行は機械の速さの物差しで割ってから比べ、物差しの前後の比は表示だけの 27 行目
+        self.assertIn("機械の速さの物差し: `history` 役の CPU ÷ その役の標本の数 (us/秒) の前後の比", tail)
         # T36.1: heap の行はキャッシュと名前解決の表の持ち物を引いた残りで読む (このスナップショットは
         # `memory.baseline` が無いので、行そのものは phase24 と同じ読み方に戻る。下)
         self.assertIn("T35 と同じキャッシュの持ち物に加えて**名前解決の表の持ち物**", tail)
@@ -281,10 +283,11 @@ class CollectBeforeZeroTest(unittest.TestCase):
         self.assertIn("`/events` の anomaly の種類別 件/時 (`dns_slow` を含めて表示だけ。要約と同じ数え方)", tail)
         # 前回の雪像に `/profile` も `/recent` も無いので conn 役と接続のエラーの行は「判定できず」で、
         # 参考の行は無い (表示だけは phase21 の 4 行 + `/events` の行 + phase22 の接続のエラーの行 +
-        # phase29 で表示だけにした cgroup の CPU の行)
-        self.assertIn("(ほかに表示だけ 7 行。集計に数えない)", tail)
+        # phase29 で表示だけにした cgroup の CPU の行 + T36.2 の機械の速さの物差しの行)
+        self.assertIn("(ほかに表示だけ 8 行。集計に数えない)", tail)
         self.assertNotIn("参考", tail.split("\n\n")[-2])
-        self.assertEqual(tail.count("\n| "), 1 + 26)          # 表の頭 + 26 行 (T29.10・T29.15 で phase25 の 17 行に 9 行)
+        # 表の頭 + 27 行 (T29.10・T29.15 で phase25 の 17 行に 9 行、T36.2 で末尾に表示だけの 1 行)
+        self.assertEqual(tail.count("\n| "), 1 + 27)
         # `baseline` も `boot` も無い雪像なので、heap の行は phase23 の読み方に戻る
         self.assertIn("`heap_used + mmap − cache_memory` の 0 時間の雪像からの増えが 5 MB 未満", tail)
         self.assertIn("こちらが原因の無言の再起動", tail)
