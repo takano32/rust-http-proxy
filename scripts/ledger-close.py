@@ -29,7 +29,14 @@
 `結果.txt` は移した先に置く文として書く (書き換えない)。
 
 最後に `scripts/check-ledger.py` を回し、差分があれば 1 で抜ける (`--no-check` で回さない)。
-終了コード: 0 = 締めた / 1 = check-ledger が差分を出した / 2 = 使い方の誤り・台帳の形が想定と違う。
+
+**続けてクレートの版の決まり (`scripts/crate-versions.py --check`) も回し、合わなければその場で知らせて 1 で
+抜ける** (T36.25。`--no-check` で回さない)。タスク 34 の取り込みのあいだ、main の CI は版の確かめで 12 回続けて
+赤だった (本体を変える小タスクを main に入れるたびに版がずれ、そろえたのは最後)。赤のあいだはほかの失敗が隠れる。
+台帳を締めるのは小タスクを取り込んだ直後なので、ここで食い違いを出し、直す命令 (`crate-versions.py --task
+<小タスク> --fix`) を添える。根に `Cargo.toml` が無い (台帳だけの) ときは見ない。版の道具が回らなかった
+(git が無い等) ときは、そう書くだけで落とさない。
+終了コード: 0 = 締めた / 1 = check-ledger が差分を出した・版が決まりに合わない / 2 = 使い方の誤り・台帳の形が想定と違う。
 外部のパッケージは使わない (標準ライブラリだけ)。
 """
 
@@ -288,6 +295,31 @@ def check(root):
     return out.returncode
 
 
+def check_versions(root, tid=None):
+    """`crate-versions.py --check` を回し、(終了コード, 知らせる文) を返す (T36.25)。
+
+    合えば (0, "")。合わなければ (1, 道具の出力 + 直す命令)。根に `Cargo.toml` が無ければ見ない (0, "")。
+    道具が回らなかった (終了コード 2) ときは (0, 理由) で、台帳の締めは落とさない。
+    """
+    if not os.path.exists(os.path.join(root, "Cargo.toml")):
+        return 0, ""
+    tool = os.path.join(HERE, "crate-versions.py")
+    out = subprocess.run([sys.executable, tool, "-C", root, "--check"], stdout=subprocess.PIPE,
+                         stderr=subprocess.STDOUT, universal_newlines=True)
+    if out.returncode == 0:
+        return 0, ""
+    if out.returncode != 1:
+        return 0, "版の決まりは確かめられなかった (crate-versions.py --check が %d で終わった):\n%s" % (
+            out.returncode, out.stdout)
+    bad = [line for line in out.stdout.split("\n") if line.startswith("NG ")]
+    task = tid or "<取り込んだ小タスク>"
+    return 1, ("%s"
+               "版の決まりに合わない: %d 個 (このまま main に入れると CI の crate-versions.py --check が落ちる)。\n"
+               "取り込んだ main の上でそろえるなら: scripts/crate-versions.py --task %s --fix "
+               "(上げ忘れだけを %s の番号に上げる。Cargo.lock も直る) を回し、台帳と一緒にコミットする。\n"
+               % (out.stdout, len(bad), task, task))
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="台帳の締め (TASKS.md の済んだ小タスクを tasks/TNN.md へ移す。T32.26)")
     ap.add_argument("-C", dest="root", default=os.path.dirname(HERE), help="リポジトリの根 (既定はこの 1 つ上)")
@@ -331,7 +363,11 @@ def main(argv=None):
         return 2
     if a.no_check:
         return 0
-    return 1 if check(a.root) else 0
+    ledger = check(a.root)
+    code, note = check_versions(a.root, a.tid if a.finish is None else None)
+    if note:
+        sys.stdout.write(note)
+    return 1 if ledger or code else 0
 
 
 if __name__ == "__main__":

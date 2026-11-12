@@ -26,6 +26,8 @@ TOOL = os.path.join(HERE, "ledger-close.py")
 FILES = ["TASKS.md", "TODO.md", "tasks/README.md", "tasks/T31.md"]
 
 lc = _testing.load("ledger_close", "ledger-close.py")
+# 一時の git リポジトリの作り (本体・クレート・`proxy-server`) は版の道具の試験のものを使う (T36.25)
+tcv = _testing.load("test_crate_versions_fixture", "test_crate_versions.py")
 
 
 def run(*args):
@@ -267,6 +269,86 @@ class SyntheticTest(unittest.TestCase):
         # --no-check を付けなければ最後に check-ledger.py を回す (作り物の台帳は合わないので 1)
         code, out = run("-C", self.w, "--date", "2026-01-03", "T5.0", self.r)
         self.assertEqual(code, 1, out)
+
+
+class VersionCheckTest(unittest.TestCase):
+    """台帳を締めるとき、クレートの版の食い違いをその場で知らせる (T36.25)。
+
+    一時の git リポジトリは `test_crate_versions.py` と同じ作り (本体・3 クレート・`proxy-server`)。
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix="test-ledger-close-versions-")
+        self.r = tcv.Repo(self.tmp.name)
+        self.r.git("init", "-q", "-b", "main")
+        self.r.set_versions("0.1.1", alpha="0.1.1", beta="0.1.1", gamma="0.1.1", server="0.1.1")
+        for c in tcv.CRATES:
+            self.r.write("crates/%s/src/lib.rs" % c, "// %s\n" % c)
+        self.r.write("src/main.rs", "// main\n")
+        self.r.commit("T1.1")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_matching_versions_say_nothing(self):
+        self.assertEqual(lc.check_versions(self.r.path, "T2.3"), (0, ""))
+
+    def test_a_forgotten_bump_is_reported_with_the_fix_command(self):
+        # 小タスク T2.3 を取り込んだが版をそろえていない (beta の中身だけが変わった)
+        self.r.write("crates/beta/src/lib.rs", "// beta 2\n")
+        self.r.commit("T2.3 の実装 (版は上げていない)")
+        code, note = lc.check_versions(self.r.path, "T2.3")
+        self.assertEqual(code, 1, note)
+        self.assertIn("NG proxy-beta", note)
+        self.assertIn("版の決まりに合わない: 1 個", note)
+        self.assertIn("scripts/crate-versions.py --task T2.3 --fix", note)
+        # 知らせた命令で直れば、もう何も言わない
+        code_fix, out = self.r.run("--task", "T2.3", "--fix")
+        self.assertEqual(code_fix, 0, out)
+        self.assertEqual(lc.check_versions(self.r.path, "T2.3"), (0, ""))
+
+    def test_finish_has_no_number_to_suggest(self):
+        self.r.write("crates/beta/src/lib.rs", "// beta 2\n")
+        self.r.commit("版を上げ忘れた")
+        code, note = lc.check_versions(self.r.path)
+        self.assertEqual(code, 1, note)
+        self.assertIn("--task <取り込んだ小タスク> --fix", note)
+
+    def test_ledger_only_repository_is_not_checked(self):
+        with tempfile.TemporaryDirectory(prefix="test-ledger-close-noversions-") as d:
+            self.assertEqual(lc.check_versions(d, "T2.3"), (0, ""))
+
+    def test_a_tool_that_cannot_run_does_not_fail_the_close(self):
+        # Cargo.toml はあるが git のリポジトリでない: 版の道具は 2 で終わる
+        with tempfile.TemporaryDirectory(prefix="test-ledger-close-nogit-") as d:
+            with open(os.path.join(d, "Cargo.toml"), "w", encoding="utf-8") as f:
+                f.write(self.r.read("Cargo.toml"))
+            code, note = lc.check_versions(d, "T2.3")
+            self.assertEqual(code, 0, note)
+            self.assertIn("確かめられなかった", note)
+
+    def test_main_returns_1_and_prints_the_note(self):
+        # 台帳の作り物 (SyntheticTest と同じ) を置いたうえで版を食い違わせ、--no-check なしで締める
+        write(self.r.path, "TASKS.md", TASKS)
+        write(self.r.path, "TODO.md", TODO)
+        write(self.r.path, "tasks/README.md", README)
+        write(self.r.path, "tasks/T4.md", "# タスク 4 — 記録\n")
+        self.r.write("crates/beta/src/lib.rs", "// beta 2\n")
+        self.r.commit("T5.0 の実装 (版は上げていない)")
+        res = os.path.join(self.r.path, "r.txt")
+        with open(res, "w", encoding="utf-8") as f:
+            f.write("  - 結果 (2026-01-03、`abc1234`): 直した。\n")
+        code, out = run("-C", self.r.path, "--date", "2026-01-03", "T5.0", res)
+        self.assertEqual(code, 1, out)
+        self.assertIn("scripts/crate-versions.py --task T5.0 --fix", out)
+        # --no-check なら版も見ない
+        self.r.git("checkout", "-q", "--", ".")
+        self.r.git("clean", "-qfd")
+        with open(res, "w", encoding="utf-8") as f:
+            f.write("  - 結果 (2026-01-03、`abc1234`): 直した。\n")
+        code, out = run("-C", self.r.path, "--no-check", "--date", "2026-01-03", "T5.0", res)
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("crate-versions.py --task", out)
 
 
 class HelpersTest(unittest.TestCase):
