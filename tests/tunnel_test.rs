@@ -318,6 +318,10 @@ fn test_integration_reused_relay_pipe_never_leaks_bytes() {
 /// 2 つ試す: **閉じたポート** (即 `ECONNREFUSED`) は `refused`、
 /// **TEST-NET-1** (`192.0.2.1`、RFC 5737 の文書用アドレスで応答しない) は `timeout`。
 /// どちらもホスト別の行に 1 件ずつ乗り、ホストが違うので取り違えない。
+///
+/// 応答しない相手を作るのに `sys::listen_socket` (Linux だけ) を使うので、Linux だけで回す
+/// (T36.21。ほかのターゲットの `cargo check --all-targets` を通すため)。
+#[cfg(target_os = "linux")]
 #[test]
 fn test_integration_failed_connects_land_in_errors_by_cause() {
     // 立てたそばから閉じたポート番号 (誰も待ち受けていないことが確かめられる)

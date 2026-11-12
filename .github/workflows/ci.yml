@@ -103,6 +103,24 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+  # Linux 以外の版 (`tunnel/portable.rs`・`#[cfg(not(target_os = "linux"))]` の枝) が組めるかを見る (T36.21)。
+  # デプロイ先は Linux だけなので、ほかのターゲットはふだんコンパイルされず、黙って壊れる
+  # (T34.9・T34.14 で動かしたときは確かめられなかった)。std だけで C のコードも無いので、
+  # Linux の runner に macOS の std を足せば `cargo check` まで回る (リンカーは要らない)。
+  # **警告では落とさない**: Linux でしか使わない関数が「使っていない」と出る (直すのは別の小タスク)。
+  # キャッシュは張らない (ターゲットが違うので check の target と共有できない)
+  check-other-target:
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Rust (stable) with the aarch64-apple-darwin std
+        run: |
+          rustup toolchain install stable --profile minimal --target aarch64-apple-darwin
+          rustup default stable
+      - run: cargo check --workspace --all-targets --target aarch64-apple-darwin
+
   # 動作環境 (メモリの小さいコンテナ) でビルドできることを守る (§0 の関門)。
   # 120 MB の cgroup (systemd-run --scope -p MemoryMax=120M) の中で実際に
   # リリースビルドを回し、rustc が OOM killer に落とされたら失敗する。

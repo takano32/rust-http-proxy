@@ -1271,7 +1271,7 @@ push と Pull Request で `.github/workflows/ci.yml` が回ります。`check` �
 `clippy -D warnings` → **doc コメントの切れたリンク** (`RUSTDOCFLAGS="-D warnings -A rustdoc::private_intra_doc_links" cargo doc --workspace --no-deps --document-private-items`。T36.20) → **文書とコードの整合** (`scripts/check-docs.sh`) → `scripts/` の単体テスト →
 **クレートの版の決まり** (`scripts/crate-versions.py --check`) → **`shellcheck scripts/*.sh scripts/mx`** (切った指摘とその理由は `scripts/.shellcheckrc`) → `cargo test --workspace` →
 リリースビルド → 短いベンチ、の順です。**120 MB の cgroup でビルドが通るか** (`scripts/build-memory.sh 120`) は
-別のジョブ `build-memory` で並べて回します。それと並べてもう 1 つ、`deployed-like-snapshot` が
+別のジョブ `build-memory` で並べて回します。**Linux 以外の版が組めるか**は `check-other-target` が `cargo check --workspace --all-targets --target aarch64-apple-darwin` で見ます (T36.21。警告では落としません)。それと並べてもう 1 つ、`deployed-like-snapshot` が
 **デプロイ先に似せた条件** (上の `scripts/deployed-like.sh`) を runner の中に作り、`scripts/ci-snapshot.sh` で
 `--only connect-multi` と forward を 10 秒ずつ回して `/snapshot` を**成果物 (artifact) の `snapshot.json`**
 に残します。見張るのは**形の退行だけ**で、数字の絶対値は比べません (runner は世代も負荷も毎回違うため):
