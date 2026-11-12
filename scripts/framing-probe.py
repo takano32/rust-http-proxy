@@ -251,9 +251,21 @@ def connect_cases(echo_port):
 
 
 class _Origin(socketserver.StreamRequestHandler):
-    """受け取ったヘッダーと本文を覚えておくだけのオリジン。"""
+    """受け取ったヘッダーと本文を覚えておくだけのオリジン。
+
+    いま受けている本数を `server.active` に数える (T36.5。400 のあとに記録が済むのを待つため)。
+    """
 
     def handle(self):
+        with self.server.lock:
+            self.server.active += 1
+        try:
+            self._handle()
+        finally:
+            with self.server.lock:
+                self.server.active -= 1
+
+    def _handle(self):
         try:
             raw = b""
             while b"\r\n\r\n" not in raw:
@@ -332,6 +344,7 @@ class _Threaded(socketserver.ThreadingTCPServer):
     allow_reuse_address = True
     daemon_threads = True
     seen: list
+    active: int
 
 
 def _send(port, raw, wait=3.0):
@@ -392,6 +405,29 @@ def summarize(failed):
 
 # ---------------------------------------------------------------- 実機で流す (配線)
 
+# 400 を受け取ったあと、オリジンの記録を待つ時間 (T36.5)。プロキシは本文の途中で断ると (壊れた chunk)、400 を
+# 返してからオリジンへの接続を閉じる。オリジンはその閉じで本文を読み終えて記録するので、400 を受け取った直後に
+# 記録を読むと、届いた要求の行が回ごとに入れ替わっていた (T34.136 で見つけた)。最初に `SETTLE_FIRST` 秒待ち
+# (オリジンが受け付けるまで)、そのあと受けている本数が 0 になるまで最大 `SETTLE_LIMIT` 秒待つ
+SETTLE_FIRST = 0.1
+SETTLE_LIMIT = 2.0
+
+
+def settle(origin, got, sleep=time.sleep, clock=time.monotonic):
+    """`got` が 400 なら、オリジンが受けている要求を記録し終えるまで待つ (T36.5)。待った秒を返す。
+
+    400 以外は待たない (200 はオリジンの応答を受け取った後なので記録は済んでいる。ほかの断りは
+    オリジンへ流さない)。
+    """
+    if got != 400:
+        return 0.0
+    t0 = clock()
+    sleep(SETTLE_FIRST)
+    while origin.active and clock() - t0 < SETTLE_LIMIT:
+        sleep(0.01)
+    return clock() - t0
+
+
 def probe_framing(port, origin, timeout, emit=print):
     """`cases` の節を流して 1 行ずつ `emit` し、外れの本数を返す。"""
     emit(heading("要求", "オリジンに届いたヘッダー"))
@@ -399,6 +435,7 @@ def probe_framing(port, origin, timeout, emit=print):
     for name, raw, want, may_reach in cases(port + 1):
         before = len(origin.seen)
         got = _status(_send(port, raw, timeout))
+        settle(origin, got)
         reached = len(origin.seen) > before
         headers = origin.seen[-1]["headers"] if reached else []
         ok = judge(got, want, may_reach, reached)
@@ -417,6 +454,7 @@ def probe_t27(port, origin, timeout, emit=print):
     for name, raw, want, may_reach, check in t27_cases(port + 1) + t32_cases(port + 1):
         before = len(origin.seen)
         got = _status(_send(port, raw, timeout))
+        settle(origin, got)
         reached = len(origin.seen) > before
         seen = origin.seen[-1] if reached else None
         ok = judge(got, want, may_reach, reached, check, seen)
@@ -450,6 +488,8 @@ def start_servers(port):
     """オリジン (port + 1) と CONNECT のトンネル先 (port + 2。受け取ったバイトをそのまま返す) を起こす。"""
     origin = _Threaded(("127.0.0.1", port + 1), _Origin)
     origin.seen = []  # type: ignore[attr-defined]
+    origin.active = 0  # type: ignore[attr-defined]
+    origin.lock = threading.Lock()  # type: ignore[attr-defined]
     threading.Thread(target=origin.serve_forever, daemon=True).start()
     echo = _Threaded(("127.0.0.1", port + 2), _Echo)
     echo.seen = []  # type: ignore[attr-defined]

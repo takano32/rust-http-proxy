@@ -114,5 +114,45 @@ class Status(unittest.TestCase):
         self.assertIsNone(fp._status(b"garbage"))
 
 
+class Settle(unittest.TestCase):
+    """400 のあと、オリジンが受けている要求を記録し終えるまで待つ (T36.5)。時計は作り物。"""
+
+    class Origin:
+        def __init__(self, busy_ticks):
+            self.ticks = busy_ticks   # `active` が 0 になるまでの sleep の回数
+
+        @property
+        def active(self):
+            return 1 if self.ticks > 0 else 0
+
+    def wait(self, origin, got):
+        now = [0.0]
+        slept = []
+
+        def sleep(s):
+            slept.append(s)
+            now[0] += s
+            origin.ticks -= 1
+        waited = fp.settle(origin, got, sleep=sleep, clock=lambda: now[0])
+        return waited, slept
+
+    def test_other_statuses_do_not_wait(self):
+        for got in (200, 100, 502, 505, None):
+            self.assertEqual(self.wait(self.Origin(5), got), (0.0, []), got)
+
+    def test_a_400_waits_first_and_then_until_the_origin_is_idle(self):
+        waited, slept = self.wait(self.Origin(4), 400)
+        # 最初の 0.1 秒のあと、受けている本数が 0 になるまで 0.01 秒ずつ
+        self.assertEqual(slept, [fp.SETTLE_FIRST, 0.01, 0.01, 0.01])
+        self.assertAlmostEqual(waited, 0.13)
+        waited, slept = self.wait(self.Origin(0), 400)
+        self.assertEqual(slept, [fp.SETTLE_FIRST])
+
+    def test_a_busy_origin_is_waited_for_at_most_the_limit(self):
+        waited, _ = self.wait(self.Origin(10 ** 6), 400)
+        self.assertGreaterEqual(waited, fp.SETTLE_LIMIT)
+        self.assertLess(waited, fp.SETTLE_LIMIT + 0.02)
+
+
 if __name__ == "__main__":
     unittest.main()
