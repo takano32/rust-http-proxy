@@ -162,7 +162,7 @@ mod linux {
     /// 預かっている 1 件。
     struct Entry {
         what: Parked,
-        /// `deadlines` から引くために覚えておく (両者は必ず同じ集合に保つ)
+        /// `order` から引くために覚えておく (両者は必ず同じ集合に保つ)
         deadline: Instant,
     }
 
@@ -174,12 +174,61 @@ mod linux {
         /// 預かっているもの。鍵は通し番号: **トンネルは記述子が 2 本ある**ので
         /// 記述子そのものは鍵にできない (2 本から同じ 1 件を引けること)
         entries: HashMap<u64, Entry>,
-        /// (期限, 鍵)。期限の早い順に取り出す。`entries` と鍵の集合は常に一致する
-        deadlines: BTreeSet<(Instant, u64)>,
+        /// 期限の早い順 (全部と、トンネルだけ)。`entries` と鍵の集合は常に一致する
+        order: Order,
         /// 次に配る鍵
         next_key: u64,
-        /// そのうちトンネルの数 (`/status` の parked_tunnels)
-        tunnels: usize,
+    }
+
+    /// 預かりの期限の順 (T36.9)。
+    ///
+    /// `all` は全部の (期限, 鍵) で、期限切れと `epoll_wait` の待ち時間が先頭を見る。`tunnels` は
+    /// そのうちトンネルだけの写しで、[`IdleWatch::evict_oldest_tunnel`] が先頭を見る。前は `all` を
+    /// 先頭から総当たりしてトンネルを探していたので、預かりが HTTP ばかりだと鍵を握ったまま O(n) だった
+    /// (上限に当たった accept のたびに走る。T34.0 のレビュー)。トンネルの数 (`/status` の
+    /// `parked_tunnels`) も `tunnels` の長さで読む。
+    #[derive(Default)]
+    struct Order {
+        all: BTreeSet<(Instant, u64)>,
+        tunnels: BTreeSet<(Instant, u64)>,
+    }
+
+    impl Order {
+        /// 1 件足す。
+        fn insert(&mut self, deadline: Instant, key: u64, tunnel: bool) {
+            self.all.insert((deadline, key));
+            if tunnel {
+                self.tunnels.insert((deadline, key));
+            }
+        }
+
+        /// 1 件消す (`tunnel` は足したときと同じ値を渡す)。
+        fn remove(&mut self, deadline: Instant, key: u64, tunnel: bool) {
+            self.all.remove(&(deadline, key));
+            if tunnel {
+                self.tunnels.remove(&(deadline, key));
+            }
+        }
+
+        /// 期限の一番早い 1 件。
+        fn first(&self) -> Option<(Instant, u64)> {
+            self.all.first().copied()
+        }
+
+        /// 期限の一番早いトンネル (本数に依らず O(log n))。
+        fn oldest_tunnel(&self) -> Option<(Instant, u64)> {
+            self.tunnels.first().copied()
+        }
+
+        /// 預かっているトンネルの数。
+        fn tunnels(&self) -> usize {
+            self.tunnels.len()
+        }
+
+        fn clear(&mut self) {
+            self.all.clear();
+            self.tunnels.clear();
+        }
     }
 
     /// アイドル接続の預かり所。プロセス全体で 1 つ持つ。
@@ -222,9 +271,8 @@ mod linux {
                 inner: Mutex::new(Inner {
                     alive: true,
                     entries: HashMap::new(),
-                    deadlines: BTreeSet::new(),
+                    order: Order::default(),
                     next_key: 1,
-                    tunnels: 0,
                 }),
                 workers,
                 metrics: Arc::clone(&metrics),
@@ -281,12 +329,9 @@ mod linux {
                 log_warn!(Some(what.id()), "cannot park this connection: {}", e);
                 return Err(what);
             }
-            if what.is_tunnel() {
-                inner.tunnels += 1;
-            }
             // いまの先頭より早い (預かりが 0 も含む) なら、眠っている監視スレッドを起こす
-            let earliest = inner.deadlines.first().is_none_or(|&(d, _)| deadline < d);
-            inner.deadlines.insert((deadline, key));
+            let earliest = inner.order.first().is_none_or(|(d, _)| deadline < d);
+            inner.order.insert(deadline, key, what.is_tunnel());
             // `/connections` に「預かり所にいる」と書く (T13.4)
             what.set_state(ConnState::Parked);
             // 受け持つスレッドが居なくなった (T15.0 (4))
@@ -330,7 +375,7 @@ mod linux {
                 .store(inner.entries.len(), Ordering::Relaxed);
             self.metrics
                 .parked_tunnels
-                .store(inner.tunnels, Ordering::Relaxed);
+                .store(inner.order.tunnels(), Ordering::Relaxed);
         }
 
         /// 事象が来たものを引き取る。`entries` に無ければ `None`。
@@ -342,12 +387,11 @@ mod linux {
             let mut inner = self.inner.locked();
             let entry = inner.entries.remove(&key)?;
             // 期限も必ず一緒に消す。残すと期限の集合だけが際限なく育つ
-            inner.deadlines.remove(&(entry.deadline, key));
+            inner
+                .order
+                .remove(entry.deadline, key, entry.what.is_tunnel());
             let (fds, n) = entry.what.fds();
             self.del_fds(&fds[..n]);
-            if entry.what.is_tunnel() {
-                inner.tunnels -= 1;
-            }
             // 預かっていた時間を足す (`/recent`。T14.4)
             entry.what.on_unpark();
             self.publish(&inner);
@@ -373,22 +417,14 @@ mod linux {
             let evicted = {
                 let mut guard = self.inner.locked();
                 let inner = &mut *guard;
-                // 期限の早い順に見て、最初に見つかったトンネルを取る
-                let mut oldest = None;
-                for &(deadline, key) in inner.deadlines.iter() {
-                    if inner.entries.get(&key).is_some_and(|e| e.what.is_tunnel()) {
-                        oldest = Some((deadline, key));
-                        break;
-                    }
-                }
-                let Some((deadline, key)) = oldest else {
+                // トンネルだけの期限の順の先頭を取る (預かりの本数に依らない。T36.9)
+                let Some((deadline, key)) = inner.order.oldest_tunnel() else {
                     return false;
                 };
-                inner.deadlines.remove(&(deadline, key));
+                inner.order.remove(deadline, key, true);
                 let entry = inner.entries.remove(&key).expect("just found");
                 let (fds, n) = entry.what.fds();
                 self.del_fds(&fds[..n]);
-                inner.tunnels -= 1;
                 // 預かっていた時間と「追い出された」という理由を残す (`/recent`。T14.4)
                 entry.what.on_unpark();
                 entry.what.set_close(CloseReason::Evicted);
@@ -411,19 +447,21 @@ mod linux {
             let mut due = Vec::new();
             let mut inner = self.inner.locked();
             while due.len() < EXPIRE_BATCH {
-                let Some(&(deadline, _)) = inner.deadlines.first() else {
+                let Some((deadline, key)) = inner.order.first() else {
                     break;
                 };
                 if deadline > now {
                     break;
                 }
-                let (_, key) = inner.deadlines.pop_first().expect("just peeked");
-                if let Some(entry) = inner.entries.remove(&key) {
+                let Some(entry) = inner.entries.remove(&key) else {
+                    // 集合は常に一致するので来ないが、来たら期限だけ消して先へ進む (止まらないように)
+                    inner.order.remove(deadline, key, true);
+                    continue;
+                };
+                inner.order.remove(deadline, key, entry.what.is_tunnel());
+                {
                     let (fds, n) = entry.what.fds();
                     self.del_fds(&fds[..n]);
-                    if entry.what.is_tunnel() {
-                        inner.tunnels -= 1;
-                    }
                     // 期限切れで閉じる (`/recent` の理由と預かっていた時間。T14.4)
                     entry.what.on_unpark();
                     entry.what.set_close(entry.what.expired_reason());
@@ -442,8 +480,8 @@ mod linux {
         /// 起きて空回りする)。
         fn next_timeout(&self, now: Instant) -> i32 {
             let inner = self.inner.locked();
-            match inner.deadlines.first() {
-                Some(&(deadline, _)) => {
+            match inner.order.first() {
+                Some((deadline, _)) => {
                     let us = deadline.saturating_duration_since(now).as_micros();
                     (us.div_ceil(1000).min(i32::MAX as u128)) as i32
                 }
@@ -464,8 +502,7 @@ mod linux {
                     conn.finish(CloseReason::Shutdown);
                 }
             }
-            inner.deadlines.clear();
-            inner.tunnels = 0;
+            inner.order.clear();
             self.publish(&inner);
             self.metrics
                 .park_watcher_alive
@@ -625,6 +662,74 @@ mod linux {
                 }
                 Parked::Tunnel(idle) => watch.expire_tunnel(idle),
             }
+        }
+    }
+
+    /// 期限の順 (`Order`) の単体試験 (T36.9)。預かりの中身 (`Conn` / `tunnel::Idle`) は要らない。
+    #[cfg(test)]
+    mod order_tests {
+        use super::Order;
+        use std::time::{Duration, Instant};
+
+        /// 一番古いトンネルは、HTTP がどれだけ前に並んでいても選ばれ、消せば次のトンネルになる。
+        #[test]
+        fn the_oldest_tunnel_is_found_past_any_number_of_http_entries() {
+            let t0 = Instant::now();
+            let mut o = Order::default();
+            for key in 1..=239u64 {
+                o.insert(t0 + Duration::from_millis(key), key, false);
+            }
+            o.insert(t0 + Duration::from_secs(1), 240, true);
+            o.insert(t0 + Duration::from_secs(2), 241, true);
+            assert_eq!(o.tunnels(), 2);
+            assert_eq!(o.first(), Some((t0 + Duration::from_millis(1), 1)));
+            let oldest = o.oldest_tunnel().unwrap();
+            assert_eq!(oldest, (t0 + Duration::from_secs(1), 240));
+            o.remove(oldest.0, oldest.1, true);
+            assert_eq!(o.oldest_tunnel(), Some((t0 + Duration::from_secs(2), 241)));
+            assert_eq!(o.tunnels(), 1);
+            // HTTP を消してもトンネルの順は動かない
+            o.remove(t0 + Duration::from_millis(1), 1, false);
+            assert_eq!(o.tunnels(), 1);
+            assert_eq!(o.first(), Some((t0 + Duration::from_millis(2), 2)));
+            o.clear();
+            assert_eq!((o.first(), o.oldest_tunnel(), o.tunnels()), (None, None, 0));
+        }
+
+        /// 追い出し 1 回 (一番古いトンネルを探して消し、預け直す) の時間は預かりの本数に比例しない。
+        /// HTTP 239 本の後ろにトンネル 1 本 (前の総当たりの一番悪い形) と、HTTP 1 本の後ろにトンネル
+        /// 1 本を比べる。総当たりなら 120 倍ほど開く。木の深さぶんしか開かないので 10 倍未満で見る。
+        #[test]
+        fn evicting_does_not_scale_with_the_parked_count() {
+            fn per_evict(http: u64) -> Duration {
+                let t0 = Instant::now();
+                let mut o = Order::default();
+                for key in 1..=http {
+                    o.insert(t0 + Duration::from_millis(key), key, false);
+                }
+                let tunnel = (t0 + Duration::from_secs(3600), http + 1);
+                o.insert(tunnel.0, tunnel.1, true);
+                const N: u32 = 20_000;
+                // 機械の揺れを除くため 5 回測って一番速い回
+                (0..5)
+                    .map(|_| {
+                        let started = Instant::now();
+                        for _ in 0..N {
+                            let (d, k) = std::hint::black_box(o.oldest_tunnel()).unwrap();
+                            o.remove(d, k, true);
+                            o.insert(d, k, true);
+                        }
+                        started.elapsed() / N
+                    })
+                    .min()
+                    .unwrap()
+            }
+            let few = per_evict(1);
+            let many = per_evict(239);
+            assert!(
+                many < few * 10,
+                "預かり 240 本で {many:?}、2 本で {few:?} (本数に比例している)"
+            );
         }
     }
 }
