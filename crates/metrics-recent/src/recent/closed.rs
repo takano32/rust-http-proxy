@@ -11,7 +11,7 @@ use super::RecentEntry;
 
 /// 閉じた理由の数 ([`CLOSE_REASON_NAMES`] と同じ。T14.6)。
 ///
-/// [`CloseReason`] は 9 種類で、`Error` だけは原因を連れている。分布では
+/// [`CloseReason`](super::CloseReason) は 9 種類で、`Error` だけは原因を連れている。分布では
 /// **`error:*` を 1 つにまとめる** (原因別は `/status` の `errors_by_cause` と
 /// `/errors` にあるので、ここで 8 + 8 = 15 列に増やさない)。**`client_dead` も
 /// `shutdown` に畳む** (T14.52。標本の余白の都合で列は 8 つのまま)。
@@ -59,7 +59,7 @@ pub(crate) const BYTE_BUCKETS: usize = BYTE_BOUNDS.len() + 1;
 
 /// 「その窓に閉じた接続」の分布 (T14.6)。**累計ではない。**
 ///
-/// 足すのは [`crate::metrics::Metrics::record_closed`] = 接続の終了で 1 回だけで、
+/// 足すのは `proxy_metrics_core::metrics::Metrics::record_closed` = 接続の終了で 1 回だけで、
 /// **既に鍵の内側**なので原子操作もシステムコールも増えない。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ClosedCounts {

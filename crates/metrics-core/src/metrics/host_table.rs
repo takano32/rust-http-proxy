@@ -190,7 +190,7 @@ impl Metrics {
         crate::quantiles::to_json(&c, &f, &w)
     }
 
-    /// 直近の標本以降の合計を読み、0 に戻す ([`crate::history::Sample::take`] だけが呼ぶ)。
+    /// 直近の標本以降の合計を読み、0 に戻す (`proxy_metrics::history::take_sample` だけが呼ぶ)。
     pub fn take_interval(&self) -> Interval {
         let mut hosts = self.hosts.locked();
         std::mem::take(&mut hosts.interval)

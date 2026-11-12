@@ -111,7 +111,7 @@ pub(in crate::endpoints) fn snapshot(ep: &Endpoint<'_>) -> (u16, &'static str, S
     snapshot_with(ep, None, MAX_SNAPSHOT)
 }
 
-/// [`snapshot`] の本体。`recent_max` が `Some(上限)` なら **`recent` を部の 256 KiB ([`MAX_BODY`]) で
+/// [`snapshot`](fn@snapshot) の本体。`recent_max` が `Some(上限)` なら **`recent` を部の 256 KiB ([`MAX_BODY`]) で
 /// 切らずに、その上限まで入れる** (停止の雪像は [`MAX_SNAPSHOT`] = 2,000 件を全部。T28.20。
 /// 日次の雪像は `snapshots::DAILY_RECENT_MAX` = 1 MiB。T28.46)。`None` はいつもの `/snapshot`。
 ///

@@ -16,7 +16,7 @@ use std::net::IpAddr;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 
-/// [`resolve_host`] に「serve-stale で返した期限切れの答えか」の印 (3 つ目) を添えて返す (T21.3)。
+/// [`resolve_host`](super::resolve_host) に「serve-stale で返した期限切れの答えか」の印 (3 つ目) を添えて返す (T21.3)。
 /// 印が立つのは serve-stale の回だけで、IP リテラル・TTL 0・負のキャッシュ・引き直しの失敗で
 /// 凌いだ古い答え (`stale_served`) では立たない。
 pub fn resolve_host_marked(host: &str, port: u16) -> io::Result<(Vec<IpAddr>, Option<bool>, bool)> {

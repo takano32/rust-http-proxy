@@ -6,11 +6,11 @@
 //!
 //! ここに置くのは**固定長のリング**で、統計の `.rrd` には書かない。代わりに
 //! **隣の固定長ファイル `$HOME/.rust-http-proxy.recent`** に history スレッドが
-//! 5 秒ごとに追記し、次の起動で読み戻す ([`crate::persist_recent`]。T14.9)。
+//! 5 秒ごとに追記し、次の起動で読み戻す (`proxy_metrics::persist_recent`。T14.9)。
 //! 各リングが持つ「まだ書いていない位置」の印がその口で、**接続の経路は今までどおり
 //! メモリのリングに書くだけ**。書く場所は 2 つだけ:
 //!
-//! - [`ErrorRing`]: エラーを 1 件返したときだけ ([`Metrics::record_error`] 経由)。
+//! - [`ErrorRing`]: エラーを 1 件返したときだけ (`Metrics::record_error` 経由)。
 //!   **成功の熱い経路は 1 命令も通らない。**
 //! - [`ConnTable`]: いまの接続の一覧 (`/connections`)。**表の鍵を取るのは
 //!   接続の開始と終了の 2 回だけ**で、状態と転送バイトは [`ConnSlot`] の原子に書く
@@ -38,8 +38,6 @@
 //! だけ**を置く。
 //! 行を動かしただけで中身は変えていない。`pub use` で出し直すので、外からの `recent::…` の
 //! 経路は変わらない。
-//!
-//! [`Metrics::record_error`]: crate::metrics::Metrics::record_error
 
 mod burst;
 mod clip;
@@ -71,7 +69,7 @@ pub const MAX_RECENT_TARGET: usize = 48;
 /// 個票に収める SNI の長さ (バイト。T14.38)。
 ///
 /// 覗いた ClientHello の `server_name` はここで切る (DNS の名前の上限は 255 B だが、
-/// 実際の名前は 10〜40 B)。個票のファイル ([`crate::persist_recent`]) の欄も
+/// 実際の名前は 10〜40 B)。個票のファイル (`proxy_metrics::persist_recent`) の欄も
 /// この長さ + 4 B で取ってある。
 pub const MAX_SNI: usize = 64;
 

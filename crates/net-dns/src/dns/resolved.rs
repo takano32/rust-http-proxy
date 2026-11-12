@@ -19,7 +19,7 @@ pub struct Resolved<'a> {
     /// このホストで最後に勝った族 (T12.1)。同じ鍵取りで一緒に受け取っておく
     preferred: Option<bool>,
     /// serve-stale で返した期限切れの答えか (T21.3)。立っていれば、接続側は繋げなかったとき
-    /// 1 回だけ引き直して繋ぎ直す ([`relookup_after_stale`])
+    /// 1 回だけ引き直して繋ぎ直す ([`relookup_after_stale`](super::relookup_after_stale))
     stale: bool,
 }
 
@@ -71,7 +71,7 @@ pub fn resolve(addr_str: &str) -> io::Result<Vec<SocketAddr>> {
 }
 
 /// [`resolve`] に「最後に勝った族」の記憶を添えて返す (T12.1)。**表を引くのは 1 回だけ**
-/// にするためで、接続側が別に [`preferred_family`] を呼ぶと鍵を 2 回取ることになる。
+/// にするためで、接続側が別に [`preferred_family`](super::preferred_family) を呼ぶと鍵を 2 回取ることになる。
 pub(crate) fn resolve_with_pref(addr_str: &str) -> io::Result<(Vec<SocketAddr>, Option<bool>)> {
     resolve_with_pref_marked(addr_str).map(|(addrs, pref, _)| (addrs, pref))
 }

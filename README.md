@@ -1268,7 +1268,7 @@ taskset -c 4-7 cargo run --release --bin bench -- --only syscall-cost --seconds 
 ### CI (GitHub Actions)
 
 push と Pull Request で `.github/workflows/ci.yml` が回ります。`check` は `cargo fmt --check` →
-`clippy -D warnings` → **文書とコードの整合** (`scripts/check-docs.sh`) → `scripts/` の単体テスト →
+`clippy -D warnings` → **doc コメントの切れたリンク** (`RUSTDOCFLAGS="-D warnings -A rustdoc::private_intra_doc_links" cargo doc --workspace --no-deps --document-private-items`。T36.20) → **文書とコードの整合** (`scripts/check-docs.sh`) → `scripts/` の単体テスト →
 **クレートの版の決まり** (`scripts/crate-versions.py --check`) → **`shellcheck scripts/*.sh scripts/mx`** (切った指摘とその理由は `scripts/.shellcheckrc`) → `cargo test --workspace` →
 リリースビルド → 短いベンチ、の順です。**120 MB の cgroup でビルドが通るか** (`scripts/build-memory.sh 120`) は
 別のジョブ `build-memory` で並べて回します。それと並べてもう 1 つ、`deployed-like-snapshot` が

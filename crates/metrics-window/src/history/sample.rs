@@ -45,7 +45,7 @@ pub struct Sample {
     /// 版 2 で書かれた古いレコードはこの位置がゼロ埋めなので 0 として読み戻る
     pub evicted_idle: u64,
     /// その区間の**利用者が待つ時間** (`queue + client_read + dns + connect` の ms。
-    /// CONNECT だけ。T15.0 (2) が [`crate::metrics::Interval::wait`] を埋め、
+    /// CONNECT だけ。T15.0 (2) が `proxy_metrics_core::metrics::Interval::wait` を埋め、
     /// T15.0 (10) がここに列として出した)。
     ///
     /// [`Self::connect`] は `open()` の入口 (要求行を読んだ後) からしか測らないので、

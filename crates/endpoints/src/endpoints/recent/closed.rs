@@ -106,7 +106,7 @@ pub(in crate::endpoints) fn recent(
 }
 
 /// [`recent`] の本体。`limit` は応答の上限 (ふだんは [`MAX_BODY`]、停止の雪像だけ
-/// [`MAX_SNAPSHOT`]。T28.20)。
+/// [`MAX_SNAPSHOT`](super::snapshot::MAX_SNAPSHOT)。T28.20)。
 pub(super) fn recent_within(
     ep: &Endpoint<'_>,
     query: Option<&str>,

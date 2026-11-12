@@ -256,7 +256,7 @@ impl ConnTable {
     /// **直近の周期に `min_delta` 回以上空回りした接続**を、多い順に `max` 本まで
     /// (と、閾を越えた接続の総数)。T15.0 (6)。
     ///
-    /// **呼ぶのは history スレッドの周期だけ** ([`crate::anomaly`] の判定) で、接続の
+    /// **呼ぶのは history スレッドの周期だけ** (`proxy_metrics_watch::anomaly` の判定) で、接続の
     /// 経路には 1 命令も増えない。読むのは [`ConnTable::update_rates`] が同じ周期に
     /// 書いた値なので、`update_rates` の**あと**に呼ぶこと。
     /// 平常時は 1 本も越えないので、確保もほとんど起きない。

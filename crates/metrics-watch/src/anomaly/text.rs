@@ -50,7 +50,7 @@ pub(super) struct Facts<'a> {
     pub(super) spinning: &'a [SpinningConn],
     pub(super) spinning_total: usize,
     pub(super) spin_secs: u64,
-    /// `dns_slow` の閾 (ms。[`dns_miss_limit`])
+    /// `dns_slow` の閾 (ms。[`dns_miss_limit`](super::detector::dns_miss_limit))
     pub(super) dns_limit: f64,
 }
 

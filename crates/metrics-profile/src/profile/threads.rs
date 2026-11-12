@@ -166,8 +166,8 @@ pub const TOP_THREADS: usize = 8;
 /// **どのスレッドが回っているか**が出ない。空回り (T15.5) や確立の尾を追うときは
 /// tid まで要るので、CPU の多い順に [`TOP_THREADS`] 本だけ残す。
 ///
-/// **`String` は入れない** ([`Sample`] が `Copy` を失うと `Profile::roll` の `.copied()` と
-/// [`Profile::recent_totals`] が壊れる)。名前は `/proc` の `comm` と同じ**固定長 16 バイト**
+/// **`String` は入れない** ([`Sample`](super::Sample) が `Copy` を失うと `Profile::roll` の `.copied()` と
+/// [`Profile::recent_totals`](super::Profile::recent_totals) が壊れる)。名前は `/proc` の `comm` と同じ**固定長 16 バイト**
 /// (`comm` は 15 文字で切られる)。空の枠は `tid == 0`。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct TopThread {
@@ -213,7 +213,7 @@ impl TopThread {
 /// 60 秒の窓は 5 秒の標本 12 本を畳むので、同じスレッドが何度も出てくる。
 /// **確保はしない** (最大 2 × [`TOP_THREADS`] の局所配列だけ)。
 ///
-/// `a` が古い側・`b` が新しい側 ([`Sample::merge_into`] は古い順に呼ぶ)。同じ tid の
+/// `a` が古い側・`b` が新しい側 ([`Sample::merge_into`](super::Sample::merge_into) は古い順に呼ぶ)。同じ tid の
 /// **名前と役割は新しい方を採る** — 生まれたばかりのスレッドは `pthread_setname_np` を
 /// 呼ぶまで親の `comm` を名乗るので、古い方を残すと親の名前が 60 秒の窓まで残る。
 pub(super) fn merge_top(

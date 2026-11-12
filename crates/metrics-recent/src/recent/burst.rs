@@ -2,7 +2,7 @@
 //! ([`BurstRing`])。`recent` の一部 (T34.2 で `recent/mod.rs` から移した)。
 //!
 //! **accept の経路がするのは閾を越えたときの原子の読み 1 回** ([`BurstRing::request`]) だけで、
-//! 撮るのは history スレッド。写真の中身は `/connections` の表 ([`ConnSlot`](super::ConnSlot) の
+//! 撮るのは history スレッド。写真の中身は `/connections` の表 ([`ConnSlot`] の
 //! 並び) から作る — 表を数える所 ([`ShotTally`]) は時計も `/proc` も触らないので、単体試験は
 //! そこへ直に枠を渡して書ける。
 //!

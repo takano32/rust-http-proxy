@@ -80,7 +80,7 @@ pub struct Conn {
     _active: ActiveGuard,
 }
 
-/// [`serve_one`] の結果。
+/// [`serve_one`](fn@serve_one) の結果。
 pub enum Step {
     /// この接続で次の要求を待つ (keep-alive)
     Next,

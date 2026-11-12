@@ -1,4 +1,4 @@
-//! 要求 1 つの読み取りから振り分けまで ([`serve_one`])。
+//! 要求 1 つの読み取りから振り分けまで ([`serve_one`](fn@serve_one))。
 
 use super::*;
 
@@ -305,7 +305,7 @@ pub(super) fn serve_one(conn: &mut Conn) -> io::Result<Step> {
 }
 
 /// プロキシ自身のエンドポイント (/dashboard, /status, /metrics, /proxy.pac, /purge, /lookup, PURGE)
-/// なら応えて true を返す (T34.165 で [`serve_one`] から出した)。
+/// なら応えて true を返す (T34.165 で [`serve_one`](fn@serve_one) から出した)。
 ///
 /// `port` は実際に受けたポート、`host` は要求の `Host` ヘッダー。
 #[inline(always)]
@@ -357,7 +357,7 @@ fn own_endpoint(
     endpoints::handle(&mut &*peer.client, method, target, &ep)
 }
 
-/// CONNECT トンネルへ移る [`Step::Connect`] を組む (T34.165 で [`serve_one`] から出した)。
+/// CONNECT トンネルへ移る [`Step::Connect`] を組む (T34.165 で [`serve_one`](fn@serve_one) から出した)。
 #[inline(always)]
 fn connect_step(
     reader: &mut clientio::ClientReader<'_>,

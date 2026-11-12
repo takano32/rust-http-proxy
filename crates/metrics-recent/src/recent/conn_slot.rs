@@ -62,7 +62,7 @@ impl ConnState {
     }
 }
 
-/// 接続 1 本の今の姿。[`ConnTable`] と接続自身が同じものを [`Arc`] で持つ。
+/// 接続 1 本の今の姿。[`ConnTable`](super::ConnTable) と接続自身が同じものを [`Arc`](std::sync::Arc) で持つ。
 ///
 /// **状態と転送バイトは原子で書く。** 表の `HashMap` の鍵を取るのは登録と抹消の
 /// 2 回だけで、預ける / 戻す / 中継を始める のどれも表を止めない。バーストで 240 本が
@@ -162,7 +162,7 @@ pub struct ConnSlot {
     /// [`ConnSlot::bytes_prev`] / [`ConnSlot::rate_bps`] と同じ流儀で、
     /// **書くのは history スレッドだけ** ([`ConnSlot::sweep_rate`])。
     /// 通算の `spins` は「今までに何回空回りしたか」しか言わないので、
-    /// 「**いま**回っている」の判定 ([`ConnTable::spinning`]) はこの差分で行う
+    /// 「**いま**回っている」の判定 ([`ConnTable::spinning`](super::ConnTable::spinning)) はこの差分で行う
     spins_prev: AtomicU64,
     spins_delta: AtomicU64,
 }
@@ -556,7 +556,7 @@ impl ConnSlot {
 
     /// いまの `bytes` を控え、前に控えた値との差分 ÷ `ms` を [`ConnSlot::rate_bps`] に書く。
     ///
-    /// **呼ぶのは history スレッドの周期だけ** ([`ConnTable::update_rates`])。1 本あたり
+    /// **呼ぶのは history スレッドの周期だけ** ([`ConnTable::update_rates`](super::ConnTable::update_rates))。1 本あたり
     /// 原子の読み 1 回・入れ替え 1 回・書き 1 回で、接続の経路には 1 命令も増えない
     /// (`bytes` は中継が暇になるたびに置いている累計をそのまま使う)。
     /// `ms == 0` (起動直後の 1 回目) は控えるだけで速さを出さない — 割る幅が無いので、

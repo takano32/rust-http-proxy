@@ -25,7 +25,7 @@ pub(crate) fn interleave(addrs: Vec<SocketAddr>) -> Vec<SocketAddr> {
     interleave_from(addrs, true)
 }
 
-/// [`interleave`] の、**先頭に置く族だけ**を選べる版 (RFC 8305 §8)。交互に並べること自体も、
+/// `interleave` の、**先頭に置く族だけ**を選べる版 (RFC 8305 §8)。交互に並べること自体も、
 /// 同じ族の中の順も変えない。入れ替えるのは「どちらを先に置くか」だけ。
 pub(crate) fn interleave_from(addrs: Vec<SocketAddr>, v6_first: bool) -> Vec<SocketAddr> {
     let (v6, v4): (Vec<_>, Vec<_>) = addrs.into_iter().partition(|a| a.is_ipv6());

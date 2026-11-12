@@ -21,7 +21,7 @@ pub const MAX_RECENT: usize = 2000;
 
 /// 閉じた接続の固定長リング (`/recent`。T14.4)。
 ///
-/// 書くのは**接続の終了で 1 回**だけ ([`ConnTable::unregister`] と同じ場所)。
+/// 書くのは**接続の終了で 1 回**だけ ([`ConnTable::unregister`](super::ConnTable::unregister) と同じ場所)。
 /// `/connections` が「いま」しか見せないのに対し、ここは「起きたこと」を残す口で、
 /// バーストのとき誰が何を開いたか・遅かった 1 本がどの段階で遅かったかを後から読む。
 pub struct RecentRing {

@@ -49,6 +49,14 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-${{ env.RUSTC_VERSION }}-
       - run: cargo fmt --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
+      # doc コメントの intra-doc リンクが切れていたら落とす (T36.20)。clippy はリンクを見ない。
+      # クレートを割ると、前の経路 (`crate::metrics::…` など) を指すリンクが黙って切れる。
+      # `--document-private-items` で私的な項目も解決させ (モジュールの地図のリンクは私的な項目を指す)、
+      # 「公開の文書が私的な項目を指す」の警告だけは切る (ワークスペースの中だけで読む文書なので)
+      - name: cargo doc (broken links)
+        env:
+          RUSTDOCFLAGS: -D warnings -A rustdoc::private_intra_doc_links
+        run: cargo doc --workspace --no-deps --document-private-items
       # 文書とコードが同じ集合か (エンドポイント・環境変数・`/snapshot` の部・画面の関数・クレートの表。T14.56)
       - run: ./scripts/check-docs.sh
       # scripts/ の道具の単体テスト (雪像の要約・判定・匿名化と、`scripts/mx` の test_mx.sh。T17.15)

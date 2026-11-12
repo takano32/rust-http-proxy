@@ -101,7 +101,7 @@ pub fn closed_counts() -> [u64; SIDES] {
     ]
 }
 
-/// 遅すぎて切ったことを表すエラーの中身 ([`is_slow`] で見分ける)。
+/// 遅すぎて切ったことを表すエラーの中身 (`is_slow` で見分ける)。
 #[derive(Debug)]
 pub(crate) struct TooSlow {
     pub bytes: u64,

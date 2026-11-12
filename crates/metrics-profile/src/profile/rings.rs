@@ -38,7 +38,7 @@ impl Profile {
 
     /// 起動からの段階の累計 (`/metrics` の `sorahost_stage_seconds`。T14.19)。
     ///
-    /// 窓と違って 0 に戻らない。最後の 5 秒の標本まで (= [`TICK`] の遅れ) が入る。
+    /// 窓と違って 0 に戻らない。最後の 5 秒の標本まで (= [`TICK`](super::TICK) の遅れ) が入る。
     pub fn stage_totals(&self) -> Stages {
         *self.stage_totals.locked()
     }

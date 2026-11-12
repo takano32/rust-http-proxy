@@ -125,7 +125,7 @@ static FAILURES: AtomicU64 = AtomicU64::new(0);
 /// `ipv6_connect_ms` は負けても試さなくても `null` なので、「試したか」はここで読む。
 /// 試した回だけが [`crate::net::note_canary_ipv6`] の印を更新する (= 利用者の経路の探りを止める)。
 static IPV6_RUNS: AtomicU64 = AtomicU64::new(0);
-/// IPv6 側を**試さなかった**回数 (T18.1)。1 回の試行 ([`probe`]) につきどちらかが 1 増える。
+/// IPv6 側を**試さなかった**回数 (T18.1)。1 回の試行 ([`probe`](fn@probe::probe)) につきどちらかが 1 増える。
 ///
 /// 試さないのは: 名前が引けなかった、引けた答えに AAAA が無い、`PROXY_IPV6=off`、
 /// `PROXY_CANARY_IPV6=off`。これが 10 分 (600 秒) ぶん続くと探りは利用者の経路に戻る。

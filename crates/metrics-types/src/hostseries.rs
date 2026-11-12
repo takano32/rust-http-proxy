@@ -8,7 +8,7 @@
 //!
 //! **費用の置き方** (共通の決まり):
 //!
-//! - 要求の経路がするのは、[`crate::metrics::Metrics::record_host_detail`] が
+//! - 要求の経路がするのは、`proxy_metrics_core::metrics::Metrics::record_host_detail` が
 //!   **既に取っている鍵の内側**で「上位に居るか」の旗 ([`crate::metrics::HostStats::series_slot`])
 //!   を見て、居れば[配列 1 要素に 5 回足す][HostSeries::add]だけ。原子操作もシステムコールも増えない。
 //! - **上位の入れ替えと窓送りは history スレッド**が 5 分ごとに行う ([`HostSeries::rotate`])。
@@ -62,7 +62,7 @@ impl Recent {
     }
 }
 
-/// 上位 16 ホストの時系列。[`crate::metrics::Metrics`] のホスト表と**同じ鍵**の中にある
+/// 上位 16 ホストの時系列。`proxy_metrics_core::metrics::Metrics` のホスト表と**同じ鍵**の中にある
 /// (要求の経路で鍵を 2 つ取らないため)。
 #[derive(Debug)]
 pub struct HostSeries {

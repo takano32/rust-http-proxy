@@ -31,7 +31,7 @@ pub struct Sample {
     /// `None` = `schedstat` が読めない環境 (`/profile` では `null`)
     pub run_delay_us: Option<[u64; ROLES.len()]>,
     /// その窓にプロセスが使った CPU のうち**ユーザー空間** (us。`/proc/self/stat` の utime の増分。T16.0)。
-    /// カーネル側は `cpu_us - cpu_user_us` (sys は持たない)。役割ごとは [`RoleWindow::user_us`]
+    /// カーネル側は `cpu_us - cpu_user_us` (sys は持たない)。役割ごとは [`RoleWindow::user_us`](super::RoleWindow::user_us)
     pub cpu_user_us: u64,
 }
 

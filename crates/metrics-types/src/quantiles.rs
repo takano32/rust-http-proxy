@@ -14,7 +14,7 @@
 //! `--lite` では書かない (`queue` と `client_read` が 0 なので「4 段の和」を名乗れない)。
 //! `connect` の環は 1 バイトも変えていないので、Phase 12〜14 の p50 と比べる値は残る。
 //!
-//! **費用**: 書くのは [`crate::metrics::Metrics::record_host_detail`] が**既に取っている
+//! **費用**: 書くのは `proxy_metrics_core::metrics::Metrics::record_host_detail` が**既に取っている
 //! 鍵の内側**なので、原子操作もシステムコールも鍵も増えない。増えるのは 8 バイトの
 //! 書き込み 1 回と添字の +1 だけで、**時計も読まない** (ホスト別統計の `last_seen` が
 //! 既に読んでいる epoch 秒を、同じ鍵の内側で使い回す)。分位点は `/status` に来たときだけ
@@ -198,7 +198,7 @@ pub struct Quantiles {
     /// forward の初バイト
     pub forward: Ring,
     /// 利用者が待つ時間 (`queue + client_read + dns + connect`。**CONNECT だけ**。
-    /// T15.0 (2))。書くのは [`crate::metrics::Metrics`] の `record` の中の 1 か所
+    /// T15.0 (2))。書くのは `proxy_metrics_core::metrics::Metrics` の `record` の中の 1 か所
     pub wait: Ring,
 }
 

@@ -13,7 +13,7 @@ use crate::metrics::{DnsCause, ErrCause, Failure};
 ///
 /// 9 種類しかないのは、読む人が「次に何を見るか」を変えられる粒度で切ったため
 /// ([`ErrCause`] と同じ方針)。`Error` だけは原因を連れて `error:refused` のように出す。
-/// **`/history` の分布 ([`CLOSE_REASON_NAMES`]) は 8 列のまま**で、`ClientDead` は
+/// **`/history` の分布 ([`CLOSE_REASON_NAMES`](super::CLOSE_REASON_NAMES)) は 8 列のまま**で、`ClientDead` は
 /// `shutdown` に畳む (標本の余白の都合。T14.52)。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CloseReason {
@@ -51,7 +51,7 @@ pub enum CloseReason {
 }
 
 impl CloseReason {
-    /// リングに書く前の符号 (0 = まだ決まっていない)。[`ConnSlot`] の原子に入れ、
+    /// リングに書く前の符号 (0 = まだ決まっていない)。[`ConnSlot`](super::ConnSlot) の原子に入れ、
     /// ファイル (T14.9) にもこの符号で書く。
     pub fn code(self) -> u16 {
         match self {
@@ -112,7 +112,7 @@ impl CloseReason {
         }
     }
 
-    /// 分布の添字 ([`CLOSE_REASON_NAMES`] の並び。T14.6)。
+    /// 分布の添字 ([`CLOSE_REASON_NAMES`](super::CLOSE_REASON_NAMES) の並び。T14.6)。
     ///
     /// `Error` は原因を落として 1 つにまとめる (原因別は `/status` の `errors_by_cause` と
     /// `/errors` にあるので、窓の列を 8 つ増やさない)。**`ClientDead` も `shutdown` に

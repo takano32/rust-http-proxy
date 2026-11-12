@@ -22,7 +22,7 @@
 //! **同時に 1 本だけ**組み、2 本目からは `503` + `Retry-After: 1` で断る (T14.51)。
 //!
 //! 中の割り方 (T34.4): 要求の読み方は [`incoming`] (ポートだけの判定・メソッドの種類・パスと
-//! 問い合わせ)、門は [`heavy`] (重い口の旗) と [`handle`] (読み取り専用)、経路表は [`dispatch`]、
+//! 問い合わせ)、門は [`heavy`] (重い口の旗) と [`handle`] (読み取り専用)、経路表は [`dispatch`](mod@dispatch)、
 //! 応答の形は [`respond`]。`/status` `/metrics` は [`status`]、`/history` は [`history`]、
 //! `/purge` `/lookup` は [`purge`]、ページ 3 本と `/` の案内は [`pages`]。
 
@@ -117,7 +117,7 @@ pub fn register_snapshot(src: SnapshotSource) {
 /// 内部エンドポイントなら応答して `Ok(true)` を返す。そうでなければ何もせず `Ok(false)`。
 ///
 /// 順は 4 段: 読む ([`Incoming::parse`]) → 読み手を数える → 門 (重い口の旗・読み取り専用) →
-/// 口を選んで組む ([`dispatch`]) → 1 本の応答にして書く ([`respond::render`])。
+/// 口を選んで組む ([`dispatch`](fn@dispatch)) → 1 本の応答にして書く ([`respond::render`])。
 pub fn handle(
     client: &mut impl Write,
     method: &str,

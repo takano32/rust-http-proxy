@@ -95,7 +95,7 @@ mod imp {
             }
         }
 
-        /// `struct inotify_event` (wd i32, mask u32, cookie u32, len u32, name[len]) を走査する。
+        /// `struct inotify_event` (wd i32, mask u32, cookie u32, len u32, `name[len]`) を走査する。
         fn scan(&self, mut b: &[u8]) -> bool {
             const HEAD: usize = 16;
             let mut hit = false;

@@ -133,7 +133,7 @@ static CHANGES: AtomicU64 = AtomicU64::new(0);
 /// 裏の引き直しのぶんも入れない (待っていない時間を「ミス 1 回の値段」に混ぜない)。
 static RESOLVE_US_SUM: AtomicU64 = AtomicU64::new(0);
 /// ミスの種類別の回数 (`/status` の `dns.misses_by_kind`。T15.0 (7))。並びは
-/// [`MissKind::index`] (cold / expired / warm_stale / negative) で、**4 つの和は必ず
+/// [`MissKind::index`](entry::MissKind::index) (cold / expired / warm_stale / negative) で、**4 つの和は必ず
 /// `MISSES` と一致する**。窓 (`PROXY_DNS_WARM_SECS`) を延ばすのと TTL を延ばすのとの
 /// どちらが効くかは、この内訳でしか決まらない (T15.4 の材料): `expired` が主なら
 /// 窓の外で期限が切れている、`warm_stale` が出ていれば裏の引き直しが間に合っていない。
@@ -277,7 +277,7 @@ pub fn resolve_uncached(host: &str, port: u16) -> io::Result<Vec<IpAddr>> {
 }
 
 /// `misses_by_kind` の JSON (`/status` の `dns` と `/dns` の 1 行で同じ形)。
-/// 並びは [`MissKind::index`]。
+/// 並びは [`MissKind::index`](entry::MissKind::index)。
 fn misses_by_kind_json(v: &[u64; 4]) -> String {
     format!(
         "{{\"cold\":{},\"expired\":{},\"warm_stale\":{},\"negative\":{}}}",

@@ -81,7 +81,7 @@ pub struct Config {
     pub min_transfer: proxy_base::minrate::MinRate,
     /// **オリジンへの TCP の確立だけ** (CONNECT と、T28.8 から forward) に効く締め切り (`PROXY_CONNECT_TIMEOUT_SECS`、`0` で無期限)。
     ///
-    /// **既定は 3 秒** ([`DEFAULT_CONNECT_TIMEOUT`]。T15.6 (2)、T23.3、T28.43)。実効値は
+    /// **既定は 3 秒** ([`DEFAULT_CONNECT_TIMEOUT`](timeouts::DEFAULT_CONNECT_TIMEOUT)。T15.6 (2)、T23.3、T28.43)。実効値は
     /// [`connect_timeout_for`] が 1 か所で決める (未設定なら 3 秒と [`Config::timeout`] の
     /// 小さい方。`PROXY_TIMEOUT_SECS=0` でも 3 秒)。`PROXY_TIMEOUT_SECS` は CONNECT の
     /// オリジン接続だけでなく forward の読み書き・クライアントソケット・キャッシュの

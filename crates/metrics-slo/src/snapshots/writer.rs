@@ -21,7 +21,7 @@ use crate::{log_debug, log_info, log_warn};
 
 /// 日次の `/snapshot` を書くもの。
 ///
-/// 大域の状態 ([`configure`] / [`tick`]) はこれを 1 つ持っているだけで、中身は全部ここにある
+/// 大域の状態 ([`configure`](super::configure) / [`tick`](super::tick)) はこれを 1 つ持っているだけで、中身は全部ここにある
 /// (単体テストは大域に触らずこれを直に動かせる。T14.20 の `daily::Writer` と同じ作り)。
 pub struct Writer {
     dir: Option<PathBuf>,

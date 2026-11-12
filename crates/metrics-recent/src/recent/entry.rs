@@ -15,7 +15,7 @@ use super::{
 ///
 /// **原子ではない。** 1 本の接続を同時に触るスレッドは 1 つだけなので、要求ごとの
 /// 積み上げは [`std::cell::Cell`] に置いた普通の変数で行い、**接続の終了で 1 回だけ**
-/// [`ConnSlot::finish`] で個票へ移す (要求ごとの原子操作を 1 つも増やさないため)。
+/// [`ConnSlot::finish`](super::ConnSlot::finish) で個票へ移す (要求ごとの原子操作を 1 つも増やさないため)。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ConnTally {
     /// クライアントから受けたバイト (要求のヘッダーと本文、トンネルは上り)

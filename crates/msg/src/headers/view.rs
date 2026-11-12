@@ -26,7 +26,7 @@ pub fn response_lines(head: &[u8]) -> impl Iterator<Item = (&str, &str)> {
 }
 
 /// 応答の先頭を「小文字の名前, 値」の組にする ([`response_lines`] を複製した形)。
-/// キャッシュの判定 ([`crate::freshness`] 相当) のように組で受け取る API のために残してある。
+/// キャッシュの判定 (`proxy_freshness::freshness` 相当) のように組で受け取る API のために残してある。
 pub fn response_pairs(head: &[u8]) -> Vec<(String, String)> {
     response_lines(head)
         .map(|(k, v)| (k.to_ascii_lowercase(), v.to_string()))

@@ -55,7 +55,7 @@ pub struct Capabilities {
     ///
     /// 読む側は cgroup v2 の階層 (`0::/…`) を根まで遡って、絞りの欄のある `cpu.stat` を
     /// 探す ([`super::cgroup::cgroup_cpu_path`])。判定もそれと**同じ道**で決める (T28.11。
-    /// それまでは v1 の `cpu` コントローラの `cpu.stat` でも真になり、[ok] なのに値は `null` だった)
+    /// それまでは v1 の `cpu` コントローラの `cpu.stat` でも真になり、\[ok\] なのに値は `null` だった)
     pub cgroup_cpu: bool,
     /// 自分の cgroup に `cpu.pressure` がある (T14.12 の PSI)
     pub cgroup_pressure: bool,

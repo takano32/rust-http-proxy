@@ -14,7 +14,7 @@ use crate::day_rollover::DayRollover;
 
 /// 日次の要約を積んで、日が変わったら 1 行書くもの。
 ///
-/// 大域の状態 ([`configure`] / [`tick`]) はこれを 1 つ持っているだけで、
+/// 大域の状態 ([`configure`](super::configure) / [`tick`](super::tick)) はこれを 1 つ持っているだけで、
 /// 中身は全部ここにある (単体テストは大域に触らずこれを直に動かせる)。
 pub struct Writer {
     path: Option<PathBuf>,

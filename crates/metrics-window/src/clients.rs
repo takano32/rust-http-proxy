@@ -56,7 +56,7 @@ pub struct ClientStats {
     last_port_slot: Option<usize>,
     last_ports_other: bool,
     /// 接続元ごとの同時接続の上限 (`PROXY_MAX_CONNS_PER_CLIENT`) に当たって断った本数
-    /// (T14.13)。**書くのは断った経路だけ** ([`Metrics::record_client_rejected`])
+    /// (T14.13)。**書くのは断った経路だけ** (`Metrics::record_client_rejected`)
     rejected: u64,
 }
 
@@ -81,7 +81,7 @@ impl ClientStats {
         }
     }
 
-    /// 1 要求を数える。**呼び出し側が既に鍵を取っている** ([`Metrics::record_client`])。
+    /// 1 要求を数える。**呼び出し側が既に鍵を取っている** (`Metrics::record_client`)。
     ///
     /// `dir` は向き別のバイト `(上り, 下り)` (T14.26)。接続元にも名前解決や族の内訳は
     /// 無いので、[`Detail`] はこの 2 欄だけを埋めて渡す (`/status` に 0 の列は増えない)。
@@ -204,7 +204,7 @@ impl ClientStats {
     }
 
     /// 接続元ごとの同時接続の上限に当たって断った 1 本を数える (T14.13)。
-    /// **呼ぶのは断った経路だけ** ([`Metrics::record_client_rejected`])。
+    /// **呼ぶのは断った経路だけ** (`Metrics::record_client_rejected`)。
     /// 欄を外から書かせないために置いた (T34.38)。
     #[inline]
     pub fn note_rejected(&mut self) {
@@ -368,7 +368,7 @@ pub const STATUS_READERS: usize = 20;
 /// 内部エンドポイント (`/status` `/clients` …) を引いた接続元 1 つ (T14.53)。
 ///
 /// T14.7 の `clients[]` は**自分宛てだけの接続を数えない** (監視で埋まってしまうため。
-/// 呼ぶ側 `crates/server/src/conn/serve_one.rs` の [`Metrics::record_client_agent`] の手前にその注記がある)。
+/// 呼ぶ側 `crates/server/src/conn/serve_one.rs` の `Metrics::record_client_agent` の手前にその注記がある)。
 /// こちらはその逆で、**自分宛てだけ**を数える別の表: 認証なしの公開ポートで
 /// 「誰が個票を読んでいるか」(走査か、自分の監視か) を見分けるためのもの。
 /// **プロキシとしての要求 (CONNECT / forward) は 1 件も入らない**ので、2 つの表は混ざらない。

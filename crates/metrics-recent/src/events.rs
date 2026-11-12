@@ -20,8 +20,8 @@
 //! | `ipv6` / `pressure` / `ballast` | [`poll`] (履歴スレッドの周期。下を参照) |
 //! | `state_file` | `crates/metrics/src/persist.rs` (書込エラーの最初の 1 回) |
 //! | `evict` / `emfile` | `crates/server/src/lib.rs` (上限に当たって閉じた / accept が失敗した) |
-//! | `anomaly` | [`crate::anomaly`] (標本が基準値から外れた / 戻った。T14.23) |
-//! | `new_client` | [`crate::anomaly`] (初めて見た接続元。T14.54 の規則 6) |
+//! | `anomaly` | `proxy_metrics_watch::anomaly` (標本が基準値から外れた / 戻った。T14.23) |
+//! | `new_client` | `proxy_metrics_watch::anomaly` (初めて見た接続元。T14.54 の規則 6) |
 //!
 //! `ipv6` / `pressure` / `ballast` の 3 つだけ**変わり目を [`poll`] で見る**のは、
 //! それを起こす `proxy-net` と `proxy-cache` が**この層より下**にあるため
@@ -68,9 +68,9 @@ pub enum EventKind {
     Emfile,
     /// 停止シグナルを受けた
     Shutdown,
-    /// 標本が直近 1 時間の基準値から外れた / 戻った ([`crate::anomaly`]。T14.23)
+    /// 標本が直近 1 時間の基準値から外れた / 戻った (`proxy_metrics_watch::anomaly`。T14.23)
     Anomaly,
-    /// 初めて見た接続元 ([`crate::anomaly`] の規則 6。T14.54)
+    /// 初めて見た接続元 (`proxy_metrics_watch::anomaly` の規則 6。T14.54)
     NewClient,
 }
 

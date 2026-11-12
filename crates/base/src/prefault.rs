@@ -33,7 +33,7 @@ pub fn vec<T>(v: &mut Vec<T>, cap: usize) -> usize {
     bytes
 }
 
-/// [`vec`] の `VecDeque` 版。`Vec` に移して確保と触りを済ませ、戻す。
+/// [`vec`](fn@vec) の `VecDeque` 版。`Vec` に移して確保と触りを済ませ、戻す。
 ///
 /// `VecDeque` → `Vec` は確保し直さず (要素が置き場の途中から始まっていれば並べ直すだけ)、
 /// `Vec` → `VecDeque` は O(1) で置き場をそのまま引き継ぐ (どちらも std が約束している)。

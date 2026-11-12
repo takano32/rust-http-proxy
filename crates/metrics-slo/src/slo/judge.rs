@@ -14,13 +14,13 @@ use crate::metrics::DestHour;
 /// 標本 1 本の判定。**`bits` が本文の「4 ビット」を 5 秒の標本だけで見たもの** (立っている = その閾を外した)。
 ///
 /// T29.33 から、達成の判定に使うのは**確立の 2 つ (ビット 0・1) だけ**で、比の 2 つ (ビット 2・3) は
-/// 1 時間の合計 ([`Hour`] の `num` / `den`) で判定する。ここの 2・3 のビットと値は「その 5 秒だけで
+/// 1 時間の合計 ([`Hour`](super::Hour) の `num` / `den`) で判定する。ここの 2・3 のビットと値は「その 5 秒だけで
 /// 見たら」の参考 (分母が 1〜4 本の 5 秒が 96% なので、二値化した数字になる)。
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Verdict {
     /// 判定できたか (**確立かエラーが 1 本以上あった**。T20.4)。偽なら分母に入れない
     pub judged: bool,
-    /// 外した閾のビット (`1 << i`、`i` は [`NAMES`] の位置)
+    /// 外した閾のビット (`1 << i`、`i` は [`NAMES`](super::NAMES) の位置)
     pub bits: u8,
     /// その標本の 4 つの値 (外れた時間帯の「その値」に使う)
     pub values: [f64; 4],
@@ -30,9 +30,9 @@ pub struct Verdict {
     pub den: [u64; RATES],
 }
 
-/// 比の閾の数 (`error_rate` と `dns_miss_per_connect`。[`NAMES`] の 2・3 番目)。
+/// 比の閾の数 (`error_rate` と `dns_miss_per_connect`。[`NAMES`](super::NAMES) の 2・3 番目)。
 pub(crate) const RATES: usize = 2;
-/// 比の閾が [`NAMES`] のどこから始まるか。
+/// 比の閾が [`NAMES`](super::NAMES) のどこから始まるか。
 pub(super) const RATE_AT: usize = 2;
 /// 確立の 2 つ (速さ) のビット。**5 秒の標本ごと**に判定するのはこの 2 つだけ (T29.33)。
 pub(super) const SPEED_BITS: u8 = 0b0011;

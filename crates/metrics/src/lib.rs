@@ -14,7 +14,7 @@ pub mod persist_recent;
 mod tick;
 
 /// 時系列の履歴 — 窓そのものは下の層 (`proxy-metrics-core`)、5 秒ごとに標本を取る
-/// 記録スレッド ([`spawn`] / [`spawn_every`]) だけがここ (T14.55)。
+/// 記録スレッド ([`spawn`](crate::tick::spawn) / [`spawn_every`](crate::tick::spawn_every)) だけがここ (T14.55)。
 pub mod history {
     pub use crate::tick::{spawn, spawn_every, take_sample};
     pub use proxy_metrics_watch::history::*;

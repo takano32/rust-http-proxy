@@ -21,7 +21,7 @@ pub(super) struct Entry {
     /// **1 つ前**の使用時刻 (T14.1)。warm の判定 (「直近 W 秒に 2 回以上」) に要るのは
     /// これだけで、要求の経路は `last_used` を押し出すだけ (鍵は既に取っている)。
     pub(super) prev_used: Instant,
-    /// warm な名前か = [`WARM_QUEUE`] に載っているか (T14.1)。**熱い経路で鍵を 2 つ
+    /// warm な名前か = [`WARM_QUEUE`](super::WARM_QUEUE) に載っているか (T14.1)。**熱い経路で鍵を 2 つ
     /// 取らないための写し**で、待ち行列への出し入れと必ず同時に書く。
     pub(super) warm: bool,
     /// 次に裏で引き直す時刻 (`/dns` の `next_refresh_secs`。warm でなければ `None`)。

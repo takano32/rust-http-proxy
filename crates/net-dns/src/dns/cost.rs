@@ -48,7 +48,7 @@ pub fn peek_resolve_cost() -> (u64, u64) {
 
 /// 名前解決の費用 (us と回数) をこのスレッドの箱に足す (**テストの口**)。
 ///
-/// 本番でここに書くのは [`resolve_host`] のミスの経路 1 か所だけ (原子と同じ場所で
+/// 本番でここに書くのは [`resolve_host`](super::resolve_host) のミスの経路 1 か所だけ (原子と同じ場所で
 /// 書いている) なので、呼ぶのはテストだけ。入口の ACL が**時計より前に**払った状態を
 /// 作って、[`peek_resolve_cost`] を使う引き算 (T15.0 (1)) を確かめるために使う。
 pub fn note_resolve_cost(us: u64, misses: u64) {
