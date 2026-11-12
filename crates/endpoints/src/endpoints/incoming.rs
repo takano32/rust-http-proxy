@@ -133,10 +133,17 @@ fn authority_port(authority: &str) -> Option<u16> {
     if authority.is_empty() {
         return None;
     }
-    // ポートの無いブラケット付き (`[::1]`) も 80。最後の `:` で割ると `1]` を読んで `None` になり、
-    // 80 で待ち受けていても転送に落ちていた (T34.156)
-    if authority.starts_with('[') && authority.ends_with(']') {
-        return Some(80);
+    if authority.starts_with('[') {
+        // ポートの無いブラケット付き (`[::1]`) も 80。最後の `:` で割ると `1]` を読んで `None` になり、
+        // 80 で待ち受けていても転送に落ちていた (T34.156)
+        if authority.ends_with(']') {
+            return Some(80);
+        }
+        // 閉じていないブラケット (`[::1`) は読めない。最後の `:` で割ると `1` を読んで
+        // 1 番ポートにしていた (T36.13)
+        if !authority.contains(']') {
+            return None;
+        }
     }
     match authority.rsplit_once(':') {
         Some((h, p)) if !h.ends_with(']') || h.starts_with('[') => p.parse::<u16>().ok(),
@@ -209,6 +216,17 @@ mod local_path_tests {
         assert_eq!(authority_port("host:nope"), None);
         assert_eq!(authority_port("host:70000"), None);
         assert_eq!(authority_port(""), None);
+    }
+
+    /// 閉じていないブラケット (`[::1`) は読めない authority (T36.13。前は最後の `:` の後ろの
+    /// `1` を読んで 1 番ポートにしていた)。
+    #[test]
+    fn an_unclosed_bracket_has_no_port() {
+        assert_eq!(authority_port("[::1"), None);
+        assert_eq!(authority_port("[2001:db8::1:8080"), None);
+        assert_eq!(authority_port("["), None);
+        assert_eq!(local_path("/status", 1, Some("[::1")), None);
+        assert_eq!(local_path("http://[::1/status", 1, None), None);
     }
 
     /// メソッドの種類は名前の大小を問わず、HEAD は GET として組む (T28.7)。
