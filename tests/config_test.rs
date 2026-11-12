@@ -153,6 +153,17 @@ fn test_integration_config_shows_effective_values_and_their_source() {
     assert!(json.contains("\"truncated\":false"), "{}", json);
     // 秘密は無い (証明書はパスだけ、鍵の類の設定はそもそも無い)
     assert_settings(&json, &[("PROXY_TLS_CA_FILE", "null", "default", "")]);
+    // キャッシュの置き場は `ProxyProcess` が環境変数で `$HOME/cache` に向ける (T36.30。root でも
+    // `/var/cache` を試験どうしで共有しない)
+    assert_settings(
+        &json,
+        &[(
+            "PROXY_CACHE_DIR",
+            &format!("\"{}\"", dir.join("cache").display()),
+            "env",
+            "`ProxyProcess` が渡す行",
+        )],
+    );
 
     // `.env` を書き換えると値も出どころも追随する
     std::fs::write(dir.join(".env"), env_file(Some(45))).unwrap();

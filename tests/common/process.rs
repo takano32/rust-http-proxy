@@ -47,6 +47,10 @@ impl ProxyBuilder {
         use std::io::BufRead;
         let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_rust-http-proxy"));
         cmd.env("HOME", &self.home);
+        // キャッシュの置き場も `HOME` の中にする (T36.30)。既定の候補は root だと `/var/cache` が
+        // `~/.cache` より先に選ばれ、試験どうしで同じキャッシュを共有して溜めていた (この機械で
+        // 32 MB)。出どころは `env` になる。試験が [`ProxyBuilder::env`] で渡せばそちらが勝つ
+        cmd.env("PROXY_CACHE_DIR", self.home.join("cache"));
         for (k, v) in &self.vars {
             cmd.env(k, v);
         }
