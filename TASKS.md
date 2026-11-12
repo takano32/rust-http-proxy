@@ -59,10 +59,6 @@
   - 目的: `ProxyProcess` は `HOME` を一時ディレクトリに向けるが、root では既定の置き場に `/var/cache` が先に選ばれる (T36.22 で見つけた。この機械に 32 MB)。試験どうしでキャッシュを共有してしまう。
   - やること: `ProxyProcess` が `PROXY_CACHE_DIR=<home>/cache` を渡す。`/config` の出どころを見る試験は、それに合わせる。
   - 値打ち: 中 (試験の独立)。
-- [ ] **T36.31 Linux 以外でビルドすると出る「使っていない」の警告 5 件を消す**
-  - 対象: net-conn の `listen.rs` (`DEFAULT_BACKLOG_CAP`・`backlog_from_somaxconn`)、http の `deliver.rs` (`BufRead`・`mut`)、tunnel の `open.rs` (`established`)。
-  - やること: `#[cfg(target_os = "linux")]` を付ける。済んだら CI の `check-other-target` を `-D warnings` にする。
-  - 値打ち: 低。
 
 - [ ] **T36.99 締める (タスク 36 の版を走らせたあとに見る・決める・書く)**
   - 前提: 本体を変える小タスクがあればデプロイが要る。版は、本体を最後に変えた小タスクの番号にする。デプロイそのものは利用者が決める。判定表は `T35` のまま。足すなら `T36`。
