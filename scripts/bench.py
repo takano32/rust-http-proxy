@@ -12,7 +12,7 @@
 
 Python 側のオーバーヘッドが上限になるので絶対値ではなく **同じマシンでの前後比較** に使う。
 """
-import argparse, http.client, socket, socketserver, threading, time, statistics, sys
+import argparse, http.client, socket, socketserver, threading, time, sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 BODY = b"x" * 1024

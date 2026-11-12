@@ -224,7 +224,7 @@ def _p23_silent_restarts(c, th):
            f"`shutdown` でないものを数えた (覚えている {n(r['kept'])} 件"
            + (f" / 全 {n(r['count'])} 件" if r["count"] not in (None, r["kept"]) else "")
            + (f"、うち読み戻し {n(r['restored'])} 件" if r["restored"] is not None else "")
-           + f"、起動からの "
+           + "、起動からの "
            + (f"{r['hours']:,.1f} 時間)" if r["hours"] else "時間は不明)"))
     if r["silent"]:
         src += "。**`shutdown` を残さずに起動し直している** (落とされたか、止め方が違う)"

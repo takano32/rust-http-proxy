@@ -610,7 +610,7 @@ def print_client_watch(w):
           + (" (前の雪像に `/clients` が無いので差分は取れず、`first_seen` で見た)"
              if w["prev_without_clients"] else ""))
     if w["has_recent"]:
-        print(f"  - `/recent` の窓の中 (256 KiB で切れることがある"
+        print("  - `/recent` の窓の中 (256 KiB で切れることがある"
               + ("。**この雪像は切れている**" if w["recent_truncated"] else "")
               + f"): IP リテラル宛て {num(w['recent_literal'])} 本、443・80 以外の CONNECT"
               f" {num(w['recent_nonstandard'])} 本")
@@ -875,8 +875,8 @@ def recent_lines(d):
                        + ("。**これより前に閉じた接続は応答から落ちている** "
                           "(`/recent?since=` を付けて取り直せば切れない)"
                           if rec.get("truncated") else ""))
-        out.append(f"  - 閉じた理由: " + ", ".join(f"{k} {v}" for k, v in tally(rows, "reason").items()))
-        out.append(f"  - 種類: " + ", ".join(f"{k} {v}" for k, v in tally(rows, "kind").items()))
+        out.append("  - 閉じた理由: " + ", ".join(f"{k} {v}" for k, v in tally(rows, "reason").items()))
+        out.append("  - 種類: " + ", ".join(f"{k} {v}" for k, v in tally(rows, "kind").items()))
         secs_all = [r.get("secs", 0) for r in rows]
         out.append(f"  - 寿命: 中央値 {statistics.median(secs_all):.0f} 秒 / 最大 {max(secs_all):,} 秒")
         up = sum(r.get("up", 0) for r in rows)

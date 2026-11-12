@@ -263,7 +263,7 @@ def _p29_connect_errors(c, th):
     def text(who, bold):
         num, den, _ = got[who]
         star = "**" if bold else ""
-        return f"{star}{num / den:.5f}{star} ({n(num)} / {n(den)})" if den else f"— (試行 0)"
+        return f"{star}{num / den:.5f}{star} ({n(num)} / {n(den)})" if den else "— (試行 0)"
     src = ("`/history?res=3600` の起動からの `errors` − `errors_by_cause.dns` − `other_port_errors` ÷ "
            "(`connects` + 同じエラー − `other_port_attempts`)")
     tail = f"。表示だけ (`/recent` の窓): {recent}"

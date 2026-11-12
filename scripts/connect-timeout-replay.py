@@ -275,7 +275,6 @@ def render(res, label, out=sys.stdout):
     else:
         print("/recent: 個票が無い (判定できず)", file=out)
     if hist:
-        ver = hist.get("version")
         note = {None: "版が読めないので timeout を引かない (上限は多め)",
                 True: "この版は失敗も区間に入れているので一番上の区間から timeout を引いた",
                 False: "この版は成功だけを区間に入れている"}[hist["failures_in_buckets"]]

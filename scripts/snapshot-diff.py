@@ -1382,7 +1382,7 @@ def render_dns(d):
             scope = f"{whole}を見た。warm 印つき {dn['warm_in_table']} 件"
         else:
             scope = f"表 {dn['table']} 件中、warm 印つき {dn['warm_in_table']} 件"
-        p(f"- 最後に使ってから: "
+        p("- 最後に使ってから: "
           + "、".join(f"{label} **{dn['idle'][label]}** 件" for _, label in IDLE_BUCKETS)
           + f" ({scope})")
     p()
@@ -1452,7 +1452,7 @@ def render_bursts(d, top):
         p("(この版に `/bursts` は無い — T.14.6 が入ったら埋まる)")
     else:
         p(f"写真 **{bu['shots']} 枚**"
-          + (f": " + "、".join(shot_text(s) for s in bu["rows"][:top]) if bu["rows"] else ""))
+          + (": " + "、".join(shot_text(s) for s in bu["rows"][:top]) if bu["rows"] else ""))
         if bu["rows"]:
             # 写真は**閾を越えた瞬間**の 1 枚なので、その `active` はその時間帯の山ではない
             p("(写真の数は閾を越えた瞬間の同時接続。その時間帯の山は下の `active_max`)")
