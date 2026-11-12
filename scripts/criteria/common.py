@@ -9,7 +9,7 @@ import statistics
 from proxydata import CAUSE_NAMES, utc_stamp
 
 
-# `/history` の標本のうちこの道具が読む欄 (`crates/metrics/src/history.rs` の KEYS)。
+# `/history` の標本のうちこの道具が読む欄 (`crates/metrics-window/src/history/sample.rs` の KEYS)。
 # **版によって欄の数が違う** (デプロイ先の 2026-09-16 は 31、いまの main は 32) ので、
 # 位置ではなく `keys` の名前で引く。無い欄は None にして「出せない」と印字する。
 HFIELDS = (

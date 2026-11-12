@@ -258,7 +258,7 @@ fn slow_transfer_closed_json() -> String {
 ///
 /// **値はプロセスの生存中に変わらない**ので起動に 1 回だけ読み ([`OnceLock`])、読めない環境
 /// (procfs が無い) は `id` を `null` にする (**`/status` は落とさない**)。`/events` の `start` の
-/// 文面にも先頭 12 文字を載せる (`crates/run/src/lib.rs`。1 件 128 B の枠に収めるため)。
+/// 文面にも先頭 12 文字を載せる (`crates/run/src/startup.rs`。1 件 128 B の枠に収めるため)。
 pub(super) fn boot_json() -> String {
     static BOOT: OnceLock<Option<String>> = OnceLock::new();
     let pid = std::process::id();
@@ -326,7 +326,7 @@ fn push_tables(out: &mut String, hosts: bool, hosts_json: &[String], clients_jso
 ///
 /// **canary 側の静的な既定は `Mode::Auto`** (`canary.rs` の `static MODE`) なので、誰も預けないまま
 /// `/status` を組む処理系では、`auto` ではなくここの `off` の形が出る (製品のバイナリは
-/// `crates/run/src/lib.rs` が待ち受けを立てる前に必ず `canary::configure` を呼ぶので `/status` は変わらない)。
+/// `crates/run/src/startup.rs` が待ち受けを立てる前に必ず `canary::configure` を呼ぶので `/status` は変わらない)。
 pub const CANARY_STATUS_UNSET: &str = concat!(
     "{\"mode\":\"off\",\"secs\":60,\"runs\":0,\"failures\":0,",
     "\"at\":0,\"host\":\"\",\"dns_ms\":0,\"connect_ms\":0,\"ipv6_connect_ms\":null,\"error\":null,",

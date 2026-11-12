@@ -1,7 +1,7 @@
 //! `/history?since=&until=&summary=1` の結合テスト (T14.24)。
 //!
 //! 畳み方そのもの (T14.0 の表と同じ数字になる架空の標本列、解像度の自動選択、4 KiB) は
-//! `crates/metrics/src/history.rs` の単体テストで見ている。ここで見るのは**実際の口の配線**:
+//! `crates/metrics-window/src/history/summary_tests.rs` の単体テストで見ている。ここで見るのは**実際の口の配線**:
 //! HTTP で叩いたときに要約だけが返ること、`normal_hours_only=1` がバーストを外すこと、
 //! **`since=restart` が `/status` の `since_start_secs` と合う**こと、
 //! `summary` を付けない `/history` が 1 バイトも変わっていないこと。

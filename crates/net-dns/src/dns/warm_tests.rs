@@ -7,7 +7,7 @@ use super::tests::{
 };
 use super::*;
 
-/// JSON の `"<鍵>":` の後ろの数字を読む (`tests/common/mod.rs` の `status_number` と
+/// JSON の `"<鍵>":` の後ろの数字を読む (`tests/common/client.rs` の `status_number` と
 /// 同じ形)。**末尾の `}` で突き合わせない**ため: 鍵の後ろに欄が足されても落ちず、
 /// `contains` と違って `1` が `12` に前方一致することもない。
 fn json_number(json: &str, key: &str) -> u64 {

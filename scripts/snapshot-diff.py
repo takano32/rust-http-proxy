@@ -61,7 +61,7 @@
 # **平常時の切り出し方** (T14.0 と同じ): `/history?res=3600` の標本のうち **1 時間 300 本未満**
 # のものだけを使う。バーストの時間帯 (2026-09-11 17〜23 時のような) を混ぜると、ミス 1 回の平均が
 # 12.6 ms から 36.0 ms に化けて「直した効き」が読めなくなる。分位点の補間は
-# `crates/metrics/src/history.rs` の `Window::quantile_ms` と同じ (`proxydata.quantile_ms`)。
+# `crates/metrics-profile/src/window.rs` の `Window::quantile_ms` と同じ (`proxydata.quantile_ms`)。
 #
 # **前後の境目**: 2 枚の間に再起動があれば**再起動の時刻**、無ければ **A の取得時刻**。
 # 再起動をまたぐと `/status` の通算 (`total_requests` や `dns.misses`) は引き算できないので、

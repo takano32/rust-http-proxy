@@ -209,12 +209,12 @@ impl Thresholds {
     }
 }
 
-/// いま効いている閾 ([`configure`] が入れる。`crates/run/src/lib.rs` の起動時に 1 回)。
+/// いま効いている閾 ([`configure`] が入れる。`crates/run/src/startup.rs` の起動時に 1 回)。
 static THRESHOLDS: Mutex<Thresholds> = Mutex::new(DEFAULT);
 /// 時間ごとの集計。**触るのは履歴スレッド (5 秒に 1 回) と `/slo` だけ**。
 static TRACKER: Mutex<Option<Tracker>> = Mutex::new(None);
 
-/// 閾を教える (`crates/run/src/lib.rs` の起動時に 1 回。`PROXY_SLO`)。
+/// 閾を教える (`crates/run/src/startup.rs` の起動時に 1 回。`PROXY_SLO`)。
 pub fn configure(th: Thresholds) {
     *THRESHOLDS.locked() = th;
 }

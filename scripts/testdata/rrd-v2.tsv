@@ -1,5 +1,5 @@
 # T14.14: 版 2 (`SHPRRD02`) の状態ファイルを組み立てるための fixture。
-# `tests/persist_test.rs` がこれを読んで版 2 の `.rust-http-proxy.rrd` を作り、
+# `tests/persist_test.rs` が取り込む `tests/common/rrd_v2.rs` がこれを読んで版 2 の `.rust-http-proxy.rrd` を作り、
 # 起動して版 3 (`SHPRRD03`) に詰め直されること = 通算の統計が 1 件も消えないことを確かめる。
 #
 # 名前は**全部架空** (`.invalid` は RFC 2606、IP は RFC 5737 の文書用)。デプロイ先の実名は置かない。

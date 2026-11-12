@@ -351,7 +351,7 @@ scripts/weekly-report.py status/ --out json    # 表の元の辞書をそのま�
 
 **数字の求め方は `snapshot-diff.py` と同じ**です: `/history?res=3600` を **UTC の日で切って**
 同じ `aggregate()` に通すので、同じ期間を切れば同じ値が出ます (分位点の補間は
-`crates/metrics/src/history.rs` の `quantile_ms`、「平常時」= 1 時間 300 本未満の標本を使うのも同じ)。
+`crates/metrics-profile/src/window.rs` の `Window::quantile_ms`、「平常時」= 1 時間 300 本未満の標本を使うのも同じ)。
 日ごとの表には出どころ (`/history?res=3600` か `/daily`) が入ります。
 `/hosts` と `/clients` は `.rrd` の通算なので**いちばん古い雪像といちばん新しい雪像の差**で読み、
 雪像が 1 枚しか無いときは「引き算できない」と断って通算のまま並べます。

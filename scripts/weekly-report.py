@@ -21,7 +21,7 @@
 #
 # **数字の求め方は `scripts/snapshot-diff.py` (T14.17) と同じ**: `/history?res=3600` を
 # **UTC の日で切って**同じ `aggregate()` に通すので、同じ期間を切れば同じ値が出る
-# (分位点の補間は `crates/metrics/src/history.rs` の `Window::quantile_ms` と同じ)。
+# (分位点の補間は `crates/metrics-profile/src/window.rs` の `Window::quantile_ms` と同じ)。
 # 平常時 (1 時間 300 本未満の標本) とバースト込みを分けるのも同じ切り方。
 #
 # 出力は T14.99 (締めの文書) と、次の Phase の T15.0 の入力になる。
@@ -514,7 +514,7 @@ def connect_lines(d):
     p("## 2. CONNECT 確立 p50 / p95 (日別)")
     p("")
     p("平常時 (バーストの窓を外した標本) の値。`/history` の対数バケツから "
-      "`crates/metrics/src/history.rs` の `quantile_ms` と同じ補間で出す。")
+      "`crates/metrics-profile/src/window.rs` の `Window::quantile_ms` と同じ補間で出す。")
     p("")
     p("| 日 | avg ms | p50 ms | p95 ms | 最大 ms | 本数 | forward p50 / p95 ms | 外した窓 |")
     p("|---|---:|---:|---:|---:|---:|---:|---:|")

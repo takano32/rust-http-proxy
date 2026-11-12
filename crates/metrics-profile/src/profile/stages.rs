@@ -58,7 +58,7 @@ impl Stages {
         let v = [
             d.stages.queue as u64,
             d.stages.client_read as u64,
-            // プールに当たった要求は `origin_detail` を呼ばないので 0 のまま
+            // プールに当たった要求は `Detail::of_connect` を呼ばないので 0 のまま
             d.dns_ms + d.connect_ms,
             d.stages.send as u64,
             d.first_byte_ms.unwrap_or(0),

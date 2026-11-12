@@ -392,7 +392,7 @@ def median(values):
 def quantile_ms(buckets, count, top, q, bounds):
     """対数バケツから分位点を出す。
 
-    **`crates/metrics/src/history.rs` の `Window::quantile_ms` と同じ補間**
+    **`crates/metrics-profile/src/window.rs` の `Window::quantile_ms` と同じ補間**
     (バケツの中では一様分布とみなして直線で補い、`ms_max` で頭を止める)。
     `dashboard.html` の `winQuantile` と `scripts/snapshot-summary.py` の `quantile` も同じ。
     """
