@@ -403,7 +403,11 @@ impl Cache {
     ) -> StoreSink<'_> {
         let now = self.now();
         let meta = Meta::fresh_for(now, ttl.as_secs(), age, validators);
-        self.remember_variant(url, key);
+        // 切のキャッシュはバリアントの表に触らない (T36.12。いまの呼び手は先に `enabled` を
+        // 見ているが、直に呼ぶと表だけが伸びていた)
+        if self.cfg.enabled {
+            self.remember_variant(url, key);
+        }
         let mem_buf =
             if self.cfg.enabled && expected.is_none_or(|e| e <= self.cfg.mem_max_object_size) {
                 Some(Vec::with_capacity(

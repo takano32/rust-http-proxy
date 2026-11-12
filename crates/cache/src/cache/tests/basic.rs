@@ -70,6 +70,21 @@ fn disabled_cache_is_noop() {
     assert_eq!(cache.mem_capacity(), 0);
 }
 
+/// 切のキャッシュに `begin_store` を直に呼んでも、バリアントの表は伸びない (T36.12)。
+/// 前は頭で表に足していた (いまの呼び手は先に `enabled` を見ているので表には出ない)。
+#[test]
+fn begin_store_on_a_disabled_cache_leaves_the_variants_table_alone() {
+    let cache = Cache::new(CacheConfig::disabled());
+    let url = "http://example.com/off";
+    for i in 0..3 {
+        // バリアント (URL だけの鍵と違う鍵) なら表に足す形
+        let key = cache_key("GET", &format!("{url}\u{0}accept-encoding=v{i}"));
+        let sink = cache.begin_store(key, url, Duration::from_secs(60), 0, false, None, 1);
+        drop(sink);
+    }
+    assert_eq!(cache.variants_len(), 0);
+}
+
 #[test]
 fn to_json_reports_limits_and_mode() {
     let cache = fresh("shp-test-json", 200 * MIB, 2048 * MIB);
