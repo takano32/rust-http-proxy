@@ -142,6 +142,20 @@ fn config(rate: MinRate) -> rust_http_proxy::config::Config {
     cfg
 }
 
+/// 応答の側 (`slow_transfer_closed.response`) で切りうる試験を 1 本ずつにする鍵 (T36.23)。
+///
+/// 切った本数はプロキシごとではなく**プロセスに 1 つ** (`proxy_base::minrate` の静的な原子。
+/// 本番は 1 プロセス 1 プロキシなので困らない) で、この試験のバイナリは試験ごとにプロキシを
+/// 立てて並べて回す。並ぶと、ほかの試験の接続を切った 1 本が自分の差分に混ざる (鍵が無いと
+/// chunked の 1 本が遅い読み手 8 本の差分に乗って `0 -> 9` になった)。応答の側を数える・
+/// 切りうる試験はこの鍵を持ち、差分が自分の接続だけになるようにする。本文の側 (`request_body`)
+/// とトンネルの側 (`tunnel`) は、切る試験がそれぞれ 1 本しかないので要らない
+static RESPONSE_SIDE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn response_side() -> std::sync::MutexGuard<'static, ()> {
+    RESPONSE_SIDE.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 fn slow_counts(proxy_port: u16) -> (u64, u64, u64) {
     let json = status_json(proxy_port);
     let at = json
@@ -217,6 +231,7 @@ fn within(limit: Duration, cond: impl Fn() -> bool) -> Option<Duration> {
 /// 窓で全部切られて枠が戻り、正常な要求が通る。
 #[test]
 fn test_integration_slow_readers_are_closed_and_the_slots_come_back() {
+    let _serial = response_side();
     let origin = start_big_origin(16 << 20);
     let small = start_big_origin(16);
     let mut cfg = config(MinRate {
@@ -244,7 +259,7 @@ fn test_integration_slow_readers_are_closed_and_the_slots_come_back() {
     let resp = get_small(proxy_port, small);
     assert!(resp.starts_with("HTTP/1.1 200 "), "{}", resp);
     let (after, _, _) = slow_counts(proxy_port);
-    assert!(after >= before + 8, "切った本数: {} -> {}", before, after);
+    assert_eq!(after - before, 8, "切った本数: {} -> {}", before, after);
     stop.store(true, Ordering::Relaxed);
     for r in readers {
         let _ = r.join();
@@ -254,17 +269,27 @@ fn test_integration_slow_readers_are_closed_and_the_slots_come_back() {
 /// chunked の本文 (`BufWriter` の経路) を読まない相手も切られる。
 #[test]
 fn test_integration_a_slow_reader_of_a_chunked_body_is_closed() {
+    let _serial = response_side();
     let origin = start_chunked_origin(16 << 20);
     let proxy_port = start_test_proxy(config(MinRate {
         bps: 64 * 1024,
         window: Duration::from_secs(2),
     }));
+    let (before, _, _) = slow_counts(proxy_port);
     let stop = Arc::new(AtomicBool::new(false));
     let r = slow_reader(get(proxy_port, origin, true), Arc::clone(&stop));
     wait_until(|| active(proxy_port) == 1, "繋がる");
     let took = within(Duration::from_secs(20), || active(proxy_port) == 0)
         .expect("chunked の遅い読み手が 20 秒たっても切られない");
     assert!(took < Duration::from_secs(15), "{:?}", took);
+    let (after, _, _) = slow_counts(proxy_port);
+    assert_eq!(
+        after - before,
+        1,
+        "最小の速さで切った本数: {} -> {}",
+        before,
+        after
+    );
     stop.store(true, Ordering::Relaxed);
     let _ = r.join();
 }
@@ -273,12 +298,14 @@ fn test_integration_a_slow_reader_of_a_chunked_body_is_closed() {
 /// 実際に書けずに待つ形。splice の経路)。
 #[test]
 fn test_integration_a_client_just_above_the_minimum_gets_the_whole_body() {
+    let _serial = response_side();
     let len = 12 << 20;
     let origin = start_big_origin(len);
     let proxy_port = start_test_proxy(config(MinRate {
         bps: 384 * 1024,
         window: Duration::from_secs(2),
     }));
+    let (before, _, _) = slow_counts(proxy_port);
     let mut s = get(proxy_port, origin, false);
     // 64 KiB を読んでは 40 ms 休む。読み手が待つぶんもあって、プロキシから見た速さ (届いた量 ÷
     // 書けずに待った時間) は実測で約 0.95 MB/s = 下限 384 KiB/s の 2.4 倍 (下限 1 MiB/s では
@@ -321,6 +348,11 @@ fn test_integration_a_client_just_above_the_minimum_gets_the_whole_body() {
         got,
         len,
         t0.elapsed()
+    );
+    assert_eq!(
+        slow_counts(proxy_port).0,
+        before,
+        "最小の速さで切られた本数が増えた"
     );
 }
 
