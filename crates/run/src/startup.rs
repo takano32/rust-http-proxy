@@ -326,7 +326,7 @@ fn install_shutdown(
 /// 起動ログ (待ち受け・出来事の `start`・設定ファイル・キャッシュ・締め切りと上限・許可の一覧)。
 fn log_startup(config: &Config, listeners: &[TcpListener], cache: &Cache) {
     log_listening(config, listeners);
-    log_cache(config, cache);
+    log_cache(cache);
     log_limits(config);
 }
 
@@ -381,8 +381,10 @@ fn log_listening(config: &Config, listeners: &[TcpListener]) {
 }
 
 /// キャッシュの予算 (と Pterodactyl の割り当て)。
-fn log_cache(config: &Config, cache: &Cache) {
-    let c = &config.cache;
+fn log_cache(cache: &Cache) {
+    // 設定ではなくキャッシュの側から読む (既定の候補を開けずに次の候補へ回ったとき、
+    // `dir` は開けた方になっている。T36.10)
+    let c = cache.config();
     log_info!(
         None,
         "cache: {} (memory {}, disk {}, reserve {}, probe every {}s, dir {}, default TTL {}s, max object {} MiB)",

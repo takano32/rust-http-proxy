@@ -366,6 +366,8 @@ Pterodactyl 以外で root 実行の場合は `/var/cache` を優先します。
 `HOME` と `XDG_CACHE_HOME` は `.env` に書いたものも見ます (`PROXY_DISK_QUOTA_ROOT` の既定と同じ `HOME`)。
 選ぶときは書けそうかを見るだけで、ディレクトリを作るのはキャッシュを開くときです (`--check` では作りません。T35.8。
 0.35 までは環境変数の `HOME` だけを見て、設定を読むだけで候補を作り `.write-test` を書いていました)。
+選んだ候補を開けなければ (途中が切れたシンボリックリンクなど)、`disk cache dir … unusable: …; trying …` を出して
+残りの候補を順に試し、開けた所を使います (T36.10。`PROXY_CACHE_DIR` を指定したときは他へ回りません)。
 
 ### 変数ごとの説明
 

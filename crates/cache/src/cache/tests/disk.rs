@@ -475,3 +475,40 @@ fn peek_size_is_the_response_length_in_both_tiers() {
     assert_eq!(cache.counters().hits_disk(), 0);
     assert!(!cache.peek(k1).unwrap().memory);
 }
+
+/// 既定の候補の最初を開けなければ、次の候補で開く (T36.10)。
+///
+/// 最初の候補はファイルの下 (書けそうかの判定は通っても `create_dir_all` が失敗する形の代わり)。
+/// 直す前は次へ回らず、ディスクの層が開かないままだった (`disk cache ready` が出ない)。
+#[test]
+fn the_disk_tier_falls_back_to_the_next_default_candidate() {
+    let root = test_dir("shp-test-dir-fallback");
+    fs::create_dir_all(&root).unwrap();
+    let blocker = root.join("plain-file");
+    fs::write(&blocker, b"").unwrap();
+    let second = root.join("second");
+    let third = root.join("third");
+    let mut cfg = CacheConfig::fixed(100, 4 * MIB, blocker.join("rust-http-proxy"));
+    cfg.dir_fallbacks = vec![second.clone(), third.clone()];
+    let cache = Cache::new(cfg);
+
+    assert!(cache.disk.is_ready(), "2 番目の候補で開いていない");
+    assert_eq!(cache.config().dir, second);
+    assert_eq!(cache.disk.dir(), second.as_path());
+    assert!(second.join("00").is_dir());
+    assert!(!third.exists(), "開けた後も先の候補を作った");
+    // 開いた層に置ける (メモリは 100 バイトなので 2 件目で 1 件目がディスクだけになる)
+    let k1 = cache_key("GET", "http://example.com/fallback/1");
+    let k2 = cache_key("GET", "http://example.com/fallback/2");
+    for (i, (k, url)) in [
+        (k1, "http://example.com/fallback/1"),
+        (k2, "http://example.com/fallback/2"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        cache.put(k, url, vec![b'f'; 80], Duration::from_secs(60), i + 1);
+    }
+    assert!(cache.disk_path(k1).unwrap().starts_with(&second));
+    let _ = fs::remove_dir_all(&root);
+}

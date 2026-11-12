@@ -148,7 +148,7 @@ impl Cache {
         } else {
             cfg.disk_quota
         };
-        let cache = Self::blank(cfg, quota, time);
+        let mut cache = Self::blank(cfg, quota, time);
         if !cache.cfg.enabled {
             return cache;
         }
@@ -205,11 +205,35 @@ impl Cache {
 
     /// ディスク層を開いて索引を戻し、RAM 上の FS ならディスクのバラストを止める
     /// (起動ログの 1〜2 行目。T34.84)。
-    fn init_disk(&self) {
-        match self
+    ///
+    /// 開けなければ、既定の候補の残り (`dir_fallbacks`) を順に試し、開けた所を
+    /// `cfg.dir` にする (T36.10。T35.8 で候補を「書けそうか」だけで 1 つに決める形にしてから、
+    /// 作るのに失敗するとディスクのキャッシュが切れたままになっていた)。
+    fn init_disk(&mut self) {
+        let mut result = self
             .disk
-            .init(&self.clock, self.now(), self.cfg.max_stale.as_secs())
-        {
+            .init(&self.clock, self.now(), self.cfg.max_stale.as_secs());
+        let fallbacks = self.cfg.dir_fallbacks.clone();
+        for next in fallbacks {
+            let Err(e) = &result else { break };
+            log_warn!(
+                None,
+                "disk cache dir {} unusable: {}; trying {}",
+                self.cfg.dir.display(),
+                e,
+                next.display()
+            );
+            self.disk = DiskTier::new(
+                next.clone(),
+                self.cfg.reserve.is_on(),
+                self.cfg.disk_max_entries,
+            );
+            self.cfg.dir = next;
+            result = self
+                .disk
+                .init(&self.clock, self.now(), self.cfg.max_stale.as_secs());
+        }
+        match result {
             Ok(r) => log_info!(
                 None,
                 "disk cache ready at {} ({} entries restored, {} expired removed, {} migrated, {} stray files removed)",

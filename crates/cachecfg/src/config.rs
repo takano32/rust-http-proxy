@@ -193,6 +193,9 @@ pub struct CacheConfig {
     pub probe_interval: Duration,
     /// ディスクキャッシュ格納ディレクトリ
     pub dir: PathBuf,
+    /// `dir` を開けなかったときに順に試す残りの候補 (T36.10)。`PROXY_CACHE_DIR` を指定せず
+    /// 既定の候補から選んだときだけ入る ([`resolve_default_dir`] の 2 つ目)。
+    pub dir_fallbacks: Vec<PathBuf>,
     /// 手動で指定する最低限の空きマージン (バイト)。0 なら動的マージンのみ
     pub mem_keep_free: u64,
     pub disk_keep_free: u64,
@@ -245,6 +248,7 @@ impl Default for CacheConfig {
             // 1 → 5 秒 (T29.22。暇なときの裏の費用。上限は `put` 側が自分で守る)
             probe_interval: Duration::from_secs(5),
             dir: std::env::temp_dir().join("rust-http-proxy-cache"),
+            dir_fallbacks: Vec::new(),
             mem_keep_free: 0,
             disk_keep_free: 0,
             default_ttl: Duration::from_secs(300),
@@ -278,10 +282,10 @@ impl CacheConfig {
         let env = Env::new(lookup);
         let pterodactyl = env.get("P_SERVER_UUID").is_some();
         let home = env.get("HOME").map(PathBuf::from);
-        let dir = env
-            .get("PROXY_CACHE_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| resolve_default_dir(pterodactyl, |k| env.get(k)));
+        let (dir, dir_fallbacks) = match env.get("PROXY_CACHE_DIR") {
+            Some(dir) => (PathBuf::from(dir), Vec::new()),
+            None => resolve_default_dir(pterodactyl, |k| env.get(k)),
+        };
         Self {
             enabled: env.flag("PROXY_CACHE_ENABLED", true),
             mem_limit: env.limit("PROXY_MEM_CACHE_MB", "PROXY_MEM_TARGET_PERCENT"),
@@ -291,6 +295,7 @@ impl CacheConfig {
                 .map_or(d.reserve, |v| Reserve::parse(&v)),
             probe_interval: env.secs("PROXY_CACHE_PROBE_SECS", d.probe_interval),
             dir,
+            dir_fallbacks,
             mem_keep_free: env.mib("PROXY_MEM_KEEP_FREE_MB", d.mem_keep_free),
             disk_keep_free: env.mib("PROXY_DISK_KEEP_FREE_MB", d.disk_keep_free),
             default_ttl: env.secs("PROXY_CACHE_TTL_SECS", d.default_ttl),
@@ -356,7 +361,14 @@ impl CacheConfig {
 /// `HOME` と `XDG_CACHE_HOME` は `lookup` (`.env` 込み) から読む (T35.8。0.35 までは
 /// プロセスの環境変数だけを見ていたので、`.env` に `HOME` を書くと割当の根 (`quota_root`) と
 /// 食い違った)。**選ぶだけで何も作らない** (作るのは実際に使うとき = ディスクの層の初期化)。
-pub fn resolve_default_dir(pterodactyl: bool, lookup: impl Fn(&str) -> Option<String>) -> PathBuf {
+///
+/// 2 つ目は、選んだ候補を開けなかったときに順に試す残り (選んだ候補より後ろの候補と、
+/// 最後の一時ディレクトリ。T36.10)。書けそうに見えても作るのに失敗することはある
+/// (途中が切れたシンボリックリンクなど)。
+pub fn resolve_default_dir(
+    pterodactyl: bool,
+    lookup: impl Fn(&str) -> Option<String>,
+) -> (PathBuf, Vec<PathBuf>) {
     pick_default_dir(
         pterodactyl,
         |k| lookup(k).map(OsString::from),
@@ -365,12 +377,13 @@ pub fn resolve_default_dir(pterodactyl: bool, lookup: impl Fn(&str) -> Option<St
 }
 
 /// [`resolve_default_dir`] の候補の順の判断 (環境変数の読みと「書けるか」を引数で受ける。
-/// T34.85)。`writable` は最初に真を返した候補で止まる (その先の候補は作らない)。
+/// T34.85)。`writable` は最初に真を返した候補で止まる (その先の候補は聞かない)。
+/// 2 つ目は選んだ候補より後ろの候補と、最後の一時ディレクトリ (T36.10)。
 fn pick_default_dir(
     pterodactyl: bool,
     var: impl Fn(&str) -> Option<OsString>,
     writable: impl Fn(&Path) -> bool,
-) -> PathBuf {
+) -> (PathBuf, Vec<PathBuf>) {
     let mut candidates: Vec<PathBuf> = Vec::new();
     let home = var("HOME").filter(|v| !v.is_empty());
     // Pterodactyl では残るのはボリューム ($HOME) だけなので、イメージが XDG_CACHE_HOME を
@@ -389,10 +402,16 @@ fn pick_default_dir(
             candidates.insert(0, var_cache);
         }
     }
-    candidates
-        .into_iter()
-        .find(|c| writable(c.as_path()))
-        .unwrap_or_else(|| CacheConfig::default().dir)
+    let last = CacheConfig::default().dir;
+    match candidates.iter().position(|c| writable(c.as_path())) {
+        Some(i) => {
+            let mut rest = candidates.split_off(i);
+            let dir = rest.remove(0);
+            rest.push(last);
+            (dir, rest)
+        }
+        None => (last, Vec::new()),
+    }
 }
 
 /// `dir` を使えそうか (在れば書けて入れるか、無ければいちばん近い在る祖先に作れそうか)。
@@ -498,6 +517,8 @@ mod tests {
         assert!(cfg.enabled);
         assert_eq!(cfg.probe_interval, Duration::from_secs(10));
         assert_eq!(cfg.dir, PathBuf::from("/tmp/shp-cfg-test"));
+        // 指定したディレクトリは開けなくても他へ回らない (T36.10)
+        assert!(cfg.dir_fallbacks.is_empty());
         assert_eq!(cfg.default_ttl, Duration::from_secs(5));
         assert_eq!(cfg.max_object_size, MIB);
         assert_eq!(cfg.mem_max_object_size, 32 * MIB);
@@ -553,8 +574,8 @@ mod tests {
             });
             assert_eq!(
                 got,
-                CacheConfig::default().dir,
-                "どれも書けなければ一時ディレクトリ"
+                (CacheConfig::default().dir, Vec::new()),
+                "どれも書けなければ一時ディレクトリ (残りは無い)"
             );
             asked.into_inner()
         };
@@ -588,8 +609,24 @@ mod tests {
             *asked.borrow_mut() += 1;
             true
         });
-        assert_eq!(got, p("/home/container/.cache/rust-http-proxy"));
+        assert_eq!(got.0, p("/home/container/.cache/rust-http-proxy"));
         assert_eq!(asked.into_inner(), 1);
+        // 開けなかったときの残りは、後ろの候補と一時ディレクトリ (聞かずに並べる。T36.10)
+        assert_eq!(
+            got.1,
+            [p("/var/cache/rust-http-proxy"), CacheConfig::default().dir]
+        );
+        // 2 番目で書けたら、残りは 3 番目から
+        let got = pick_default_dir(false, vars(Some("/h"), None), |c: &Path| {
+            c != Path::new("/var/cache/rust-http-proxy")
+        });
+        assert_eq!(
+            got,
+            (
+                p("/h/.cache/rust-http-proxy"),
+                vec![CacheConfig::default().dir]
+            )
+        );
     }
 
     /// 書けるかの判定は何も作らない (T35.8)。無いディレクトリは在る祖先で答え、
@@ -625,6 +662,10 @@ mod tests {
             _ => None,
         });
         assert_eq!(cfg.dir, root.join(".cache/rust-http-proxy"));
+        assert_eq!(
+            cfg.dir_fallbacks.first(),
+            Some(&PathBuf::from("/var/cache/rust-http-proxy"))
+        );
         assert_eq!(cfg.quota_root, Some(root.clone()));
         assert!(!root.join(".cache").exists());
         let _ = fs::remove_dir_all(&root);
