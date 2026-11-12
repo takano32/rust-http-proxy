@@ -127,6 +127,48 @@ fn fresh_dir_puts_the_pid_in_the_name() {
     assert!(!dir.exists(), "空にして返す (作りはしない)");
 }
 
+/// 試験の置き場の名前 (`rhp-…-<pid>` / `shp-…-<pid>`) だけを pid つきで読む (T36.24)。
+#[test]
+fn scratch_pid_reads_only_test_dirs_ending_in_a_pid() {
+    assert_eq!(common::scratch_pid("rhp-t1415-check-1234"), Some(1234));
+    assert_eq!(common::scratch_pid("shp-it-304-age-disk-77"), Some(77));
+    assert_eq!(common::scratch_pid("rhp-t1415-check"), None, "pid が無い");
+    assert_eq!(common::scratch_pid("rhp-t1415-12x"), None, "数字だけでない");
+    assert_eq!(common::scratch_pid("rhp-"), None);
+    assert_eq!(
+        common::scratch_pid("rust-http-proxy-cache-1"),
+        None,
+        "試験の名前でない"
+    );
+    assert_eq!(common::scratch_pid("systemd-private-1"), None);
+}
+
+/// 前の実行が残した置き場は、pid のプロセスが居なければ消し、居れば残す (T36.24)。
+#[cfg(target_os = "linux")]
+#[test]
+fn sweep_dead_removes_dirs_of_gone_pids_and_keeps_live_ones() {
+    let root = std::env::temp_dir().join(format!("t3624-sweep-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    // 居ない pid: 上限 (pid_max の最大 2^22) の近くで、`/proc` に無いものを探す
+    let dead = (4_000_000u32..4_194_304)
+        .find(|p| !std::path::Path::new(&format!("/proc/{p}")).exists())
+        .expect("空いている pid");
+    let me = std::process::id();
+    let gone = root.join(format!("rhp-t3624-a-{dead}"));
+    let alive = root.join(format!("rhp-t3624-b-{me}"));
+    let other = root.join(format!("other-{dead}"));
+    let no_pid = root.join("shp-t3624-c");
+    for d in [&gone, &alive, &other, &no_pid] {
+        std::fs::create_dir_all(d.join("sub")).unwrap();
+    }
+    assert_eq!(common::sweep_dead(&root), 1);
+    assert!(!gone.exists(), "居ない pid の置き場が残った");
+    assert!(alive.exists(), "生きている pid の置き場を消した");
+    assert!(other.exists(), "試験の名前でないものを消した");
+    assert!(no_pid.exists(), "pid の付かないものを消した");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 /// `read_response` は `Content-Length` の名前を大小を区別せずに読む (オリジン側の
 /// 読み取りと同じ。T34.163)。区別すると本文を読まずに返し、次の応答の頭がずれる。
 #[test]
