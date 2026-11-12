@@ -92,6 +92,32 @@ pub fn read_response_head<R: BufRead>(reader: &mut R) -> io::Result<ResponseHead
     Ok((head, status, headers))
 }
 
+/// `s` の最初の `\n` の位置。8 バイトずつ見る (std の memchr と同じ考え方)。
+///
+/// 前は `&[u8]` の `read_until` で探していたが、総称の `std::io::read_until` は呼ぶ側のクレート
+/// (http) の CGU の組み方しだいで呼び出しに落ちる (タスク 34 の後、forward で要求ごとに +170 Ir
+/// 前後。T36.7)。1 バイトずつの `position` では行の長さに比例して重く、呼び出しに落ちた形と変わらない。
+#[inline]
+fn find_lf(s: &[u8]) -> Option<usize> {
+    const LO: u64 = 0x0101_0101_0101_0101;
+    const HI: u64 = 0x8080_8080_8080_8080;
+    const LF: u64 = LO * b'\n' as u64;
+    let mut i = 0;
+    while let Some(chunk) = s.get(i..i + 8) {
+        let mut w = [0u8; 8];
+        w.copy_from_slice(chunk);
+        // `\n` のバイトが 0 になる。0 のバイトの最上位ビットが立つ (借りで上のバイトに偽の印が
+        // 立つことはあるが、いちばん下の印は必ず本物)
+        let x = u64::from_le_bytes(w) ^ LF;
+        let found = x.wrapping_sub(LO) & !x & HI;
+        if found != 0 {
+            return Some(i + (found.trailing_zeros() / 8) as usize);
+        }
+        i += 8;
+    }
+    s[i..].iter().position(|&b| b == b'\n').map(|p| i + p)
+}
+
 /// 応答を 1 つだけ読む (1xx の読み飛ばしは呼び出し側)。
 ///
 /// 行ごとの `String` (確保 2 回 + UTF-8 の検証 + 写し) を経由せず、`head` へ直接積む。
@@ -122,12 +148,15 @@ fn read_one_response_head<R: BufRead>(reader: &mut R) -> io::Result<(Vec<u8>, u1
         let mut rest = window;
         let mut finished = None;
         while !rest.is_empty() {
-            // `&[u8]` の `read_until` は std の memchr で探す (失敗しない)
-            rest.read_until(b'\n', &mut head)?;
-            if head.last() != Some(&b'\n') {
+            // 改行まで (改行も含めて) を積む。`&[u8]` の `read_until` と同じ切り方
+            let Some(nl) = find_lf(rest) else {
                 // 行の途中で窓が尽きた: 続きは次の `fill_buf` から
+                head.extend_from_slice(rest);
+                rest = &[];
                 break;
-            }
+            };
+            head.extend_from_slice(&rest[..=nl]);
+            rest = &rest[nl + 1..];
             if status.is_none() {
                 match parse_status_line(&head) {
                     Ok(s) => status = Some(s),
@@ -316,6 +345,58 @@ HTTP/1.1 200 OK\r\nX-A: 1\r\nX-Long: 0123456789012345678901234567890123456789\r\
         let (head, status) = read_head(&mut io::BufReader::new(&raw[..])).unwrap();
         assert_eq!(status, 200);
         assert_eq!(head.len(), raw.len() - 2);
+    }
+
+    /// [`find_lf`] (8 バイトずつ見る) が、1 バイトずつの素朴な探し方と同じ位置を返す。
+    /// 長さ 0〜40 の各位置に `\n` を置き、前後を `\n` 以外の全部のバイト (`0x0a` の
+    /// 隣の `0x09`・`0x0b`、上位ビットの立った `0x8a`・`0xff` など) で埋めて見る (T36.7)。
+    #[test]
+    fn find_lf_matches_the_naive_search() {
+        let naive = |s: &[u8]| s.iter().position(|&b| b == b'\n');
+        for fill in 0u8..=255 {
+            if fill == b'\n' {
+                continue;
+            }
+            for len in 0..=40usize {
+                let mut s = vec![fill; len];
+                assert_eq!(find_lf(&s), None, "fill {:#x} len {}", fill, len);
+                for at in 0..len {
+                    s[at] = b'\n';
+                    assert_eq!(
+                        find_lf(&s),
+                        naive(&s),
+                        "fill {:#x} len {} at {}",
+                        fill,
+                        len,
+                        at
+                    );
+                    // 後ろにもう 1 つ置いても、最初の位置
+                    if at + 3 < len {
+                        s[at + 3] = b'\n';
+                        assert_eq!(
+                            find_lf(&s),
+                            Some(at),
+                            "fill {:#x} len {} at {}",
+                            fill,
+                            len,
+                            at
+                        );
+                        s[at + 3] = fill;
+                    }
+                    s[at] = fill;
+                }
+            }
+        }
+        // `\n` の直前の 0x0b (借りが上のバイトへ伝わる形) と、ずれた開始位置
+        let raw = b"\x0b\x0b\x0b\x0b\x0b\x0b\x0b\n\x0b\n";
+        for start in 0..raw.len() {
+            assert_eq!(
+                find_lf(&raw[start..]),
+                naive(&raw[start..]),
+                "start {}",
+                start
+            );
+        }
     }
 
     /// `on_interim` が失敗したら、その場で読むのをやめて同じ失敗を返す。
