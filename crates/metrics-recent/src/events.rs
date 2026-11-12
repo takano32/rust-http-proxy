@@ -222,10 +222,20 @@ pub fn prefault() -> usize {
 ///
 /// 読み戻した件は**書き直さない** (印を通算に合わせる)。件数は `/events` の
 /// `"restored"` に出す。**前の版の `shutdown` や `start` が残るのはこの読み戻しのおかげ。**
+///
+/// `PROXY_RECORDS=off` なら何も入れず、`restored` も 0 にする (T36.14。T35.4 の 3 本と同じ形。
+/// 前は旗を見ずに入れて、渡された件数を立てていた。起動の経路は off なら呼ばない)。
 pub fn restore(events: Vec<Event>) {
-    let n = events.len().min(MAX_EVENTS);
-    for e in events {
-        RING.locked().push(e);
+    let recording = crate::records::recording();
+    let n = if recording {
+        events.len().min(MAX_EVENTS)
+    } else {
+        0
+    };
+    if recording {
+        for e in events {
+            RING.locked().push(e);
+        }
     }
     let mut r = RING.locked();
     let mark = r.total();
