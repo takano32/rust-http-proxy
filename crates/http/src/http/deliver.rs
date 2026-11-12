@@ -2,6 +2,8 @@
 //! オリジンの接続の後始末と状態の文字列・アクセスログまで。
 
 use std::borrow::Cow;
+#[cfg_attr(not(target_os = "linux"), allow(unused_imports))]
+// BufRead は splice の枝でだけ使う (T36.31)
 use std::io::{self, BufRead, Read, Write};
 
 use super::buffers::{COPY_BUF_SIZE, CopyBuf};
@@ -367,6 +369,7 @@ fn relay_body(
     let mut body_bytes = 0u64;
     let mut clean = true;
     // ---- 書き換えも保存もしない本文は splice(2) でカーネル内を運ぶ ----
+    #[cfg_attr(not(target_os = "linux"), allow(unused_mut))]
     let mut spliced = false;
     #[cfg(target_os = "linux")]
     if early == 0

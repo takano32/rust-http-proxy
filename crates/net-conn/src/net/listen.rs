@@ -13,6 +13,7 @@ use crate::{log_debug, log_warn};
 pub const STD_BACKLOG: u32 = 128;
 
 /// backlog の既定 (`PROXY_LISTEN_BACKLOG=0`) の頭打ち。
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))] // Linux でだけ使う (T36.31)
 pub(crate) const DEFAULT_BACKLOG_CAP: u32 = 1024;
 
 /// backlog の既定: **`min(1024, /proc/sys/net/core/somaxconn)`** (T14.47)。
@@ -42,6 +43,7 @@ pub fn default_backlog() -> u32 {
 
 /// `/proc/sys/net/core/somaxconn` の中身から backlog の既定を決める ([`default_backlog`] の判断の部)。
 /// 読めない (`None`)・数でない・0 なら [`DEFAULT_BACKLOG_CAP`]、読めれば [`DEFAULT_BACKLOG_CAP`] で頭打ち。
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))] // Linux でだけ使う (T36.31)
 pub(super) fn backlog_from_somaxconn(somaxconn: Option<&str>) -> u32 {
     somaxconn
         .and_then(|s| s.trim().parse::<u32>().ok())

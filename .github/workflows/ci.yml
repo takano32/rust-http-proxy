@@ -119,6 +119,8 @@ jobs:
         run: |
           rustup toolchain install stable --profile minimal --target aarch64-apple-darwin
           rustup default stable
+      # 本体 (lib と bin) は警告でも落とす (T36.31)。試験まで含めた方は、Linux だけの試験の use が残るので組めるかだけを見る
+      - run: RUSTFLAGS="-D warnings" cargo check --workspace --target aarch64-apple-darwin
       - run: cargo check --workspace --all-targets --target aarch64-apple-darwin
 
   # 動作環境 (メモリの小さいコンテナ) でビルドできることを守る (§0 の関門)。

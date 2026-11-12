@@ -60,6 +60,7 @@ pub(super) struct Info {
     pub(super) detail: Detail,
     /// `200 Connection Established` を書き終えた時刻 (`first_relay` の起点。T14.3 (1))。
     /// `--lite` では `None` = 時計を読まない
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))] // Linux でだけ使う (T36.31)
     pub(super) established: Option<Instant>,
     pub(super) metrics: Arc<Metrics>,
     /// `/connections` の枠 (T13.4)。状態と運んだバイト数をここに書く。
