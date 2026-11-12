@@ -79,6 +79,25 @@ class ChangeAndReport(unittest.TestCase):
         self.assertEqual(lines[1], "forward  [1] b: 22,803 Ir/要求 (回ごと 22,803 / 22,801 / 22,900)  [0] から +3.06%")
         self.assertEqual(lines[2], "connect  [0] a: 19,182 Ir/要求")
         self.assertEqual(lines[3], "connect  [1] b: 測れなかった")
+        # 外れ値の無い表には断りの行を足さない
+        self.assertEqual(len(lines), 4)
+
+    def test_rounds_far_from_the_median_are_marked(self):
+        # T36.6: HIT の +1〜3% の外れ値 (T34.7)。中央値 20,000 から 1% 以上離れた回に `*`
+        lines = cg.report_lines(["a", "b"], ["hit"], {(0, "hit"): [20000, 20199, 20200], (1, "hit"): [19800, 20000, 20600]})
+        self.assertEqual(lines[0], "hit      [0] a: 20,199 Ir/要求 (回ごと 20,000 / 20,199 / 20,200)")
+        self.assertEqual(lines[1], "hit      [1] b: 20,000 Ir/要求 (回ごと 19,800* / 20,000 / 20,600*)  [0] から -0.99%")
+        self.assertEqual(lines[2], "(* = 中央値から 1% 以上離れた回。外れ値なので、中央値で比べる)")
+
+    def test_is_outlier(self):
+        self.assertTrue(cg.is_outlier(10100, 10000))
+        self.assertTrue(cg.is_outlier(9900, 10000))
+        self.assertFalse(cg.is_outlier(10099, 10000))
+        self.assertFalse(cg.is_outlier(5, 0))
+
+    def test_the_default_is_three_rounds(self):
+        self.assertEqual(cg.parser().parse_args(["--bin", "x"]).rounds, 3)
+        self.assertEqual(cg.parser().parse_args(["--bin", "x", "--rounds", "1"]).rounds, 1)
 
 
 if __name__ == "__main__":

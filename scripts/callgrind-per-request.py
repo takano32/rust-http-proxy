@@ -2,7 +2,7 @@
 # callgrind の下でプロキシを起こし、forward / hit / connect の **Ir/要求** を印字する (T34.7)。
 #
 #     scripts/callgrind-per-request.py --bin target/release/rust-http-proxy
-#     scripts/callgrind-per-request.py --bin before/rust-http-proxy --bin target/release/rust-http-proxy --rounds 2
+#     scripts/callgrind-per-request.py --bin before/rust-http-proxy --bin target/release/rust-http-proxy
 #
 # 測り方は T28.12・T29.24・T34.0 と同じ: `--lite` + `PROXY_LOG_LEVEL=warn`、応答本文 1 KiB、
 # 並列 2 (`--conc`)。自分で立てたオリジン (127.0.0.1 の空きポート) へ **ちょうど N 本** の要求を流してから
@@ -13,6 +13,8 @@
 #   - connect: `CONNECT` で 1 本ずつトンネルを開け、中で GET を 1 回して閉じる
 # `--bin` を 2 つ以上渡すと、回 (`--rounds`) ごとにバイナリを交互に測り (機械の揺れが片方に偏らないように)、
 # 最初の `--bin` を基準にした増減 (%) を添える。熱い経路の小タスクの受け入れ基準 (+0.5% 以内) を見る道具。
+# **既定は 3 回の中央値** (T36.6)。HIT は同じバイナリでも +1〜3% の外れ値が出る (T34.7) ので、1 回だけでは
+# ±0.5% の判定を誤る。回ごとの値のうち中央値から 1% 以上離れた回には `*` を付け、表の下に断りを出す。
 # バイナリは `CARGO_PROFILE_RELEASE_STRIP=none cargo build --release` で作ると、callgrind_annotate で中が読める。
 # callgrind の出力は `--out` (既定は一時ディレクトリ) に `<bin の番号>-<mode>-<N>.cg` で残す。
 #
@@ -58,6 +60,16 @@ def change_pct(base, value):
     return (value - base) * 100.0 / base
 
 
+# 回ごとの値に外れ値の印 (`*`) を付ける、中央値からの離れ (%。T36.6)
+OUTLIER_PCT = 1.0
+
+
+def is_outlier(value, med):
+    """回ごとの値が中央値から `OUTLIER_PCT` % 以上離れているか (中央値が 0 なら離れていないとする)。"""
+    pct = change_pct(med, value)
+    return pct is not None and abs(pct) >= OUTLIER_PCT
+
+
 def median(xs):
     s = sorted(xs)
     m = len(s) // 2
@@ -72,6 +84,7 @@ def split_counts(n, conc):
 def report_lines(bins, modes, results):
     """results[(bin の番号, mode)] = [回ごとの Ir/要求] から、印字する行を作る。"""
     out = []
+    marked = False
     for mode in modes:
         base = None
         for i, b in enumerate(bins):
@@ -82,7 +95,9 @@ def report_lines(bins, modes, results):
             med = median(got)
             line = f"{mode:8} [{i}] {b}: {med:,} Ir/要求"
             if len(got) > 1:
-                line += " (回ごと " + " / ".join(f"{x:,}" for x in got) + ")"
+                marks = [is_outlier(x, med) for x in got]
+                marked = marked or any(marks)
+                line += " (回ごと " + " / ".join(f"{x:,}" + ("*" if m else "") for x, m in zip(got, marks)) + ")"
             if i == 0:
                 base = med
             else:
@@ -90,6 +105,8 @@ def report_lines(bins, modes, results):
                 if pct is not None:
                     line += f"  [0] から {pct:+.2f}%"
             out.append(line)
+    if marked:
+        out.append(f"(* = 中央値から {OUTLIER_PCT:g}% 以上離れた回。外れ値なので、中央値で比べる)")
     return out
 
 
@@ -215,7 +232,8 @@ def measure(binary, port, origin_port, mode, n, conc, out):
     return ir
 
 
-def main(argv=None):
+def parser():
+    """引数の読み方 (試験が既定を見るので main から分けた。T36.6)。"""
     ap = argparse.ArgumentParser(description="callgrind で forward / hit / connect の Ir/要求 を測る (T34.7)")
     ap.add_argument("--bin", action="append", required=True, help="測るバイナリ (2 つ以上で交互に測り、最初を基準に比べる)")
     ap.add_argument("--port", type=int, default=19100, help="プロキシに待ち受けさせるポート (既定 19100)")
@@ -223,8 +241,14 @@ def main(argv=None):
     ap.add_argument("--n1", type=int, default=400)
     ap.add_argument("--n2", type=int, default=2000)
     ap.add_argument("--conc", type=int, default=2)
-    ap.add_argument("--rounds", type=int, default=1, help="交互に回す回数 (回ごとの中央値を出す)")
+    ap.add_argument("--rounds", type=int, default=3,
+                    help="交互に回す回数 (既定 3。回ごとの中央値を出し、中央値から 1%% 以上離れた回に * を付ける。T36.6)")
     ap.add_argument("--out", help="callgrind の出力を残すディレクトリ (既定は一時ディレクトリ)")
+    return ap
+
+
+def main(argv=None):
+    ap = parser()
     a = ap.parse_args(argv)
     modes = [m for m in a.modes.split(",") if m]
     bad = [m for m in modes if m not in MODES]
