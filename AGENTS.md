@@ -17,8 +17,6 @@
 - 過去の判定を同じ命令で出し直すために凍結している道具の出力 (`scripts/snapshot_criteria.py`・`scripts/criteria/`・`scripts/snapshot-diff.py` の phase30 までの文字列) は変えない。
 - 既にある文をまとめて置き換えるのは、利用者が頼んだときだけ。
 
-同じ表は `.claude/skills/wording/SKILL.md` にもある。変えるときは両方を直す。
-
 ## 進め方の決まり
 
 台帳の決まりは [`TASKS.md`](TASKS.md) の「決まり」にある。とくに次の 3 つ。
