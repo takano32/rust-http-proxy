@@ -11,7 +11,8 @@
 #   `phase26_28.py`  Phase 26〜28 の行とその材料を読む小物
 #   `phase29_30.py`  Phase 29〜30 の行とその材料を読む小物
 #   `t35.py`     Phase 31 の行 (T35.9・T35.11)
-#   `rules.py`       閾の辞書 (`PHASE14`〜`T35_TH`)・`CRITERIA`・`FROZEN`・`RULES` (Phase の順に組む)
+#   `t36.py`         T36 の行 (T36.1)
+#   `rules.py`       閾の辞書 (`PHASE14`〜`T36_TH`)・`CRITERIA`・`FROZEN`・`RULES` (Phase の順に組む)
 # ここに残っているのは、`RULES` の行を順に呼ぶ `judge()` と、判定表の印字 (`render_criteria()`) だけ。
 #
 # 小物までこちら側にあるのは、`snapshot-diff.py` は名前に `-` があって `import` できないため
@@ -75,9 +76,11 @@ from criteria.t35 import (  # noqa: E402,F401
     ALLOC_KEY, CHUNKED_FIRST_BYTES, INDEX_BYTES_DISK, INDEX_BYTES_MEMORY, _t35_events, _t35_events_measured,
     _t35_heap, cache_owned_range,
 )
+from criteria.t36 import DNS_ENTRY_BYTES, DNS_MAX_ENTRIES, _t36_heap, dns_owned_range  # noqa: E402,F401
 from criteria.rules import (  # noqa: E402,F401
     CRITERIA, FROZEN, PHASE14, PHASE15, PHASE17, PHASE18, PHASE20, PHASE21, PHASE22, PHASE23, PHASE24,
-    PHASE25, PHASE26, PHASE27, PHASE28, PHASE29, PHASE30, T35_TH, RULES, CRITERIA_ALIASES, criteria_name,
+    PHASE25, PHASE26, PHASE27, PHASE28, PHASE29, PHASE30, T35_TH, T36_TH, RULES, CRITERIA_ALIASES,
+    criteria_name,
 )
 
 
@@ -273,6 +276,14 @@ INTRO = {
                 "`/status` の `cache.memory.alloc_bytes` (本文の確保の合計。0.35 から) があればその差で 1 つの値に決め、"
                 "無い版では端数を 0〜(`used_bytes` + 件数 × 64 KiB) の幅で引き、残りの上下限が閾をまたげば「判定できず」(上下限を書く) です。"
                 "**その部が雪像に無い行は「判定できず」**で、0 とは書きません。"),
+    # T36.1。T35 の 26 行のうち、heap の行から名前解決の表の持ち物も引いた
+    "T36": ("26 行の並びと材料は T35 と同じです。直したのは 1 行 (T36.1): heap の行は、`heap_used + mmap − cache_memory` の"
+            "起動 60 秒の基準からの増えから、T35 と同じキャッシュの持ち物に加えて**名前解決の表の持ち物** "
+            "(`/status` の `dns.entries` × 1 名前あたり 1,070 B) も引いた残りで読みます。表は上限 4,096 名前で止まる増えで、"
+            "漏れではありません (0.35.12 の締めで +5.7 MB の届かずだったのはこれ)。1 名前あたりの大きさは、実バイナリの"
+            "表を埋めて `/status` を前後で読んで測りました。基準の時点の名前もまとめて引くので、多めに引く側に倒れます。"
+            "`dns.entries` の無いスナップショットは 0〜上限ぶんの幅で引き、残りの上下限が閾をまたげば「判定できず」(上下限を書く) です。"
+            "**その部がスナップショットに無い行は「判定できず」**で、0 とは書きません。"),
 }
 
 

@@ -1,6 +1,6 @@
 # 判定表 (`scripts/snapshot_criteria.py`) の**閾と並び** (T34.129 で割った)。
 #
-# Phase ごとの閾の辞書 (`PHASE14`〜`T35_TH`)・`--criteria` の名前から閾を引く `CRITERIA`・出力を
+# Phase ごとの閾の辞書 (`PHASE14`〜`T36_TH`)・`--criteria` の名前から閾を引く `CRITERIA`・出力を
 # 変えない定義 `FROZEN`・名前から判定の関数の並びを引く `RULES` を、Phase の順に組む。判定の関数は
 # `criteria/phase*.py` にある。`RULES` の並びは `test_snapshot_criteria.py` の `RulesOrder` が固定している。
 
@@ -29,6 +29,7 @@ from .phase29_30 import (
     _p29_idle_cost, _p29_miss_band, _p30_dns_slow, _p30_refresh_per_name,
 )
 from .t35 import _t35_events, _t35_heap
+from .t36 import _t36_heap
 
 
 # ---------------------------------------------------------------- (9) 判定表
@@ -289,6 +290,13 @@ CRITERIA["phase30"] = PHASE30
 RULES["T35"] = replaced(RULES["phase30"], {7: _t35_events, 9: _t35_heap})
 T35_TH = dict(PHASE30)
 CRITERIA["T35"] = T35_TH
+
+
+# T36 = T35 の 26 行のうち 9 番目 (heap) を、キャッシュの持ち物に加えて名前解決の表の持ち物 (`dns.entries` ×
+# 1 名前あたりの大きさ) も引いた残りで読む行に差し替えたもの (T36.1)。並びは同じ。**T35 以前の並びと文面は 1 つも動かない**
+RULES["T36"] = replaced(RULES["T35"], {9: _t36_heap})
+T36_TH = dict(T35_TH)
+CRITERIA["T36"] = T36_TH
 
 # 判定表の名前は「足したタスクの番号」(2026-11-07、利用者の指示。T35.14)。phase14〜phase30 は過去の締めを
 # 同じ命令で出し直せるように名前を残し、タスクの番号の名前を**別名**として足す (中身と出力は同じもの)。

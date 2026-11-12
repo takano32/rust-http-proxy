@@ -324,7 +324,7 @@ class Criteria15(unittest.TestCase):
 
     def test_both_criteria_can_be_chosen(self):
         self.assertEqual(sorted(sd.CRITERIA),
-                         ["T35", "phase14", "phase15", "phase17", "phase18", "phase20", "phase21",
+                         ["T35", "T36", "phase14", "phase15", "phase17", "phase18", "phase20", "phase21",
                           "phase22", "phase23", "phase24", "phase25", "phase26", "phase27", "phase28", "phase29",
                           "phase30"])
 
@@ -3281,6 +3281,15 @@ class RulesOrder(unittest.TestCase):
             "_p26_rejected", "_p28_trim_works", "_p29_cgroup_cpu_shown", "_p29_idle_cost",
             "_p26_origin_warn_per_minute",
         ),
+        "T36": (
+            "_p20_watch_host", "_p22_refresh_rate", "_p29_miss_band", "_p20_timeout",
+            "_p29_conn_per_resolved_request", "_p20_warm_max", "_t35_events", "_p17_cgroup", "_t36_heap",
+            "_p21_request_probes", "_p30_dns_slow", "_p22_stale_retries", "_p29_connect_errors",
+            "_p22_connect_errors_shown", "_p30_refresh_per_name", "_p25_silent_restarts", "_p24_connect_tail",
+            "_p26_header_timeouts", "_p26_log_errors", "_p26_local_blocks", "_p26_connect_cut",
+            "_p26_rejected", "_p28_trim_works", "_p29_cgroup_cpu_shown", "_p29_idle_cost",
+            "_p26_origin_warn_per_minute",
+        ),
     }
 
     def test_each_phase_lists_the_same_rules_in_the_same_order(self):
@@ -3469,6 +3478,114 @@ class Deployed35(unittest.TestCase):
         row = self.rows("T35")[6]
         self.assertIn("`dns_slow` **0.062** 件/時 (3 件、前 0.000)、`connect_p95` 0.125 件/時 (6 件、前 0.087)", row[2])
         self.assertIn("より前の 461 件を外し", row[4])
+
+
+class Criteria36Heap(unittest.TestCase):
+    """`--criteria T36` (T36.1): heap の行を、キャッシュに加えて名前解決の表の持ち物も引いた残りで読む。"""
+
+    T0 = 1_800_000_000
+    UP = 41 * 3600
+
+    def snap(self, grown_mb, entries=4096, cache_mb=0.0, mem_n=0, disk_n=0, alloc=0.0, dns=True, baseline=True):
+        """起動から 41 時間のスナップショット。`heap_used + mmap − cache_memory` は基準 18.7 MB から `grown_mb` 増えている。"""
+        base = 18_700_000
+        cm = int(cache_mb * 1e6)
+        now = base + int(grown_mb * 1e6)
+        memory = {"heap_used": 6_600_000, "mmap": now + cm - 6_600_000, "cache_memory": cm,
+                  "heap_free": 7_500_000, "rss": 33_400_000}
+        if baseline:
+            memory["baseline"] = {"at": self.T0 - self.UP + 60, "bytes": base}
+        status = {"uptime_secs": self.UP, "memory": memory,
+                  "cache": {"memory": {"used_bytes": cm, "entries": mem_n},
+                            "disk": {"used_bytes": 81_900_000, "entries": disk_n}}}
+        if alloc is not None:
+            status["cache"]["memory"]["alloc_bytes"] = cm + int(alloc * 1e6)
+        if dns:
+            status["dns"] = {"entries": entries}
+        return {"taken_at": self.T0, "uptime_secs": self.UP, "status": status}
+
+    def row(self, b, rule=None):
+        return (rule or sc._t36_heap)({"a": {}, "b": b, "info": {}}, sc.T36_TH)
+
+    def test_T36_replaces_only_the_heap_row_of_T35(self):
+        t35, t36 = sd.RULES["T35"], sd.RULES["T36"]
+        self.assertEqual(len(t36), 26)
+        self.assertEqual([i for i in range(26) if t35[i] is not t36[i]], [8])
+        self.assertIs(t36[8], sc._t36_heap)
+        self.assertEqual(sc.T36_TH, sc.T35_TH)
+        self.assertEqual(sc.criteria_name("T36"), "T36")
+
+    def test_the_table_at_its_limit_is_taken_out(self):
+        # 0.35.12 の締め (T35.99): キャッシュはほぼ空で +5.8 MB。T35 は届かず、T36 は表の 4,096 名前 × 1,070 B を引いて満たす
+        b = self.snap(5.811, cache_mb=0.211342, mem_n=6, disk_n=134)
+        self.assertEqual(self.row(b, sc._t35_heap)[3], sd.MISSED)
+        row = self.row(b)
+        self.assertEqual(row[3], sd.MET, row)
+        self.assertIn("残り **+1.4** MB (増え +5.8 MB − キャッシュ 0.1 MB − 名前解決の表 4.4 MB)", row[2])
+        self.assertIn("名前解決の表 4,096 名前 × 1,070 B = 4.4 MB", row[4])
+        self.assertEqual(sc.DNS_ENTRY_BYTES, 1070)
+
+    def test_growth_beyond_the_table_is_still_missed(self):
+        # 表のぶんを引いてもなお 5 MB 以上増えていれば、届かずのまま
+        row = self.row(self.snap(10.0))
+        self.assertEqual(row[3], sd.MISSED, row)
+        self.assertIn("残り **+5.6** MB", row[2])
+        # 表が小さければ引く量も小さい
+        self.assertEqual(self.row(self.snap(5.5, entries=100))[3], sd.MISSED)
+        self.assertEqual(self.row(self.snap(4.9, entries=0))[3], sd.MET)
+
+    def test_without_dns_entries_the_table_is_a_range(self):
+        # `dns.entries` が無ければ 0〜上限 4,096 名前ぶんの幅で引き、閾をまたげば判定できず
+        row = self.row(self.snap(6.0, dns=False))
+        self.assertEqual(row[3], sd.UNKNOWN, row)
+        self.assertIn("残り **+1.6〜+6.0** MB (増え +6.0 MB − キャッシュ 0.0 MB − 名前解決の表 0.0〜4.4 MB)", row[2])
+        self.assertIn("`dns.entries` が無いので 0〜4.4 MB (上限 4,096 名前ぶん)", row[4])
+        self.assertIn("**残りの幅が閾 5 MB をまたぐ**", row[4])
+        self.assertEqual(self.row(self.snap(4.0, dns=False))[3], sd.MET)
+        self.assertEqual(self.row(self.snap(10.0, dns=False))[3], sd.MISSED)
+
+    def test_the_cache_range_and_the_table_add_up(self):
+        # 0.34.165 の締め (T34.999): `alloc_bytes` が無いのでキャッシュは幅、表は 1 つの値
+        b = self.snap(6.287, cache_mb=30.402326, mem_n=25, disk_n=132, alloc=None)
+        row = self.row(b)
+        self.assertEqual(row[3], sd.MET, row)
+        self.assertIn("残り **-30.2〜+1.8** MB (増え +6.3 MB − キャッシュ 0.1〜32.1 MB − 名前解決の表 4.4 MB)", row[2])
+
+    def test_without_the_baseline_it_is_the_phase24_row(self):
+        b = self.snap(6.0, baseline=False)
+        self.assertEqual(self.row(b), self.row(b, sc._p24_heap))
+
+    def test_an_old_baseline_cannot_be_judged(self):
+        b = self.snap(1.0)
+        b["status"]["memory"]["baseline"]["at"] = self.T0 - self.UP - 3600
+        row = self.row(b)
+        self.assertEqual(row[3], sd.UNKNOWN)
+        self.assertIn("前の起動が残した基準", row[4])
+
+
+T3599_BEFORE = os.path.join(DEPLOYED, "tokyo", "2026-11-07T214622Z-shutdown-snapshot.json")
+T3599_AFTER = os.path.join(DEPLOYED, "tokyo", "2026-11-09T215159Z-snapshot.json")
+T36_NOW = os.path.join(DEPLOYED, "tokyo", "2026-11-12T100706Z-snapshot.json")
+
+
+@unittest.skipUnless(all(os.path.exists(x) for x in (T34999_BEFORE, T34999_AFTER, T3599_BEFORE, T3599_AFTER, T36_NOW)),
+                     "tokyo の実データが無い (status/tokyo/ の T34.999・T35.99 の締めと 2026-11-12 のスナップショット)")
+class Deployed36(unittest.TestCase):
+    """T36.1 の受け入れ基準: 0.34.165・0.35.12 の締めと 2026-11-12 の 1 枚で、heap の行の残りがどれも 5 MB 未満。"""
+
+    def heap(self, before, after, criteria):
+        return build([before, after, "--no-dns", "--criteria", criteria])["criteria"]["rows"][8]
+
+    def test_each_closeout_is_under_the_limit(self):
+        for before, after, t35, want in (
+                (T34999_BEFORE, T34999_AFTER, sd.UNKNOWN, "残り **-30.2〜+1.8** MB"),
+                (T3599_BEFORE, T3599_AFTER, sd.MISSED, "残り **+1.4** MB"),
+                (T3599_AFTER, T36_NOW, sd.MISSED, "残り **+2.1** MB")):
+            with self.subTest(after=os.path.basename(after)):
+                self.assertEqual(self.heap(before, after, "T35")[3], t35)
+                row = self.heap(before, after, "T36")
+                self.assertEqual(row[3], sd.MET, row)
+                self.assertIn(want, row[2])
 
 
 class CriteriaAliases(unittest.TestCase):
