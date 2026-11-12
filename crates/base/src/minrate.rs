@@ -57,6 +57,7 @@ impl MinRate {
             queue_fd: -1,
             queued_at_start: 0,
             queued_before: Cell::new(UNREAD),
+            cut: false,
         }
     }
 }
@@ -125,10 +126,30 @@ impl std::fmt::Display for TooSlow {
 
 impl std::error::Error for TooSlow {}
 
-/// [`RateGuard`] が切ったエラーか。種類は `TimedOut` (締め切りの仲間として数えられる)。
+/// 切ったあとの書き・読みのエラーの中身 (T36.33)。待たずに返し、本数も数えない。
+#[derive(Debug)]
+pub(crate) struct AlreadyCut {
+    pub min_bps: u64,
+}
+
+impl std::fmt::Display for AlreadyCut {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "transfer already closed as slower than {} B/s",
+            self.min_bps
+        )
+    }
+}
+
+impl std::error::Error for AlreadyCut {}
+
+/// [`RateGuard`] が切ったエラーか (切ったあとのエラーも含む)。種類は `TimedOut`
+/// (締め切りの仲間として数えられる)。
 #[cfg(test)]
 pub(crate) fn is_slow(e: &io::Error) -> bool {
-    e.get_ref().is_some_and(|inner| inner.is::<TooSlow>())
+    e.get_ref()
+        .is_some_and(|inner| inner.is::<TooSlow>() || inner.is::<AlreadyCut>())
 }
 
 /// 1 方向の見張り。待った時間と、そのあいだに運んだバイトを積む。
@@ -150,6 +171,10 @@ pub struct RateGuard {
     /// 最初の待ちが積まれたら [`RateGuard::queued_at_start`] に移す。待ちの前に呼ばれる
     /// [`RateGuard::left`] (`&self`) からも置くので `Cell` (T36.29)
     queued_before: Cell<u64>,
+    /// 一度切ったか。切ったあとの待ちうる 1 回は呼ばずにエラーで返す (T36.33)。前は切ると
+    /// 窓を数え直すだけだったので、`BufWriter` の Drop の flush がもう一度無通信の締め切りまで
+    /// 待ち、大きな書きならもう一度判定して 1 本を 2 回数えた
+    cut: bool,
 }
 
 /// [`RateGuard::queued_before`] を読んでいない印。
@@ -193,6 +218,9 @@ impl RateGuard {
         if !self.rate.is_on() {
             return f();
         }
+        if self.cut {
+            return Err(self.already_cut());
+        }
         if self.stalled.is_zero() {
             // この待ちで窓が始まる: 待つ前のキューを読む (T36.29)
             self.read_queue_before();
@@ -227,6 +255,9 @@ impl RateGuard {
     /// [`RateGuard::note`] の待った回 (時計を読んだ回だけ来る)。
     #[cold]
     fn waited(&mut self, waited: Duration, bytes: u64) -> io::Result<()> {
+        if self.cut {
+            return Err(self.already_cut());
+        }
         if self.stalled.is_zero() {
             // 窓の始まり: いまキューに残っている分は前の窓のもの。待つ前に読んであれば
             // それを使う (待ちのあいだに届いた分も数える。T36.29)
@@ -257,6 +288,7 @@ impl RateGuard {
             waited: stalled,
             min_bps: self.rate.bps,
         };
+        self.cut = true;
         let side = self.side as usize;
         CLOSED[side].fetch_add(1, Ordering::Relaxed);
         // 遅い相手は数を決められるので、WARN は種類ごとに 1 分 1 行 (本数は `/status`)
@@ -272,10 +304,22 @@ impl RateGuard {
         Err(io::Error::new(io::ErrorKind::TimedOut, slow))
     }
 
-    /// いまの窓で 1 度でも待ったか (待ち始めた相手は小さな書きも測る)。
+    /// いまの窓で 1 度でも待ったか (待ち始めた相手は小さな書きも測る)。切ったあとも `true`
+    /// (小さな書きも [`RateGuard::time`] に通して、待たずにエラーで返す。T36.33)。
     #[inline]
     pub(crate) fn stalling(&self) -> bool {
-        !self.stalled.is_zero()
+        !self.stalled.is_zero() || self.cut
+    }
+
+    /// 切ったあとの書き・読みのエラー (待たない・数えない。T36.33)。
+    #[cold]
+    fn already_cut(&self) -> io::Error {
+        io::Error::new(
+            io::ErrorKind::TimedOut,
+            AlreadyCut {
+                min_bps: self.rate.bps,
+            },
+        )
     }
 
     /// 窓の残り (この先これだけ待てば判定に届く)。切らない設定なら `None`。
@@ -484,11 +528,11 @@ mod tests {
     fn time_passes_errors_through_and_counts_the_wait() {
         // 切ると WARN をログの環に 1 行書くので、環を数える試験と並ばない (T18.4 と同じ鍵)
         let _ring = crate::sync::LockExt::locked(&crate::log::tests::RING_TEST_LOCK);
-        let mut g = MinRate {
+        let rate = MinRate {
             bps: 1 << 20,
             window: Duration::from_millis(20),
-        }
-        .guard(Side::RequestBody, 1);
+        };
+        let mut g = rate.guard(Side::RequestBody, 1);
         let e = g
             .time(|| {
                 std::thread::sleep(Duration::from_millis(25));
@@ -496,6 +540,8 @@ mod tests {
             })
             .unwrap_err();
         assert!(is_slow(&e));
+        // 切った見張りは次の 1 回を呼ばない (T36.33) ので、素通しは新しい見張りで見る
+        let mut g = rate.guard(Side::RequestBody, 1);
         let e = g
             .time(|| Err(io::Error::from(io::ErrorKind::BrokenPipe)))
             .unwrap_err();
@@ -506,17 +552,25 @@ mod tests {
     /// 送信キューが詰まった接続 (書き手, 読み手) と、詰まったときのキューの量。
     #[cfg(target_os = "linux")]
     fn clogged() -> (std::net::TcpStream, std::net::TcpStream, u64) {
-        use std::io::Write as _;
         let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let mut w = std::net::TcpStream::connect(l.local_addr().unwrap()).unwrap();
+        let w = std::net::TcpStream::connect(l.local_addr().unwrap()).unwrap();
         let (r, _) = l.accept().unwrap();
+        refill(&w);
         w.set_nonblocking(true).unwrap();
-        let chunk = [0u8; 64 * 1024];
-        while w.write(&chunk).is_ok() {}
         use std::os::fd::AsRawFd as _;
         let q = unsent(w.as_raw_fd());
         assert!(q > 0, "キューが詰まらない");
         (w, r, q)
+    }
+
+    /// 送信キューをもう書けなくなるまで詰める (記述子は待つ形に戻す)。
+    #[cfg(target_os = "linux")]
+    fn refill(mut w: &std::net::TcpStream) {
+        use std::io::Write as _;
+        w.set_nonblocking(true).unwrap();
+        let chunk = [0u8; 64 * 1024];
+        while w.write(&chunk).is_ok() {}
+        w.set_nonblocking(false).unwrap();
     }
 
     /// 送信キューが `below` を下回るまで、読み手から読む (= 待ちのあいだに相手へ届く)。
@@ -594,5 +648,53 @@ mod tests {
         drain_until(&w, &mut r, q / 2);
         let e = g.note(Duration::from_millis(10), 0).unwrap_err();
         assert!(is_slow(&e), "{e}");
+    }
+
+    /// 一度切った見張りは、次の書き (`BufWriter` の flush・Drop の flush) を待たずにエラーで返し、
+    /// 2 回目を数えない (T36.33)。前は切ると窓を数え直すだけだったので、残りの書きがもう一度
+    /// 無通信の締め切りまで待ち、大きければもう一度判定して数えた。
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn after_cutting_the_next_write_returns_without_waiting() {
+        use std::io::Write as _;
+        let _ring = crate::sync::LockExt::locked(&crate::log::tests::RING_TEST_LOCK);
+        let (w, _r, _) = clogged();
+        w.set_nonblocking(false).unwrap();
+        let timeout = Duration::from_millis(300);
+        w.set_write_timeout(Some(timeout)).unwrap();
+        let rate = MinRate {
+            bps: 1 << 30,
+            window: Duration::from_millis(50),
+        };
+        let before = closed_counts()[0];
+        let mut out = io::BufWriter::with_capacity(64 * 1024, GuardedWrite::new(&w, &rate, 1));
+        // 1 回目: 容量ちょうどの書きは素通しで測られ、締め切りまで待って切られる
+        let e = out.write_all(&[0u8; 64 * 1024]).unwrap_err();
+        assert!(is_slow(&e), "{e}");
+        assert_eq!(closed_counts()[0], before + 1);
+        // 2 回目: 送信キューを詰め直しても、小さな書きの flush も大きな書きの Drop も待たない
+        // (前は flush が締め切りまで待ち、Drop の 20 KiB はもう一度判定されて数えられた)
+        out.write_all(&[0u8; 100]).unwrap();
+        refill(&w);
+        let t0 = Instant::now();
+        let e = out.flush().unwrap_err();
+        assert!(is_slow(&e), "{e}");
+        out.write_all(&[0u8; 20 * 1024]).unwrap();
+        refill(&w);
+        drop(out);
+        assert!(
+            t0.elapsed() < timeout / 2,
+            "切ったあとに待った: {:?}",
+            t0.elapsed()
+        );
+        assert_eq!(closed_counts()[0], before + 1, "1 本を 2 回数えた");
+        // 見張りそのものも、切ったあとは待ちうる 1 回を呼ばずに返す
+        let mut g = rate.guard(Side::Response, 1);
+        let _ = g.note(Duration::from_millis(50), 0).unwrap_err();
+        let e = g.time(|| unreachable!("切ったあとに待った")).unwrap_err();
+        assert!(is_slow(&e), "{e}");
+        let e = g.note(Duration::from_millis(50), 0).unwrap_err();
+        assert!(is_slow(&e), "{e}");
+        assert_eq!(closed_counts()[0], before + 2);
     }
 }
