@@ -20,3 +20,5 @@ description: このリポジトリで日本語を書くとき (利用者への�
 - 済んだタスクの記録 (`tasks/TNN.md`) は 1 文字も変えない決まりなので、古い言葉のまま残す。
 - 道具の出力のうち、過去の判定を同じ命令で出し直すために凍結しているもの (`scripts/snapshot_criteria.py`・`scripts/criteria/`・`scripts/snapshot-diff.py` の phase30 までの文字列) は変えない。
 - 既にある文をまとめて置き換えるのは、利用者が頼んだときだけ。
+
+同じ表は `AGENTS.md` にもある。変えるときは両方を直す。
