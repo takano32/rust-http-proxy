@@ -125,6 +125,63 @@ impl Server {
     }
 }
 
+/// sink 宛てのトンネルがプロキシの中で全部閉じるまで待つ (上限 [`TUNNELS_CLOSE_LIMIT`]。T36.22)。
+///
+/// トンネルの中継は、統計 (`/hosts` `/clients` と合計) を書いて**から**両側の記述子を閉じる
+/// (`crates/tunnel/src/tunnel/relay/mod.rs` の `Idle::drop`)。sink は受けたらすぐ閉じるので、
+/// プロキシのオリジン側の記述子は `CLOSE_WAIT` (か、まだ `ESTABLISHED`) で残り、統計を
+/// 書き終えて閉じると消える。そこで `/proc/net/tcp` (と `tcp6`) から相手のポートが sink の
+/// 記述子を数え、0 になるまで待つ。読めなければ前と同じ 50 ms だけ寝る。
+pub(crate) fn wait_for_tunnels_to(port: u16) {
+    let give_up = std::time::Instant::now() + TUNNELS_CLOSE_LIMIT;
+    loop {
+        match open_sockets_to(port) {
+            Some(0) => return,
+            None => {
+                thread::sleep(Duration::from_millis(50));
+                return;
+            }
+            Some(_) if std::time::Instant::now() >= give_up => return,
+            Some(_) => thread::sleep(Duration::from_millis(5)),
+        }
+    }
+}
+
+/// [`wait_for_tunnels_to`] が待つ上限。起動を止めないため、届かなくても先へ進む。
+const TUNNELS_CLOSE_LIMIT: Duration = Duration::from_secs(2);
+
+/// 相手のポートが `port` で、まだ閉じていない TCP の記述子の数。表が 1 つも読めなければ `None`。
+fn open_sockets_to(port: u16) -> Option<usize> {
+    let mut found = None;
+    for path in ["/proc/net/tcp", "/proc/net/tcp6"] {
+        if let Ok(table) = std::fs::read_to_string(path) {
+            *found.get_or_insert(0) += count_open_to(&table, port);
+        }
+    }
+    found
+}
+
+/// `/proc/net/tcp` の形の表から、相手 (`rem_address`) のポートが `port` で、状態が
+/// `ESTABLISHED` (01)・`SYN_SENT` (02)・`CLOSE_WAIT` (08) の行を数える。
+///
+/// 自分から閉じた後の状態 (`FIN_WAIT*`・`LAST_ACK`・`TIME_WAIT`) は数えない (統計はもう書いてある)。
+pub(crate) fn count_open_to(table: &str, port: u16) -> usize {
+    table
+        .lines()
+        .skip(1)
+        .filter(|line| {
+            let mut cols = line.split_whitespace().skip(2);
+            let (Some(remote), Some(state)) = (cols.next(), cols.next()) else {
+                return false;
+            };
+            let Some((_, hex)) = remote.rsplit_once(':') else {
+                return false;
+            };
+            u16::from_str_radix(hex, 16) == Ok(port) && matches!(state, "01" | "02" | "08")
+        })
+        .count()
+}
+
 /// 要求の終わり (空行) を数えては固定応答を返す。**行の中身は読まない** (固定応答なので要らない)。
 ///
 /// 読み取りタイムアウトを置いてあるのは、止めるときに気づくため

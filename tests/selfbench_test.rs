@@ -95,12 +95,18 @@ fn test_integration_self_bench_fills_status() {
     assert!(requests > 100.0, "要求が通っていない: {}", line);
     assert!(connects > 100.0, "CONNECT が通っていない: {}", line);
 
-    // 出来事の時系列にも 1 件 (種類は増やさず `start` に添える)
-    let events = endpoint_json(proxy.port, "/events");
-    assert!(
-        events.contains("self_bench forward"),
-        "/events に自己ベンチの 1 件が無い: {}",
-        events
+    // 出来事の時系列にも 1 件 (種類は増やさず `start` に添える)。
+    // **ログの 1 行の後に積む** (`run_self_bench` はログを書いてから `events::push` する) ので、
+    // ログを見た直後に読むと、混んだ機械ではまだ無いことがある (T36.22)。積まれるまで待つ
+    let mut events = String::new();
+    common::wait_until_for(
+        || {
+            events = endpoint_json(proxy.port, "/events");
+            events.contains("self_bench forward")
+        },
+        "/events に自己ベンチの 1 件が積まれる",
+        common::POLL_STEP,
+        common::Limit::Tries(common::POLL_MAX),
     );
     assert!(
         !events.contains("\"kind\":\"self_bench\""),

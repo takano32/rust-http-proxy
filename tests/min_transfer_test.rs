@@ -282,11 +282,21 @@ fn test_integration_a_client_just_above_the_minimum_gets_the_whole_body() {
     let mut s = get(proxy_port, origin, false);
     // 64 KiB を読んでは 40 ms 休む。読み手が待つぶんもあって、プロキシから見た速さ (届いた量 ÷
     // 書けずに待った時間) は実測で約 0.95 MB/s = 下限 384 KiB/s の 2.4 倍 (下限 1 MiB/s では
-    // 0.93 MiB/s で切られた。境目そのものは `proxy_base::minrate` の単体試験で見る)
+    // 0.93 MiB/s で切られた。境目そのものは `proxy_base::minrate` の単体試験で見る)。
+    //
+    // **休む長さは決め打ちにせず、k 個目の 64 KiB の締め切り (`t0 + k × 40 ms`) まで寝る**
+    // (T36.22)。前は毎回 40 ms 寝ていたので、読み手のスレッドが混んだ機械で止められると、
+    // 止められたぶんだけ間隔が延びて速さが下限へ寄り、強い負荷で 3 回中 2 回切られた。
+    // 締め切りで刻むと、止められた後は寝ずに追いつくので、速さは機械の混み方によらない。
+    // **刻み (64 KiB / 40 ms) は変えない**: 読み手の速さとプロキシから見た速さは比例しない。
+    // 手元で 69 ms ごと (読み手の平均 0.94 MB/s) にすると、プロキシからは 238 KB/s
+    // (「476160 B in 2.0s of waiting」) に見えて 20 回とも切られた
+    const PACE: Duration = Duration::from_millis(40);
     s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
     let mut buf = vec![0u8; 64 * 1024];
     let mut got = 0usize;
     let t0 = Instant::now();
+    let mut next = t0;
     'outer: loop {
         let mut filled = 0;
         while filled < buf.len() {
@@ -299,7 +309,10 @@ fn test_integration_a_client_just_above_the_minimum_gets_the_whole_body() {
             }
         }
         got += filled;
-        thread::sleep(Duration::from_millis(40));
+        next += PACE;
+        if let Some(wait) = next.checked_duration_since(Instant::now()) {
+            thread::sleep(wait);
+        }
     }
     // 応答ヘッダーのぶんだけ多い
     assert!(

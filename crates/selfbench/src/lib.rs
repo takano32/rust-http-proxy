@@ -286,10 +286,13 @@ pub fn run(proxy: SocketAddr, exempt: &dyn Fn(&[u16])) -> Report {
     report.connects = connect.ok;
     report.connect_us = connect.per_op();
 
-    // 最後のトンネルを閉じたプロキシ側のスレッドが統計を書き終えるまで少しだけ待つ
+    // 最後のトンネルを閉じたプロキシ側のスレッドが統計を書き終えるまで待つ
     // (打ち手は `shutdown` した時点で次へ行くので、`/hosts` に書くのはその後になる)。
-    // **CPU の窓は既に閉じてある**ので、この待ちは数字に乗らない
-    thread::sleep(Duration::from_millis(50));
+    // **CPU の窓は既に閉じてある**ので、この待ちは数字に乗らない。
+    // 前は 50 ms 決め打ちで寝ていたが、混んだ機械では足りない (T36.22)。プロキシは
+    // 統計を書いてからオリジン側の記述子を閉じるので、sink 宛ての記述子が残っていないかを
+    // 見て待つ (`partner::wait_for_tunnels_to`)
+    partner::wait_for_tunnels_to(ports[1]);
     // 旗と穴を閉じる (ここから先はループバック宛ても普通に 403 で、統計にも普通に載る)
     disarm();
     exempt(&[]);

@@ -106,16 +106,19 @@ fn a_probe_measures_a_real_connect_and_a_refused_one() {
     // IP リテラルは名前解決が要らない (表も通らない) ので、かかっても数 ms。
     // **`== 0` では見ない** (T18.1): 測っているのは壁時計で、混んだ機械ではスレッドが
     // 1 回止められただけで 0.5 ms を超えて 1 に丸め上がり、稀に落ちた。1 回の値は
-    // 止められた時間をそのまま含むので、**3 回測った最小**が 2 ms 以下かで見る
-    let dns_ms = [ok.dns_ms]
-        .into_iter()
-        .chain((0..2).map(|_| probe(&format!("127.0.0.1:{}", port)).dns_ms))
-        .min()
-        .unwrap();
+    // 止められた時間をそのまま含むので、**測った最小**が 2 ms 以下かで見る。
+    // 3 回では、混んだ機械で 3 回とも止められることがあった (T36.22)。2 ms 以下が出た
+    // 時点で止め、最大 20 回まで測る (名前解決が本当に 2 ms を超えるなら 20 回とも超える)
+    let mut seen = vec![ok.dns_ms];
+    while seen.iter().all(|&ms| ms > 2) && seen.len() < 20 {
+        seen.push(probe(&format!("127.0.0.1:{}", port)).dns_ms);
+    }
+    let dns_ms = seen.iter().copied().min().unwrap();
     assert!(
         dns_ms <= 2,
-        "IP リテラルの名前解決: {} ms ({:?})",
+        "IP リテラルの名前解決: {} ms ({} 回の最小。{:?})",
         dns_ms,
+        seen.len(),
         ok
     );
 

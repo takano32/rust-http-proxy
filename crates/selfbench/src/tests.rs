@@ -9,7 +9,7 @@ use proxy_base::sync::LockExt;
 
 use super::*;
 use crate::cpu::{Charge, SB_CPU_US};
-use crate::partner::count_requests;
+use crate::partner::{count_open_to, count_requests};
 
 /// 回していなければ `/status` の `self_bench` は `null`。
 #[test]
@@ -237,4 +237,46 @@ fn a_phase_with_no_operations_has_no_per_op_figure() {
         cpu_us: 100,
     };
     assert_eq!(some.per_op(), Some(25.0));
+}
+
+/// `/proc/net/tcp` の形の表から、相手のポートが sink で、まだ閉じていない記述子だけを数える (T36.22)。
+#[test]
+fn count_open_to_counts_only_live_sockets_whose_peer_is_the_port() {
+    // 相手のポート 0xA00C = 40972。状態 01・02・08 は数え、04・06・09・0A は数えない。
+    // 自分のポートが 40972 (= sink の側の記述子) の行も数えない
+    let table = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
+   0: 0100007F:9C40 0100007F:A00C 01 00000000:00000000 00:00000000 00000000     0        0 1 1 0000000000000000 20 4 30 10 -1
+   1: 0100007F:9C41 0100007F:A00C 08 00000000:00000000 00:00000000 00000000     0        0 2 1 0000000000000000 20 4 30 10 -1
+   2: 0100007F:9C42 0100007F:A00C 02 00000000:00000000 00:00000000 00000000     0        0 3 1 0000000000000000 20 4 30 10 -1
+   3: 0100007F:9C43 0100007F:A00C 04 00000000:00000000 00:00000000 00000000     0        0 4 1 0000000000000000 20 4 30 10 -1
+   4: 0100007F:9C44 0100007F:A00C 06 00000000:00000000 00:00000000 00000000     0        0 5 1 0000000000000000 20 4 30 10 -1
+   5: 0100007F:9C45 0100007F:A00C 09 00000000:00000000 00:00000000 00000000     0        0 6 1 0000000000000000 20 4 30 10 -1
+   6: 0100007F:A00C 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 7 1 0000000000000000 20 4 30 10 -1
+   7: 0100007F:A00C 0100007F:9C46 01 00000000:00000000 00:00000000 00000000     0        0 8 1 0000000000000000 20 4 30 10 -1
+   8: 0100007F:9C47 0100007F:1F90 01 00000000:00000000 00:00000000 00000000     0        0 9 1 0000000000000000 20 4 30 10 -1
+";
+    assert_eq!(count_open_to(table, 40972), 3);
+    assert_eq!(count_open_to(table, 8080), 1, "別のポート宛ては別に数える");
+    assert_eq!(count_open_to(table, 1), 0);
+    assert_eq!(count_open_to("", 40972), 0, "見出しも無い表");
+}
+
+/// 本物の `/proc/net/tcp` で、閉じていない記述子が数えられ、閉じると数から消えること (T36.22)。
+#[cfg(target_os = "linux")]
+#[test]
+fn wait_for_tunnels_to_returns_once_the_sockets_to_the_port_are_closed() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let client = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    let table = std::fs::read_to_string("/proc/net/tcp").unwrap();
+    assert_eq!(count_open_to(&table, port), 1, "繋いだ 1 本: {}", table);
+    drop(client);
+    let t0 = Instant::now();
+    crate::partner::wait_for_tunnels_to(port);
+    assert!(
+        t0.elapsed() < Duration::from_secs(1),
+        "閉じたのに待ち続けた: {:?}",
+        t0.elapsed()
+    );
+    drop(listener);
 }

@@ -310,22 +310,48 @@ fn the_run_delay_is_null_without_schedstat() {
 ///
 /// `sample` は 2 回呼ぶ (CPU は前回との差で積むので、1 回目は「生まれてからのぶん」)。
 /// 空回りの犯人を名前で指せるのがこの欄の目的なので `comm` も見る。
+///
+/// **2 回の `sample` の間は、壁時計ではなく回る側の CPU で決める** (T36.22)。前は 500 ms
+/// 寝ていたが、混んだ機械では回る側にその間ほとんど CPU が回ってこず、tick (10 ms) の
+/// 丸めで他のスレッドと並んで先頭を外れうる。回る側が自分の CPU (`/proc/thread-self/stat`
+/// の utime + stime) を書き出し、それが 1 回目の `sample` から 30 tick 進むまで待つ
+/// (上限 10 秒。届かなければそのまま比べる)。
 #[cfg(target_os = "linux")]
 #[test]
 fn the_busiest_thread_comes_first_in_threads_top() {
     use std::sync::Arc;
+    use std::sync::atomic::AtomicU64;
+
+    /// このスレッドの utime + stime (tick)。読めなければ 0。
+    fn own_ticks() -> u64 {
+        let stat = std::fs::read_to_string("/proc/thread-self/stat").unwrap_or_default();
+        let after = stat.rsplit_once(") ").map_or("", |(_, rest)| rest);
+        // `)` の後ろは 3 番目の欄 (state) から始まるので、utime (14) は 11 番目、stime (15) は 12 番目
+        after
+            .split_whitespace()
+            .skip(11)
+            .take(2)
+            .filter_map(|v| v.parse::<u64>().ok())
+            .sum()
+    }
 
     let stop = Arc::new(AtomicBool::new(false));
-    let s2 = Arc::clone(&stop);
+    let ticks = Arc::new(AtomicU64::new(0));
+    let (s2, t2) = (Arc::clone(&stop), Arc::clone(&ticks));
     let spinner = thread::Builder::new()
         .name("t150-spin".into())
         .spawn(move || {
-            // 最長 2 秒回し続ける (1 clock tick = 10 ms なので 200 tick ぶん)
-            let until = Instant::now() + Duration::from_secs(2);
+            // 止められるまで回し続ける (上限 15 秒)。自分の CPU を 100 周ごとに書き出す
+            let until = Instant::now() + Duration::from_secs(15);
             let mut x = 0u64;
+            let mut round = 0u32;
             while Instant::now() < until && !s2.load(Ordering::Relaxed) {
                 for _ in 0..10_000 {
                     x = x.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+                }
+                round += 1;
+                if round.is_multiple_of(100) {
+                    t2.store(own_ticks(), Ordering::Relaxed);
                 }
             }
             std::hint::black_box(x);
@@ -335,7 +361,11 @@ fn the_busiest_thread_comes_first_in_threads_top() {
     let p = Profile::default();
     let mut s = Sampler::for_self();
     s.sample(&p);
-    thread::sleep(Duration::from_millis(500));
+    let from = ticks.load(Ordering::Relaxed);
+    let give_up = Instant::now() + Duration::from_secs(10);
+    while ticks.load(Ordering::Relaxed) < from + 30 && Instant::now() < give_up {
+        thread::sleep(Duration::from_millis(20));
+    }
     s.sample(&p);
     stop.store(true, Ordering::Relaxed);
     let (_, top, run_delay) = s.take();
