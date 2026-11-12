@@ -236,15 +236,15 @@ pub(super) fn serve_one(conn: &mut Conn) -> io::Result<Step> {
             Err(e) => {
                 // `Host` が無い (`no_host`) のか絶対 URI が壊れている (`bad_uri`) のかを
                 // 分けて数える (T14.28)。判定は**断る経路だけ**を通る。
-                // ここだけは応答を書けなくても閉じるだけ (元から `let _ = reject(..)`)
-                return peer
-                    .refuse(
-                        metrics::BadRequestReason::of_target(method, target),
-                        400,
-                        "Bad Request",
-                        |more| log_warn!(Some(conn_id), "400 Bad Request: {}{}", e, more),
-                    )
-                    .or(Ok(Step::Close(recent::CloseReason::Shutdown)));
+                // 応答を書けなかったら、ほかの断る所と同じく書き込みの失敗を返す (T36.16。
+                // 前はここだけ失敗を捨てて `shutdown` で閉じていたので、個票の閉じた理由が
+                // 書き込みの失敗にならなかった)
+                return peer.refuse(
+                    metrics::BadRequestReason::of_target(method, target),
+                    400,
+                    "Bad Request",
+                    |more| log_warn!(Some(conn_id), "400 Bad Request: {}{}", e, more),
+                );
             }
         }
     };
