@@ -62,7 +62,7 @@ fn test_integration_connect_timeout_cuts_the_connect_short() {
     );
     let elapsed = started.elapsed();
 
-    // CONNECT の接続失敗は 502 (504 はコードに無い)
+    // CONNECT の接続失敗は 502 (504 は、覚えた宛先を待たずに断るときだけ。T36.8)
     assert!(out.starts_with("HTTP/1.1 502"), "{}", out);
     assert!(
         elapsed < Duration::from_secs(3),
