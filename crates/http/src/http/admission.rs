@@ -38,6 +38,8 @@ pub(super) enum Rejection<'a> {
     ExpectUnknown,
     /// `Content-Length` と `Transfer-Encoding: chunked` が両方ある (T14.28)
     ChunkedAndLength,
+    /// メソッドが token でない (T36.15。server の要求行の判定 (T34.142) と同じ)
+    Method(&'a str),
 }
 
 impl Rejection<'_> {
@@ -60,6 +62,7 @@ impl Rejection<'_> {
             | Rejection::TransferEncoding { .. }
             | Rejection::ChunkedAndLength => BadRequestReason::BodyFraming,
             Rejection::DupHost => BadRequestReason::DupHost,
+            Rejection::Method(_) => BadRequestReason::Method,
             Rejection::ExpectUnknown => return None,
         })
     }
@@ -125,6 +128,12 @@ pub(super) fn check<'a>(
     // 分岐も比較も 1 つも増えない
     if req.chunked && req.content_length.is_some() {
         return Err(Rejection::ChunkedAndLength);
+    }
+    // メソッドは token だけ (RFC 9112 §3 の `method = token`。T36.15)。本体の入口 (server の
+    // 要求行の判定。T34.142) が先に断るので、ここで当たるのは http を別の入口から呼んだときだけ。
+    // 見るのは上の判定を全部通った要求だけなので、今まで断っていた要求の理由は変わらない
+    if !proxy_base::ascii::is_token(method) {
+        return Err(Rejection::Method(method));
     }
     Ok(RequestLine {
         method,
@@ -309,6 +318,13 @@ mod tests {
                 400,
                 Some(BadRequestReason::BodyFraming),
             ),
+            (
+                parse(&["Host: h"]),
+                "GE@T /p HTTP/1.1",
+                Rejection::Method("GE@T"),
+                400,
+                Some(BadRequestReason::Method),
+            ),
         ];
         for (req, line, want, status, reason) in cases {
             let got = check(&req, line).unwrap_err();
@@ -367,6 +383,35 @@ mod tests {
             check(&req, "POST /p HTTP/1.1").unwrap_err(),
             Rejection::ExpectUnknown
         );
+        // token でないメソッドは最後 (ほかの理由がある要求はそちらで断る。T36.15)
+        let req = parse(&["Host: h", "Content-Length: x"]);
+        assert_eq!(
+            check(&req, "GE@T /p HTTP/1.1").unwrap_err(),
+            Rejection::ContentLength
+        );
+    }
+
+    /// token でないメソッドは断る (T36.15。server が手前で断るので、http を別の入口から
+    /// 呼んだときだけ当たる)。NBSP は ASCII の空白ではないのでメソッドの中に残る。
+    #[test]
+    fn a_method_that_is_not_a_token_is_rejected() {
+        let req = parse(&["Host: h"]);
+        for (line, method) in [
+            ("GE@T /p HTTP/1.1", "GE@T"),
+            ("G\u{a0}ET /p HTTP/1.1", "G\u{a0}ET"),
+            ("GET\u{1} /p HTTP/1.1", "GET\u{1}"),
+            ("G(ET) /p HTTP/1.1", "G(ET)"),
+        ] {
+            assert_eq!(
+                check(&req, line).unwrap_err(),
+                Rejection::Method(method),
+                "{line:?}"
+            );
+        }
+        // token の記号は通す
+        for line in ["M-SEARCH * HTTP/1.1", "X_Y.Z~!#$%&'*+^`| /p HTTP/1.1"] {
+            assert!(check(&req, line).is_ok(), "{line:?}");
+        }
     }
 
     /// 本文の枠組み: chunked が勝ち、`Content-Length: 0` は本文なし (T29.5)。

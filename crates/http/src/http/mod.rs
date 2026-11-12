@@ -451,6 +451,13 @@ fn refuse(
                 "400 Bad Request: both Content-Length and Transfer-Encoding: chunked{}",
                 more
             ),
+            // server の要求行の判定 (T34.142) と同じ文面 (T36.15)
+            Rejection::Method(method) => log_warn!(
+                Some(conn_id),
+                "400 Bad Request: method is not a token: {}{}",
+                crate::log::Clip(method),
+                more
+            ),
         }
     }
     let _ = write_error(client, status, reason);
