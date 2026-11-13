@@ -31,7 +31,7 @@ fn the_dns_response_stays_under_256_kib() {
         refreshes: 2,
         // T14.37 で増えた欄 (引き直しで答えが変わった回数)。1 行の大きさに効く
         changes: 1,
-        // T15.0 (7) で増えた欄 (warm のまま引かれた回数とミスの内訳)。同上
+        // T15.0 で増えた欄 (warm のまま引かれた回数とミスの内訳)。同上
         warm_requests: 9,
         misses_by_kind: [2, 1, 0, 1],
     };

@@ -406,7 +406,7 @@ class EventsErrorsBursts(unittest.TestCase):
     def test_the_text_of_an_event_is_printed(self):
         """T.14.99: サーバーが出す鍵は `text` (`events.rs` の `Event::to_json`)。
 
-        `what` / `msg` だけを読んでいたので §6 の「中身」が全行 `—` になっていた。
+        `what` / `msg` だけを読んでいたので「その間の出来事」の「中身」が全行 `—` になっていた。
         """
         md = run([A, B, "--no-dns"])
         self.assertIn("| reload | reload: PROXY_DNS_WARM_SECS 300 -> 900 |", md)
@@ -444,7 +444,7 @@ class EventsErrorsBursts(unittest.TestCase):
     def test_the_shot_prints_the_active_at_the_moment_it_crossed(self):
         """T.14.99: 写真に `peak` という欄は無い (`active` / `threshold` / `max_conns`)。
 
-        `s.get('peak')` を読んでいたので §8 が「(山 —)」になっていた。写真は
+        `s.get('peak')` を読んでいたので「バースト」が「(山 —)」になっていた。写真は
         **閾を越えた瞬間**の 1 枚なので、山 (`active_max`) と混ぜない。
         """
         md = run([A, B, "--no-dns"])
@@ -456,7 +456,7 @@ class EventsErrorsBursts(unittest.TestCase):
         """T.14.99: 1,024 で割るなら KiB / MiB / GiB (画面の `fmtBytes` と同じ)。
 
         `GB` / `MB` / `kB` と書いていたので、報告のバイト数が 2.4〜7.4% 小さい
-        十進の量に読めていた (§4 の Δバイト は README / §2 に写す数字)。
+        十進の量に読めていた (「接続元別」の Δバイト は README / `docs/status.md` に写す数字)。
         """
         self.assertEqual(pd.fmt_bytes(1 << 20), "1.0 MiB")
         self.assertEqual(pd.fmt_bytes(-(1 << 30)), "-1.0 GiB")
@@ -490,7 +490,7 @@ def set_column(snap, res, name, value):
 
 
 class DnsTable(unittest.TestCase):
-    """§5 の「最後に使ってから」(T.32.31): `/dns` の一覧が切れていれば表全体とは書かない。"""
+    """「名前解決」の「最後に使ってから」(T.32.31): `/dns` の一覧が切れていれば表全体とは書かない。"""
 
     def test_a_truncated_list_says_only_the_oldest_side(self):
         b = read(B)
@@ -991,7 +991,7 @@ class DeployedRttSplit(unittest.TestCase):
 class BusyHours(unittest.TestCase):
     """T.29.13: 毎時 500 本 (300 本の閾を全部の時間が越える) でも、`--burst-median-k 3` なら平常時が空にならない。
 
-    tokyo の 0.28.48 は毎時 475〜1,760 本で、要約の §2 は「平常時 0 / 23 標本」だった。サーバーの
+    tokyo の 0.28.48 は毎時 475〜1,760 本で、要約の「平常時の前後」は「平常時 0 / 23 標本」だった。サーバーの
     `normal_hours_only=1` も T.29.13 から同じ規則 (300 本と中央値 × 3 の大きい方)。
     """
 

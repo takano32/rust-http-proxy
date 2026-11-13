@@ -137,7 +137,7 @@ fn connect_single(addr: &SocketAddr, timeout: Duration) -> io::Result<TcpStream>
     let v6 = addr.is_ipv6();
     connect_one(addr, proxy_base::timeout::for_socket(timeout)).inspect(|s| {
         nodelay(s);
-        // 確立した族を控える (thread-local への書き込み 1 回。T12.4 (2))
+        // 確立した族を控える (thread-local への書き込み 1 回。T12.4)
         crate::dns::note_family(v6);
         // SYN を何回送り直したか (`getsockopt` 1 回。T14.46)
         note_syn_retrans(s);
@@ -161,7 +161,7 @@ fn note_winner(
     // SYN を何回送り直したか (`getsockopt` 1 回。T14.46)。**勝った候補だけ**
     // 読む (捨てる候補のぶんは数えない = 確立 1 本につきちょうど 1 回)
     note_syn_retrans(stream);
-    // ホスト別の内訳 (`v4_wins` / `v6_wins`) に使う (T12.4 (2))
+    // ホスト別の内訳 (`v4_wins` / `v6_wins`) に使う (T12.4)
     crate::dns::note_family(won_v6);
     if tried_v6 {
         if won_v6 {
@@ -205,7 +205,7 @@ struct Race<'a, S, F> {
     next_launch: Instant,
     /// 最後に返ってきた失敗
     last_err: Option<io::Error>,
-    /// 締め切りで抜けたか (T15.0 (3))
+    /// 締め切りで抜けたか (T15.0)
     timed_out: bool,
 }
 
@@ -247,7 +247,7 @@ impl<'a, S: Send + 'static, F: Connect<S>> Race<'a, S, F> {
                 }
                 Err(RecvTimeoutError::Timeout) => {
                     if self.deadline.is_some_and(|d| Instant::now() >= d) {
-                        // 締め切りで抜けたか (T15.0 (3))。立てるのは**この締め切りの `break` だけ**で、
+                        // 締め切りで抜けたか (T15.0)。立てるのは**この締め切りの `break` だけ**で、
                         // 「全候補が失敗した」の `break` では立てない (そのときの `last_err` は本物の理由)
                         self.timed_out = true;
                         break;
@@ -256,7 +256,7 @@ impl<'a, S: Send + 'static, F: Connect<S>> Race<'a, S, F> {
                 Err(RecvTimeoutError::Disconnected) => break,
             }
         }
-        // 締め切りで抜けたときは「終わった理由」を返す (T15.0 (3))。ここで `last_err`
+        // 締め切りで抜けたときは「終わった理由」を返す (T15.0)。ここで `last_err`
         // (先に返ってきた 1 本の `ECONNREFUSED` 等) を返すと、30 秒黙って待った接続が
         // `/errors` にも `/hosts` の `errors_by_cause` にも `refused` として残り、
         // 原因別の集計がそのまま狂う (`ErrCause::from_io` はこの 1 つの札しか見ない)

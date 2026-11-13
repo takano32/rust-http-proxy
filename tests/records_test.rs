@@ -1,6 +1,6 @@
 //! 記録の一括 off とハッシュ化 `PROXY_RECORDS=on|off|hashed` の結合テスト (T14.41)。
 //!
-//! 認証を入れない方針 (§0) なので、公開ポートで動かすと個票 (`/recent` `/errors`
+//! 認証を入れない方針 (仕様 S25) なので、公開ポートで動かすと個票 (`/recent` `/errors`
 //! `/connections` `/clients` `/log` `/events` `/trace` `/bursts`) は誰でも読める。
 //! ここで見るのは 3 つだけ:
 //!

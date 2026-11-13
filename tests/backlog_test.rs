@@ -1,6 +1,6 @@
 //! 待ち受けの backlog (`PROXY_LISTEN_BACKLOG`。T14.47) の結合テスト。
 //!
-//! `std` の `TcpListener::bind` は backlog **128 固定**で、accept ループは 1 本 (§4 の T4.3)。
+//! `std` の `TcpListener::bind` は backlog **128 固定**で、accept ループは 1 本 (T4.3。`docs/rejected.md`)。
 //! ブラウザがページを 1 枚開くと数十本の CONNECT が同時に来るので、受け入れ待ち行列が溢れると
 //! SYN は黙って捨てられ、クライアントは 1 秒後に再送する (T14.16 の手元の実測で max 1,011 ms、
 //! T14.12 の `ListenOverflows` が直近 5 分で +122)。

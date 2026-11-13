@@ -121,7 +121,7 @@ fn cgroup_metrics(out: &mut String, k: &Latest) {
             "",
             k.cpu_nr_throttled,
         );
-        // 絞られた**割合**を出すための分母 (T15.0 (6))。
+        // 絞られた**割合**を出すための分母 (T15.0)。
         // `rate(throttled_periods[5m]) / rate(periods[5m])` で読む
         header(
             out,

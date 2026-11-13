@@ -95,7 +95,7 @@ fn check_resident(mem: &str) {
 ///
 /// `quantiles` は直近 1,024 本の標本の環状 (T14.31)、`readers` は内部エンドポイントを
 /// 引いた接続元の表 (環状ではない。T14.53)、`profile` は段階とスレッドの窓
-/// (T14.3。T14.21 が落としていたのを T15.0 (13) で足した)。
+/// (T14.3。T14.21 が落としていたのを T15.0 で足した)。
 const RING_KEYS: [&str; 11] = [
     "recent",
     "errors",
@@ -208,7 +208,7 @@ fn test_integration_memory_breakdown_agrees_with_the_rest_of_status() {
     assert!(rings > 0 && rings < 64 * 1024 * 1024, "{}", mem);
     assert!(mem.len() < 1024, "{} バイト: {}", mem.len(), mem);
 
-    // (4b) いま埋まっているぶんは同じ鍵で、どれも容量を越えない (T15.0 (13))
+    // (4b) いま埋まっているぶんは同じ鍵で、どれも容量を越えない (T15.0)
     let used_json = json::object(&mem, "rings_used");
     let used: u64 = RING_KEYS
         .iter()

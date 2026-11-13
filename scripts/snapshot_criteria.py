@@ -128,7 +128,7 @@ def judge(name, hist, hosts, majors, status_b, overload, th,
 # `--criteria` の名前ごとに、判定表の上に置く「材料と直したところ」の 1 段落 (T34.130 で表にした)。
 # phase14 には無い。**文面は過去の判定を出し直せるように変えない**
 INTRO = {
-    # T15.0 (15)。材料が雪像に無い行は「0 だった」ではなく「判定できず」にする
+    # T15.0。材料が雪像に無い行は「0 だった」ではなく「判定できず」にする
     "phase15": ("材料は `/hosts` `/status` の `dns` `/dns` (名前ごとの引き直し)・"
                 "`/history` (`dns_warm` と `errors_by_cause`、`res=60` の `closed` / `transfer`)・"
                 "`/profile` (`conn` 役の CPU)・`--daily` (日ごとのミス) です。"
@@ -311,7 +311,7 @@ INTRO = {
 
 
 def render_criteria(d, grouped):
-    """判定表 (`## 9.`) を印字する (`snapshot-diff.py` の `render` が `"criteria" in d` のときに呼ぶ)。
+    """判定表 (「完了の定義に対する判定」の節) を印字する (`snapshot-diff.py` の `render` が `"criteria" in d` のときに呼ぶ)。
 
     `grouped` は `--group domain` が付いているか (「主要 3 ホスト」の行の単位が変わる)。
     見出しと前置き (`render_criteria_head`)・表 (`render_criteria_rows`)・集計 (`render_criteria_tally`)
@@ -329,7 +329,7 @@ def render_criteria_head(c, grouped):
     p(f"## 9. 完了の定義に対する判定 (`--criteria {c['name']}`)")
     p()
     if grouped:
-        # 「主要 3 ホスト」は §3 の上位から採るので、まとめると**単位**になる
+        # 「主要 3 ホスト」は「ホスト別」の上位から採るので、まとめると**単位**になる
         p("**`--group domain` を付けているので、「主要 3 ホスト」の行はまとめの単位 "
           "(eTLD+1) で判定している**。ホスト 1 件ずつで判定するには `--group` を外すこと。")
         p()

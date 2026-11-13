@@ -13,7 +13,7 @@
 //! | `ipv6_route` | `/proc/net/ipv6_route` の既定経路 | IPv6 で出られるか (T12.1 / T14.5 の読み方) |
 //! | `resolver_ms` | `example.com` を 1 回引く所要 ms | リゾルバが生きているか (失敗は `null`) |
 //! | `home_writable` | `$HOME` に書けるか | 状態ファイル・ブロックリストの保存 |
-//! | `proc_schedstat` | `/proc/self/task/<tid>/schedstat` | 走れるのに走れなかった時間 (`/profile` の `run_delay_us`。T15.0 (5)) |
+//! | `proc_schedstat` | `/proc/self/task/<tid>/schedstat` | 走れるのに走れなかった時間 (`/profile` の `run_delay_us`。T15.0) |
 //!
 //! 並びは `flags()` / `to_json()` / `--check` の印字と同じ (新しい項目は**末尾**に足す)。
 //!
@@ -67,7 +67,7 @@ pub struct Capabilities {
     pub home_writable: bool,
     /// 最後に測った時刻 (epoch 秒)
     pub checked_at: u64,
-    /// `/proc/self/task/<tid>/schedstat` が読める (T15.0 (5) の `run_delay_us`)。
+    /// `/proc/self/task/<tid>/schedstat` が読める (T15.0 の `run_delay_us`)。
     /// **並びの末尾に足す** (`--check` の印字も JSON の鍵も既存の順を動かさない)
     pub proc_schedstat: bool,
 }

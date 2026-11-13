@@ -1,4 +1,4 @@
-//! `PROXY_CONNECT_TIMEOUT_SECS` の結合テスト (T15.6 (1)(2))。
+//! `PROXY_CONNECT_TIMEOUT_SECS` の結合テスト (T15.6)。
 //!
 //! 見るのは 1 つだけ: **CONNECT のオリジン接続に `config.connect_timeout` が効いていること**。
 //! `config.timeout` (5 秒) と別の値 (1 秒) を入れて、黒穴への CONNECT が 5 秒ではなく
@@ -20,7 +20,7 @@ use common::*;
 
 /// `127.0.0.1` の黒穴 (`listen(fd, 0)` + 詰め物 1 本)。返り値は生かしておくこと。
 ///
-/// `libc` は足さない (§0) ので `listen(2)` だけ直に宣言する。`tests/` で
+/// `libc` は足さない (仕様 S25) ので `listen(2)` だけ直に宣言する。`tests/` で
 /// `unsafe extern "C"` を宣言する先例は `tests/common/net.rs` の `ffi`。
 #[cfg(target_os = "linux")]
 fn blackhole_v4() -> Option<(TcpListener, TcpStream, SocketAddr)> {
@@ -75,7 +75,7 @@ fn test_integration_connect_timeout_cuts_the_connect_short() {
         elapsed
     );
 
-    // 原因の札は `timeout` (T15.0 (3) で `refused` に化けなくなった)
+    // 原因の札は `timeout` (T15.0 で `refused` に化けなくなった)
     let json = endpoint_json(proxy_port, "/errors");
     assert!(json.contains("\"kind\":\"connect\""), "{}", json);
     assert!(json.contains("\"cause\":\"timeout\""), "{}", json);
@@ -90,7 +90,7 @@ fn test_integration_connect_timeout_cuts_the_connect_short() {
 /// 既定の締め切り (規則どおりの実効値) のままでも普通の CONNECT は 200 で通る。
 ///
 /// `proxy_config()` の `timeout` は 5 秒で、`connect_timeout` は**既定の 3 秒** (T28.43)
-/// (`min(3, PROXY_TIMEOUT_SECS)`。T15.6 (2))。T23.3 の既定 5 秒のときは既定と `min` の
+/// (`min(3, PROXY_TIMEOUT_SECS)`。T15.6)。T23.3 の既定 5 秒のときは既定と `min` の
 /// どちらで 5 秒になったかを区別できなかったが、3 秒になって既定の側が勝つと分かる。
 /// 見張っているのは `Config::new` が規則を通ること (下の `assert_eq!`) と、
 /// **その値で普通の CONNECT が今までどおり 200 で通ること**。`crates/server/src/conn.rs` の 1 行

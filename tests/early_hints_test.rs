@@ -69,7 +69,7 @@ fn test_integration_early_hints_are_relayed() {
 
     // 1 バイトも違わずに固定する。`100 Continue` は出さず、1xx の `Connection` /
     // `Keep-Alive` は落とし、`X-A: 1` + ` 2` は SP 1 個に畳む
-    // T28.10 (b) から最終応答に自分の `Via` が 1 行付く (1xx には付けない)
+    // T28.10 から最終応答に自分の `Via` が 1 行付く (1xx には付けない)
     let expected = format!(
         "HTTP/1.1 103 Early Hints\r\n\
 Link: </s.css>; rel=preload; as=style\r\n\
@@ -165,7 +165,7 @@ fn test_integration_response_without_interim_is_unchanged() {
     let got = raw_bytes(proxy_port, &get_request(origin_port));
     // T29.9 から `Date` の無い応答には `Date` が 1 行付く (外して比べる)
     let got = without_date(&String::from_utf8_lossy(&got)).into_bytes();
-    // T28.10 (b) から自分の `Via` が 1 行だけ増える (ほかは 1 バイトも変わらない)
+    // T28.10 から自分の `Via` が 1 行だけ増える (ほかは 1 バイトも変わらない)
     let expected = format!(
         "HTTP/1.1 200 OK\r\nX-Foo: bar\r\nContent-Length: 5\r\nVia: {}\r\nConnection: close\r\n\r\nhello",
         rust_http_proxy::via::token()

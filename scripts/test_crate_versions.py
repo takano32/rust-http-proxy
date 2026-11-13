@@ -128,7 +128,7 @@ class CrateVersionsTest(unittest.TestCase):
         self.r.write("crates/gamma/src/lib.rs", "// gamma 2\n")
         out = self.check(1)
         self.assertIn("NG proxy-gamma: 版 0.1.1 の行を書いた", out)
-        self.assertIn("決まり c", out)
+        self.assertIn("決まり [上げ忘れ]", out)
         lock_before = self.r.read("Cargo.lock")
         code, out = self.r.run("--task", "T2.5")
         self.assertEqual(code, 0, out)
@@ -319,7 +319,7 @@ class CrateVersionsTest(unittest.TestCase):
         self.r.git("tag", "v0.2.4")
         self.r.git("tag", "-d", "v0.2.3")
         out = self.check(1)
-        self.assertIn("タグ v0.2.4 の上なのに本体の版が 0.2.3 (決まり d)", out)
+        self.assertIn("タグ v0.2.4 の上なのに本体の版が 0.2.3 (決まり [タグの上])", out)
         # タグの上でなければ見ない
         self.r.write("README.md", "docs\n")
         self.r.commit("docs")
@@ -405,7 +405,7 @@ class CrateVersionsTest(unittest.TestCase):
 
     def test_lock_must_match_toml(self):
         # 3 つの Cargo.toml を手で上げて Cargo.lock をそのままにした (T29.28)。CI は --locked なしなので
-        # ビルドは通ってしまう。(e) として Cargo.lock の版との食い違いを名前つきで落とす
+        # ビルドは通ってしまう。[Cargo.lock] の決まりとして Cargo.lock の版との食い違いを名前つきで落とす
         self.r.write("crates/beta/src/lib.rs", "// beta 2\n")
         for rel, old, new in (("crates/beta/Cargo.toml", "0.1.1", "0.4.1"),
                               ("crates/server/Cargo.toml", "0.2.3", "0.4.1"),
@@ -416,7 +416,7 @@ class CrateVersionsTest(unittest.TestCase):
         self.r.commit("T4.1 (Cargo.lock を直し忘れた)")
         self.assertEqual(self.r.read("Cargo.lock"), lock)
         out = self.check(1)
-        self.assertIn("NG proxy-beta: Cargo.toml の版 0.4.1 と Cargo.lock の版 0.1.1 が違う (決まり e", out)
+        self.assertIn("NG proxy-beta: Cargo.toml の版 0.4.1 と Cargo.lock の版 0.1.1 が違う (決まり [Cargo.lock]", out)
         self.assertIn("NG proxy-server: Cargo.toml の版 0.4.1 と Cargo.lock の版 0.2.3 が違う", out)
         self.assertIn("NG rust-http-proxy: Cargo.toml の版 0.4.1 と Cargo.lock の版 0.2.3 が違う", out)
         self.assertIn("決まりに合わない: 3", out)
@@ -428,7 +428,7 @@ class CrateVersionsTest(unittest.TestCase):
         # Cargo.lock からメンバーが抜けていても落とす
         self.r.write("Cargo.lock", self.r.read("Cargo.lock").replace('name = "proxy-gamma"', 'name = "proxy-delta"'))
         out = self.check(1)
-        self.assertIn("NG proxy-gamma: Cargo.lock に無い (決まり e", out)
+        self.assertIn("NG proxy-gamma: Cargo.lock に無い (決まり [Cargo.lock]", out)
 
     def test_lock_versions(self):
         text = ("version = 4\n\n[[package]]\nname = \"a\"\nversion = \"0.1.0\"\n\n"

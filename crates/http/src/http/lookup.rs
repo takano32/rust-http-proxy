@@ -54,7 +54,7 @@ impl<'c> CacheState<'c> {
     }
 }
 
-/// 要求の `max-age=N` / `min-fresh=N` を、保存済みの表現がそのままでは満たさないか (T28.10 (c))。
+/// 要求の `max-age=N` / `min-fresh=N` を、保存済みの表現がそのままでは満たさないか (T28.10)。
 ///
 /// `max-age`: 保存からの経過 (`now - stored_at`) が N 秒を越える。`min-fresh`: 期限までが N 秒に足りない。
 /// 値の読めない指示は見ない (今までどおり)。`max-age=0` は呼ぶ側が先に `no-cache` と同じに扱っている。
@@ -88,7 +88,7 @@ pub(super) fn consult<'c>(
             freshness::has_directive(&req.cache_control, "no-store"),
             freshness::has_directive(&req.cache_control, "no-cache")
                 || freshness::directive_value(&req.cache_control, "max-age") == Some(0),
-            // `only-if-cached` (RFC 9111 §5.2.1.7。T28.10 (c)): 保存から返せなければ 504
+            // `only-if-cached` (RFC 9111 §5.2.1.7。T28.10): 保存から返せなければ 504
             freshness::has_directive(&req.cache_control, "only-if-cached"),
             // 「いま」は注入された時計から (T35.1)
             cache.now(),
@@ -110,7 +110,7 @@ pub(super) fn consult<'c>(
     if lookup_allowed {
         if let Some((entry, source)) = cache.get(key, conn_id) {
             cache.remember_variant(x.ctx.url, key);
-            // 要求の `max-age=N` (N > 0) と `min-fresh=N` (RFC 9111 §5.2.1.1・§5.2.1.3。T28.10 (c)):
+            // 要求の `max-age=N` (N > 0) と `min-fresh=N` (RFC 9111 §5.2.1.1・§5.2.1.3。T28.10):
             // 保存から N 秒より古い・期限まで N 秒ない表現は、そのままでは返さず再検証する
             // (`max-age=0` と同じ扱い)。今までは見ずに HIT にしていた。`Cache-Control` の無い要求は
             // 空文字の判定 1 回だけ
@@ -167,7 +167,7 @@ pub(super) fn consult<'c>(
     }
 
     // `only-if-cached` で保存から返せなかった (無い・古い・保存できない要求): オリジンへは行かずに 504
-    // (RFC 9111 §5.2.1.7。T28.10 (c))。今まではオリジンへ行っていた
+    // (RFC 9111 §5.2.1.7。T28.10)。今まではオリジンへ行っていた
     if only_if_cached {
         body::drain(reader, req_framing)?;
         log_debug!(
@@ -179,7 +179,7 @@ pub(super) fn consult<'c>(
         return done(false);
     }
 
-    // 保存されないと分かっている鍵 (T11.9) は 1 回だけ見て、入場制御と合流の両方に使う (T28.13 (c))。
+    // 保存されないと分かっている鍵 (T11.9) は 1 回だけ見て、入場制御と合流の両方に使う (T28.13)。
     // その鍵は前に見ているので、入場制御に通しても「2 回目」で通る (門番の表を引かずに済ませる)
     let known_unstored = store_allowed && cs.stale.is_none() && !cache.may_coalesce(key, now);
 
@@ -316,7 +316,7 @@ mod tests {
         }
     }
 
-    /// 要求の `max-age=N` は保存からの経過で、`min-fresh=N` は期限までの残りで見る (T28.10 (c))。
+    /// 要求の `max-age=N` は保存からの経過で、`min-fresh=N` は期限までの残りで見る (T28.10)。
     #[test]
     fn max_age_and_min_fresh_of_the_request() {
         // 保存から 10 秒、期限まで 50 秒

@@ -7,12 +7,12 @@
 //!   **区間の値** (応答時間の分布・エラー・名前解決) は足し合わせ
 //! - 状態ファイル (`persist`。1 つ上の層) があれば各解像度をそこにも書き、起動時に読み戻す
 //!
-//! **累計と区間が混ざっている**のは意図したもの (T12.4 (3))。要求数やバイト数は累計を
+//! **累計と区間が混ざっている**のは意図したもの (T12.4)。要求数やバイト数は累計を
 //! 置いてブラウザ側で差分を取る (再起動をまたいでも段差が 1 つ出るだけ) が、応答時間の分布は
 //! 差分が取れない (区間ごとの分位点が要る) ので、**その 5 秒に起きたぶんだけ**を置く。
 //!
 //! 混ざっていること自体は変えられない (既存の列の意味は変えない) ので、**どの列を
-//! どう読むか**を [`KEY_KINDS`] (`/history` の `key_kinds`) で隣に出す (T15.0 (10))。
+//! どう読むか**を [`KEY_KINDS`] (`/history` の `key_kinds`) で隣に出す (T15.0)。
 //! 通算しか無かった `requests` / `bytes` には区間の値 (`requests_delta` / `bytes_delta`) を
 //! 並べて足した。
 
@@ -143,7 +143,7 @@ impl History {
     /// その解像度の標本数 (`res` は 0=5 秒, 1=1 分, 2=1 時間)。
     ///
     /// [`Self::len`] は 5 秒しか返さないので、3 つ足した「いま埋まっているぶん」
-    /// (`/status` の `memory.rings_used.history`) を出すのに要る (T15.0 (13))。
+    /// (`/status` の `memory.rings_used.history`) を出すのに要る (T15.0)。
     pub fn len_res(&self, res: usize) -> usize {
         self.rings[res.min(RESOLUTIONS.len() - 1)].locked().len()
     }
@@ -189,7 +189,7 @@ impl History {
 
     /// `{"interval_secs":N,"keys":[...],"bounds_ms":[...],"samples":[[...],...]}` (古い順)。
     ///
-    /// **標本は配列の配列**にしてある (T12.4 (3))。項目が 13 から 31 に増えたので、
+    /// **標本は配列の配列**にしてある (T12.4)。項目が 13 から 31 に増えたので、
     /// 標本ごとにキーを繰り返すと `/history?res=5` (720 標本) が 1 MB を超える。
     /// キーは `keys` に 1 回だけ出し、`connect_buckets` / `forward_buckets` /
     /// `errors_by_cause` はその位置に入れ子の配列で入る。
@@ -249,7 +249,7 @@ impl History {
 fn push_header(out: &mut String, res: usize) {
     let _ = write!(out, "\"interval_secs\":{},\"keys\":[", RESOLUTIONS[res].0);
     push_str_array(out, &KEYS);
-    // 列の**読み方**を同じ長さで隣に出す (T15.0 (10))。綴り (`keys`) は 1 つも
+    // 列の**読み方**を同じ長さで隣に出す (T15.0)。綴り (`keys`) は 1 つも
     // 変えていないので、読む側は添字でも名前でも今までどおり引ける
     out.push_str("],\"key_kinds\":[");
     push_str_array(out, &KEY_KINDS);

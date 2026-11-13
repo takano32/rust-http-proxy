@@ -129,10 +129,10 @@ static REFRESHES: AtomicU64 = AtomicU64::new(0);
 /// 経路 (稀) だけで、当たりの経路には 1 命令も増えない。
 static CHANGES: AtomicU64 = AtomicU64::new(0);
 /// ミスのときに `getaddrinfo` に費やした時間の合計 (us)。**ミスの経路でしか書かない**
-/// ので、当たりの経路 (熱い方) には原子操作が 1 つも増えない (T12.4 (2))。
+/// ので、当たりの経路 (熱い方) には原子操作が 1 つも増えない (T12.4)。
 /// 裏の引き直しのぶんも入れない (待っていない時間を「ミス 1 回の値段」に混ぜない)。
 static RESOLVE_US_SUM: AtomicU64 = AtomicU64::new(0);
-/// ミスの種類別の回数 (`/status` の `dns.misses_by_kind`。T15.0 (7))。並びは
+/// ミスの種類別の回数 (`/status` の `dns.misses_by_kind`。T15.0)。並びは
 /// [`MissKind::index`](entry::MissKind::index) (cold / expired / warm_stale / negative) で、**4 つの和は必ず
 /// `MISSES` と一致する**。窓 (`PROXY_DNS_WARM_SECS`) を延ばすのと TTL を延ばすのとの
 /// どちらが効くかは、この内訳でしか決まらない (T15.4 の材料): `expired` が主なら
@@ -148,7 +148,7 @@ static MISS_NEGATIVE: AtomicU64 = AtomicU64::new(0);
 static REFRESH_FAILURES: AtomicU64 = AtomicU64::new(0);
 static REFRESH_US_SUM: AtomicU64 = AtomicU64::new(0);
 static REFRESH_US_MAX: AtomicU64 = AtomicU64::new(0);
-/// 予定の時刻から [`REFRESH_LATE_AFTER`] 以上遅れて始まった引き直しの回数 (T15.0 (7))。
+/// 予定の時刻から [`REFRESH_LATE_AFTER`] 以上遅れて始まった引き直しの回数 (T15.0)。
 /// 引き直しは 1 本のスレッドが順にやるので、1 回 約 2 秒かかる `getaddrinfo` が続くと
 /// 後ろが詰まる。**要求の経路が頼んだ先回り (`Msg::Refresh`) は予定の時刻を持たない**
 /// ので数えない。

@@ -194,9 +194,9 @@ class SevenDays(unittest.TestCase):
         self.assertIn("**雪像 7 枚、7 日ぶん**", self.md)
 
     def test_all_eight_tables_are_there(self):
-        for head in ("## 1. 要求数", "## 2. CONNECT 確立", "## 3. 名前解決のミス率",
-                     "## 4. エラー", "## 5. 山", "## 6. 接続元の出入り",
-                     "## 7. 遅かったホスト", "## 8. 新しく見たホスト"):
+        for head in ("## 要求数", "## CONNECT 確立", "## 名前解決のミス率",
+                     "## エラー", "## 山", "## 接続元の出入り",
+                     "## 遅かったホスト", "## 新しく見たホスト"):
             self.assertIn(head, self.md)
 
     def test_every_day_is_the_same_as_snapshot_diff_aggregate(self):
@@ -374,7 +374,7 @@ class FromDaily(unittest.TestCase):
     def test_the_tables_that_need_a_snapshot_say_so(self):
         self.assertIn("`/clients` (T14.7) も `/status` の `clients[]` もこの入力に無い", self.md)
         self.assertIn("`/hosts` がこの入力に無い", self.md)
-        self.assertIn("## 8. 新しく見たホスト", self.md)
+        self.assertIn("## 新しく見たホスト", self.md)
 
     def test_the_hills_come_from_the_daily_bursts_count(self):
         # `/bursts` の写真が無いので「山」は `/daily` の `bursts` (その日に撮れた枚数)
@@ -443,7 +443,7 @@ class Output(unittest.TestCase):
             with open(out, encoding="utf-8") as f:
                 md = f.read()
             self.assertTrue(md.startswith("# rust-http-proxy — 週次の要約"))
-            self.assertIn("## 8. 新しく見たホスト", md)
+            self.assertIn("## 新しく見たホスト", md)
 
     def test_an_unreadable_input_is_listed_at_the_end_not_fatal(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -452,7 +452,7 @@ class Output(unittest.TestCase):
                 f.write("{")
             md = run([ANON, bad])
             self.assertIn("**読めなかった**", md)
-            self.assertIn("## 1. 要求数", md)
+            self.assertIn("## 要求数", md)
 
     def test_nothing_readable_is_an_error(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -464,7 +464,7 @@ class Output(unittest.TestCase):
 
     def test_top_limits_the_host_and_client_lists(self):
         self.assertEqual(run([ANON, "--top", "3"]).count("`host-0"), 3)
-        self.assertIn("## 7. 遅かったホスト 上位 3 ", run([ANON, "--top", "3"]))
+        self.assertIn("## 遅かったホスト 上位 3 ", run([ANON, "--top", "3"]))
 
 
 class OutJson(unittest.TestCase):
@@ -494,7 +494,7 @@ class OutJson(unittest.TestCase):
             self.assertEqual([e["path"] for e in j["skipped"]], [bad])
 
     def test_md_is_still_the_default(self):
-        self.assertIn("## 1. 要求数", run([ANON]))
+        self.assertIn("## 要求数", run([ANON]))
 
 
 if __name__ == "__main__":

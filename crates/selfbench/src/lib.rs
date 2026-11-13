@@ -1,6 +1,6 @@
 //! 起動時の自己ベンチ (`PROXY_SELF_BENCH=on`、既定 `off`。T14.43)。
 //!
-//! §2 の CPU/要求 (41 us) は手元の big.LITTLE の **big コアの値**で、デプロイ先のコンテナの
+//! `docs/status.md` の CPU/要求 (41 us) は手元の big.LITTLE の **big コアの値**で、デプロイ先のコンテナの
 //! CPU で何 us かは分からない。T14.3 の `cpu_per_request_us` は実トラフィックの値だが、
 //! 0.015 req/s では 5 秒の窓に 0〜1 本しか入らず読めない。そこで、起動して待ち受けを開いた
 //! 直後に **loopback だけで 3 秒** (内蔵の小さなオリジン → 自分の待ち受けへ forward 8 並列
@@ -14,7 +14,7 @@
 //! 回っている 3 秒だけ旗を立て ([`active`])、**自分で打った接続と要求を `/recent`・
 //! `/connections`・`/hosts`・`/clients`・要求の合計から外す** ([`is_client`] / [`is_target`])。
 //!
-//! 測り方は §1 の `scripts/cpu-per-request.sh` と同じ「**プロセスの utime+stime の増分 ÷
+//! 測り方は `docs/measuring.md` の `scripts/cpu-per-request.sh` と同じ「**プロセスの utime+stime の増分 ÷
 //! 操作数**」だが、スクリプトと違って**打ち手 (負荷) と内蔵オリジンが同じプロセスの中にいる**
 //! ので、そのぶんを引かないと 2 倍以上の数字になる。自己ベンチのスレッドは終わるときに
 //! 自分の CPU を [`Charge`](cpu::Charge) で足しこみ、窓の増分からその合計を引くので、残るのは
@@ -24,7 +24,7 @@
 //! CPU を読むのは `/proc/<pid>/stat` ではなく `clock_gettime` の
 //! `CLOCK_PROCESS_CPUTIME_ID` / `CLOCK_THREAD_CPUTIME_ID` (**同じ utime+stime を ns 刻みで**)。
 //! `/proc` の値は 10 ms 刻みなので、1.5 秒の窓で 10 本前後のスレッドを引き算すると
-//! 切り捨てが積もって数 % 動いてしまう (§1 の 10 秒の計測では無視できる誤差だが、ここでは効く)。
+//! 切り捨てが積もって数 % 動いてしまう (`docs/measuring.md` の 10 秒の計測では無視できる誤差だが、ここでは効く)。
 //!
 //! `off` (既定) ではこのクレートの関数は 1 つも呼ばれない (`crates/run/src/startup.rs` の旗の分岐 1 回だけ)。
 //!
@@ -56,7 +56,7 @@ use partner::Server;
 /// 回す秒数 (forward と CONNECT に半分ずつ)。
 pub const SECS: u64 = 3;
 
-/// 並列数 (forward / CONNECT とも)。§1 の既定のベンチ (`--conc 8`) と揃えてある。
+/// 並列数 (forward / CONNECT とも)。`docs/measuring.md` の既定のベンチ (`--conc 8`) と揃えてある。
 pub const CONC: usize = 8;
 
 /// forward の要求数の上限 (T14.43)。**秒数より先にここへ当たったら早く終わる。**

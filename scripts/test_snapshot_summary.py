@@ -50,7 +50,7 @@ def written(**snaps):
 
 
 class Errors(unittest.TestCase):
-    """§1 の「エラー」の行 (T14.99 で負の数が出た所)。"""
+    """要点の「エラー」の行 (T14.99 で負の数が出た所)。"""
 
     def test_the_difference_is_matched_by_host_key(self):
         # beta 3 → 6、delta 1 → 3 で +5 (原因 dns +2・reset +2・tls +1)
@@ -94,7 +94,7 @@ class Errors(unittest.TestCase):
         self.assertIn("- エラー: **引き算できない** (1 ホストで `/hosts` の通算が減っている", md)
 
     def test_the_records_have_a_readable_time(self):
-        """§7 (`snapshot-diff.py`) と同じ綴りにする (epoch のままだと時間帯が読めない)。"""
+        """`snapshot-diff.py` の「エラーの原因別」と同じ綴りにする (epoch のままだと時間帯が読めない)。"""
         md = run([B, "--prev", A])
         self.assertIn("  - `2026-09-10 14:20:00Z` connect", md)
         self.assertNotIn("`1789050000`", md)
@@ -154,11 +154,11 @@ class Repeats(unittest.TestCase):
         b["hosts"]["hosts"][1]["errors"] = 1          # 前 (3) より小さい
         with written(b=b) as paths:
             md = run([paths["b"], "--prev", A])
-        self.assertIn("`scripts/snapshot-diff.py` の §7 を見ること) / 個票 42 件 (3 行)\n", md)
+        self.assertIn("`scripts/snapshot-diff.py` の「エラーの原因別」を見ること) / 個票 42 件 (3 行)\n", md)
 
 
 class RepeatsInTheDiff(unittest.TestCase):
-    """`snapshot-diff.py` の §7 も同じ数え方をする (T20.3)。
+    """`snapshot-diff.py` の「エラーの原因別」も同じ数え方をする (T20.3)。
 
     `test_snapshot_diff.py` は 2,000 行の目安の手前なので、こちらに置いてある。
     """
@@ -307,7 +307,7 @@ class Recent(unittest.TestCase):
 
 
 class Cpu(unittest.TestCase):
-    """CPU の表 (`/profile` + `kernel.cgroup_cpu`。T15.0 (15))。"""
+    """CPU の表 (`/profile` + `kernel.cgroup_cpu`。T15.0)。"""
 
     def test_the_cores_are_printed_with_three_digits(self):
         """**1 桁だと 0.006 コアも 0.04 コアも「0.0」に潰れる** (張り付きが読めない)。"""
@@ -316,7 +316,7 @@ class Cpu(unittest.TestCase):
                       " (`/profile` 3 標本 × 60 秒) |", md)
 
     def test_the_throttled_share_is_a_ratio_not_a_count(self):
-        """「41 回絞られた」だけでは 41/8,123 なのか 41/41 なのか決まらない (T15.0 (6))。"""
+        """「41 回絞られた」だけでは 41/8,123 なのか 41/41 なのか決まらない (T15.0)。"""
         self.assertIn("| 絞られた周期 | **0.5%** (41/8,123)、起動から 0.8% (30/4,000) |",
                       run([B]))
 
@@ -384,7 +384,7 @@ class Cpu(unittest.TestCase):
 
 
 class MissKinds(unittest.TestCase):
-    """名前解決のミスの種類別と引き直しの様子 (T15.0 (7))。"""
+    """名前解決のミスの種類別と引き直しの様子 (T15.0)。"""
 
     def test_the_kinds_are_printed_in_the_order_of_the_json(self):
         self.assertIn("| ミスの種類別 (起動から) | cold 12 / expired 24 / warm_stale 3"
@@ -401,7 +401,7 @@ class MissKinds(unittest.TestCase):
 
 
 class Wait(unittest.TestCase):
-    """利用者が待つ時間の行 (`/history` の `waits`。T15.0 (2) + (10))。"""
+    """利用者が待つ時間の行 (`/history` の `waits`。T15.0)。"""
 
     def test_the_row_uses_the_waits_column_for_the_count(self):
         # 直近 1 日 (res=60) の 1 標本: 3 本・合計 27 ms・[5,10) ms のバケツ
@@ -427,7 +427,7 @@ class Wait(unittest.TestCase):
         """`history.5` は `/snapshot` の `DROP_ORDER` に入っていて**落ちることがある**。
 
         落ちたときに「その列は無い」と書くと「この版は connect を測っていない」と
-        読まれる (T15.0 (15) のレビュー)。
+        読まれる (T15.0 のレビュー)。
         """
         b = read(B)
         del b["history"]["5"]
@@ -452,7 +452,7 @@ class Wait(unittest.TestCase):
 
 
 class StuckTunnels(unittest.TestCase):
-    """動かないトンネル (`idle_secs` ≥ 300 秒。T15.0 (4))。"""
+    """動かないトンネル (`idle_secs` ≥ 300 秒。T15.0)。"""
 
     def test_only_the_tunnels_over_the_threshold_are_listed(self):
         """預かり中の 280 秒の 1 本は閾の下なので入らない。"""
@@ -489,7 +489,7 @@ class StuckTunnels(unittest.TestCase):
 
 
 class StatusBefore(unittest.TestCase):
-    """RSS だけは雪像の**前**に取った `/status` を使う (T15.0 (15))。"""
+    """RSS だけは雪像の**前**に取った `/status` を使う (T15.0)。"""
 
     def test_the_rss_comes_from_the_status_taken_before_the_snapshot(self):
         # 雪像を配ること自体が RSS を約 1.0 MB 押し上げるので、雪像の中の 20.0 MiB とは違う値
@@ -574,7 +574,7 @@ T3199 = os.path.join(os.path.dirname(HERE), "status", "tokyo", "2026-10-31T06310
 
 @unittest.skipUnless(os.path.isfile(T3199), "tokyo の実データが無い (status/tokyo/ の T31.99 の 1 枚)")
 class Deployed3231(unittest.TestCase):
-    """T32.31 (2): 0.30.4 の 48.3 時間の 1 枚は、リングが満杯でも起動より前の 308 件が残っているので警告しない。"""
+    """T32.31: 0.30.4 の 48.3 時間の 1 枚は、リングが満杯でも起動より前の 308 件が残っているので警告しない。"""
 
     def test_t3199_events_note(self):
         md = run([T3199])

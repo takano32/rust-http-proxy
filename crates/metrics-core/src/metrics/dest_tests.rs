@@ -88,7 +88,7 @@ fn the_destination_with_the_most_web_errors_is_counted_per_hour() {
     assert_eq!((cur.hour, cur.errors, cur.top_errors), (hour + 3600, 0, 0));
 }
 
-/// **T32.10 (a)**: ホスト別統計が満杯のとき、新しい鍵は `last_seen` のいちばん古い行を 1 つ捨てて入る
+/// **T32.10**: ホスト別統計が満杯のとき、新しい鍵は `last_seen` のいちばん古い行を 1 つ捨てて入る
 /// (前は全部 `other` に畳まれた)。捨てた行の通算は `other` に足し、捨てた数は `hosts_evicted` に出る。
 /// 空きがあるうちは何も捨てない。
 #[test]
@@ -169,7 +169,7 @@ fn a_tie_on_last_seen_drops_the_rows_in_name_order() {
     assert!(names.iter().any(|h| h == "connect://h0002.example:443"));
 }
 
-/// **T32.10 (c)**: `/slo` の宛先は、ホスト別統計から切り離した小さな表で数える。満杯の表から
+/// **T32.10**: `/slo` の宛先は、ホスト別統計から切り離した小さな表で数える。満杯の表から
 /// `other` に畳まれる宛先 (捨てられる行が無いとき) でも、その時間のエラーの宛先として数える。
 #[test]
 fn web_errors_count_their_destination_even_when_the_host_table_cannot_take_it() {
@@ -215,7 +215,7 @@ fn web_errors_count_their_destination_even_when_the_host_table_cannot_take_it() 
     assert_eq!(cur.top_attempts, 3);
 }
 
-/// **T32.10 (c)**: 小さな表は 64 宛てまで。溢れた宛先は合計にだけ入る。
+/// **T32.10**: 小さな表は 64 宛てまで。溢れた宛先は合計にだけ入る。
 #[test]
 fn the_destination_table_of_the_hour_holds_up_to_64() {
     let m = Metrics::new();

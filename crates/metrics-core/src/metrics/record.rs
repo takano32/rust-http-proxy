@@ -22,7 +22,7 @@ impl Metrics {
         let _ = self.record(host, outcome, bytes, Some(took), &Detail::default());
     }
 
-    /// [`record_host_timed`](Self::record_host_timed) に内訳を添えた版 (T12.4 (2))。
+    /// [`record_host_timed`](Self::record_host_timed) に内訳を添えた版 (T12.4)。
     /// 内訳は**この関数が取る鍵の内側**でしか触らないので、原子操作は増えない。
     /// 返すのは [`record_host`](Self::record_host) と同じく、読んだ壁時計 (epoch 秒。T34.146)。
     pub fn record_host_detail(
@@ -56,7 +56,7 @@ impl Metrics {
         // 壁時計はここで 1 回だけ読む (ホスト別の `last_seen` と直近の標本 (T14.31) で
         // 使い回す。**読む回数は今までと同じ 1 回**)
         let now = crate::cache::now_epoch();
-        // 取り合いを数える (T14.3 (3))。空いていれば `locked` と同じ費用
+        // 取り合いを数える (T14.3)。空いていれば `locked` と同じ費用
         let mut hosts = self
             .hosts
             .locked_counted(&crate::sync::LOCK_CONTENDED[crate::sync::LOCK_STATS]);
@@ -77,7 +77,7 @@ impl Metrics {
                 iv.web_dns_ms_sum += detail.dns_ms;
             }
         }
-        // 段階の窓 (T14.3 (1)) と、直近 1,024 本の標本そのもの (T14.31)。どちらも
+        // 段階の窓 (T14.3) と、直近 1,024 本の標本そのもの (T14.31)。どちらも
         // `--lite` では時計を読んでいないので触らない。**旗も分岐も 1 つにまとめてある**
         // ので、`--lite` の経路には 1 命令も足していない。同じ鍵の内側なので、
         // 原子操作も鍵の取り直しも増えない。**`failed` は最後に見る** (`--lite` は
@@ -253,7 +253,7 @@ impl HostTable {
         if s.connect {
             self.stages.observe_connect(detail);
             self.quantiles.connect.observe(us, now);
-            // **利用者が待つ時間** = `queue + client_read + dns + connect` (T15.0 (2))。
+            // **利用者が待つ時間** = `queue + client_read + dns + connect` (T15.0)。
             // 4 つがそろうのはここだけ。`--lite` はこの分岐に入らない
             let total_ms = s.ms.unwrap_or(0);
             // `connect_ms` は「全体 − 窓の内側の名前解決」なので、差が窓の内側のぶん
@@ -316,7 +316,7 @@ impl HostTable {
         let stats = self.map.entry(key).or_default();
         stats.count(now, outcome, bytes, took, detail);
         if s.failed {
-            // `/slo` の宛先は畳まれても本当の鍵で数える (T32.10 (c))
+            // `/slo` の宛先は畳まれても本当の鍵で数える (T32.10)
             self.dests
                 .on_error(stats, host, took.is_some(), s.web_error);
         }

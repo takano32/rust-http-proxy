@@ -11,7 +11,7 @@ pub(super) struct State {
     pub(super) rings: [VecDeque<Sample>; 2],
     /// 前回の生の値 (増分を出すため)。まだ 1 回も読んでいなければ `None`
     pub(super) last: Option<Latest>,
-    /// **いちばん最初に読んだ生の値** (T15.0 (6))。`/status` の `since_start` は
+    /// **いちばん最初に読んだ生の値** (T15.0)。`/status` の `since_start` は
     /// 「いまの累計 − これ」で出す。起動直後の雪像に `nr_throttled` 915 が
     /// 乗っていたのは、累計が**このプロセスより前から**動いている親の階層の値だから
     pub(super) first: Option<Latest>,
@@ -33,7 +33,7 @@ impl State {
             // 1 本目は増分が出せない (前が無い) ので、値だけ入れて増分は 0
             None => diff(&now, &now),
         };
-        // 起動からの増分を出すための最初の 1 本 (T15.0 (6))
+        // 起動からの増分を出すための最初の 1 本 (T15.0)
         if self.first.is_none() {
             self.first = Some(now);
         }
@@ -83,7 +83,7 @@ impl Sample {
                 .checked_div(misses)
                 .unwrap_or(0),
             state_file_errors: sum(|s| s.state_file_errors),
-            // 増分なので足し合わせ (T15.0 (6))
+            // 増分なので足し合わせ (T15.0)
             cpu_nr_periods: sum(|s| s.cpu_nr_periods),
             // 同じく増分 (T16.0)
             cpu_user_usec: sum(|s| s.cpu_user_usec),
@@ -102,7 +102,7 @@ impl Health {
         let since = newest.saturating_sub(300);
         let recent = ring.iter().filter(|s| s.t >= since);
         let mut h = Health {
-            // 起動して最初に読んだ標本からの秒 (T15.0 (6))。窓が 5 分ぶん溜まったかの物差し
+            // 起動して最初に読んだ標本からの秒 (T15.0)。窓が 5 分ぶん溜まったかの物差し
             sampled_secs: first.map(|f| newest.saturating_sub(f.at)),
             ..Health::default()
         };
@@ -115,7 +115,7 @@ impl Health {
                 h.state_file_errors_5m =
                     Some(h.state_file_errors_5m.unwrap_or(0) + s.state_file_errors);
             }
-            // 絞られた期間と過ぎた期間の増分 (T15.0 (6))。割合は読む側が割る
+            // 絞られた期間と過ぎた期間の増分 (T15.0)。割合は読む側が割る
             if s.has(SRC_CGROUP_CPU) {
                 let (throttled, periods) = h.cpu_throttled_5m.unwrap_or((0, 0));
                 h.cpu_throttled_5m =

@@ -119,7 +119,7 @@ fn dispatch_get(ep: &Endpoint<'_>, req: &Incoming<'_>, target: &str) -> Reply {
         "/config" => config::render(ep).into(),
         "/blocklist" => blocklist::handle(&parse_query(query.unwrap_or(""))).into(),
         // `/status` の写しではなく**本当の健康診断** (T14.12)。軽い JSON で、
-        // **`fatal` な**検査が 1 つでも偽なら 503 (本文の `ok` は全部込み。T15.0 (6))。
+        // **`fatal` な**検査が 1 つでも偽なら 503 (本文の `ok` は全部込み。T15.0)。
         // **問い合わせは読まない** (監視が叩く口の意味を変えない)
         "/healthz" => health::healthz(ep).into(),
         "/status" => status::status(ep, query),

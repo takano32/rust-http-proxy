@@ -76,7 +76,7 @@ fn test_integration_connections_is_empty_in_lite_mode() {
     assert!(json.contains("\"lite\":true"), "{}", json);
 }
 
-/// keep-alive の HTTP 接続が `/connections` に**最初の要求の宛先つき**で見えること (T14.2 (5))。
+/// keep-alive の HTTP 接続が `/connections` に**最初の要求の宛先つき**で見えること (T14.2)。
 ///
 /// T13.4 では `http` の行だけ宛先が空で、占有の内訳を読むときに何に使われている接続か
 /// 分からなかった。**書くのは接続の最初の要求のとき 1 回だけ**なので、2 本目に別のホストへ
@@ -169,7 +169,7 @@ fn test_integration_connections_shows_the_bytes_of_a_keepalive_http_connection()
     }
     // 3 要求ぶんの本文は必ず数えている (ヘッダーも足されるので、下限だけ見る)
     assert!(seen >= 3 * BODY, "運んだバイトが少なすぎる: {}", seen);
-    // 行は http のままで、宛先も最初の要求のもの (T14.2 (5) の性質は変えない)
+    // 行は http のままで、宛先も最初の要求のもの (T14.2 の性質は変えない)
     let json = endpoint_json(proxy_port, "/connections");
     assert!(
         json.contains(&format!("\"target\":\"{}\",\"kind\":\"http\"", host)),

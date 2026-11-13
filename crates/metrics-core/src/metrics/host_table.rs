@@ -5,7 +5,7 @@
 
 use super::*;
 
-/// 「その区間の」合計 (T12.4 (3))。[`Metrics::take_interval`] が読んで 0 に戻す。
+/// 「その区間の」合計 (T12.4)。[`Metrics::take_interval`] が読んで 0 に戻す。
 ///
 /// **ホスト別統計と同じ鍵の内側に置いてある**のがこの構造体の要点で、
 /// 全体の合計を別の `AtomicU64` で持つと 1 要求あたり十数回の原子操作が増える
@@ -26,10 +26,10 @@ pub struct Interval {
     pub dns_misses: u64,
     pub dns_ms_sum: u64,
     /// **利用者が待つ時間** (`queue + client_read + dns + connect` の ms。CONNECT だけ。
-    /// T15.0 (2))。`connect` の窓は `open()` の入口 (要求行を読んだ後) から測るので、
+    /// T15.0)。`connect` の窓は `open()` の入口 (要求行を読んだ後) から測るので、
     /// accept してワーカーが動き出すまでの待ちも名前解決も入っていない。
     /// **`--lite` では書かない** (`queue` と `client_read` が 0 なので「4 段の和」を
-    /// 名乗れない)。`/history` に列として出すのは T15.0 (10) の仕事で、ここは値を
+    /// 名乗れない)。`/history` に列として出すのは T15.0 の仕事で、ここは値を
     /// 用意するところまで。**欄は末尾に足す** (既存の並びを動かさない)
     pub wait: crate::history::Window,
     /// CONNECT 1 本ごとの「確立 (`dns + connect`) − オリジン側のカーネルの RTT」(ms。T28.45)。
@@ -64,7 +64,7 @@ pub(super) struct HostTable {
     pub(super) total: Interval,
     /// 直近の標本以降 (`take_interval` が読んで 0 に戻す)
     pub(super) interval: Interval,
-    /// 直近の標本以降の段階 (`take_stages` が読んで 0 に戻す。T14.3 (1))。
+    /// 直近の標本以降の段階 (`take_stages` が読んで 0 に戻す。T14.3)。
     /// **同じ鍵の内側に置いてある**ので、段階を足しても原子操作は増えない
     pub(super) stages: crate::profile::Stages,
     /// 上位 16 ホストの時系列 (`/hosts/series`。T14.22)。**ホスト表と同じ鍵の中**に
@@ -184,7 +184,7 @@ impl Metrics {
     }
 
     /// 上の 3 つを `{"connect":{..},"forward":{..},"wait":{..}}` にしたもの
-    /// (`wait` は T15.0 (2) で**末尾に**足した)。
+    /// (`wait` は T15.0 で**末尾に**足した)。
     pub fn recent_quantiles_json(&self) -> String {
         let (c, f, w) = self.recent_quantiles();
         crate::quantiles::to_json(&c, &f, &w)

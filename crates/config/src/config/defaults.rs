@@ -32,7 +32,7 @@ impl Config {
             timeout,
             min_transfer: proxy_base::minrate::MinRate::DEFAULT,
             // 未設定のときの実効値は `connect_timeout_for` が決める (既定 3 秒。T28.43。
-            // `timeout` が 3 秒より短ければそちらに合わせる。T15.6 (2))。ここで入れておくと
+            // `timeout` が 3 秒より短ければそちらに合わせる。T15.6)。ここで入れておくと
             // `Config::new` を呼ぶ既存の所 (テストと `/config` の組み立て) が自動で追随する
             connect_timeout: connect_timeout_for(timeout, None),
             connect_negative: crate::net::DEFAULT_CONNECT_NEGATIVE,

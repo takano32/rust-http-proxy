@@ -1,4 +1,4 @@
-//! `/history` の標本に足した 8 列と `key_kinds` の結合テスト (T15.0 (8) + (10))。
+//! `/history` の標本に足した 8 列と `key_kinds` の結合テスト (T15.0)。
 //!
 //! 畳み方と `.rrd` の往復そのものは `crates/metrics-window/src/history/{tests,codec_tests}.rs` の単体テストで
 //! 見ている。ここで見るのは**口の配線**:

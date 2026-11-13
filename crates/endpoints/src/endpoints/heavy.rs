@@ -8,7 +8,7 @@ use super::{has_flag, parse_query};
 ///
 /// 認証なしの公開ポートでは `/snapshot` (4 MiB を組む。T14.4) を誰でも好きなだけ叩けるので、
 /// 1 秒に 10 回引かれると CPU と鍵の時間をそれだけで食う。**同時に組むのは 1 本**にして、
-/// 2 本目からは断る。走査に対する最小限の保護で、**認証ではない** (§0 は守る。
+/// 2 本目からは断る。走査に対する最小限の保護で、**認証ではない** (仕様 S25 の認証なしは守る。
 /// 順に引けば誰でも全部取れる)。
 static HEAVY_BUSY: AtomicBool = AtomicBool::new(false);
 
@@ -59,7 +59,7 @@ pub(super) fn is_heavy(is_get: bool, path: &str, query: Option<&str>) -> bool {
         // 17 部を 1 つの JSON に組む (T14.4)。無条件に重い
         "/snapshot" => true,
         // 待ちの段階・スレッドの CPU と状態・ロックの取り合い (T14.3)。
-        // **`?summary=1` だけは軽い** (標本を 1 本も組まず 3 段に畳んだ数字だけ返す。T15.0 (11))
+        // **`?summary=1` だけは軽い** (標本を 1 本も組まず 3 段に畳んだ数字だけ返す。T15.0)
         "/profile" => !has_flag(query, "summary"),
         // 1 相手を上の口から横断して読む (T14.36)
         "/explain" => true,
@@ -93,7 +93,7 @@ mod tests {
         assert!(is_heavy(true, "/explain", Some("host=a.test")));
         assert!(is_heavy(true, "/profile", None));
         assert!(is_heavy(true, "/profile", Some("res=5")));
-        // `?summary=1` だけは軽い (T15.0 (11))。`summary=0` は立っていないので重いまま
+        // `?summary=1` だけは軽い (T15.0)。`summary=0` は立っていないので重いまま
         assert!(!is_heavy(true, "/profile", Some("summary=1")));
         assert!(!is_heavy(true, "/profile", Some("res=5&summary=1")));
         assert!(is_heavy(true, "/profile", Some("summary=0")));

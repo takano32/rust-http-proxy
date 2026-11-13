@@ -211,7 +211,7 @@ fn test_integration_which_endpoints_are_heavy() {
         "/recent?n=500",
         "/history",
         "/history?res=5&n=720",
-        // 標本を組まない要約は軽い (T15.0 (11))
+        // 標本を組まない要約は軽い (T15.0)
         "/profile?summary=1",
         "/hosts/series?top=16",
         // 読み手の表 (T14.53)。最大 256 行なので軽い
@@ -261,7 +261,7 @@ fn test_integration_which_endpoints_are_heavy() {
     );
 }
 
-/// `/profile?summary=1` は**重い口が 1 本走っている最中でも 200** (T15.0 (11))。
+/// `/profile?summary=1` は**重い口が 1 本走っている最中でも 200** (T15.0)。
 ///
 /// `/profile` は標本を 256 KiB ぶん組むので無条件に重い口だが、`?summary=1` は
 /// 3 段に畳んだ数字だけで標本を 1 本も組まない。雪像を取っている最中でも

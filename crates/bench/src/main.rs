@@ -11,7 +11,7 @@
 //!   3. tunnel  : CONNECT トンネル `--conc N` 本のスループット合計 (MiB/s、`--seconds` 秒)。
 //!      **この経路はベンチ側が律速する** (プロキシは `splice` でコピー 0 回、ベンチは送りと受けで
 //!      コピー 2 回)。`scripts/cpu-per-request.sh --only tunnel` は両方を big コアに置いて測る (T10.8)。
-//!      TODO.md §2 の「トンネル 1 本」は `--conc 1` の値
+//!      `docs/status.md` の「トンネル 1 本」は `--conc 1` の値
 //!   4. connect : CONNECT の確立/秒 (短命トンネル)
 //!   5. idle-tunnels: `--conc N` 本の CONNECT を張ったまま `--seconds` 秒握る
 //!      (プロキシ側のスレッド数と RSS を見るためのモード。`--only idle-tunnels` でだけ走る)
@@ -85,7 +85,7 @@ fn tunnel_mode(proxy: SocketAddr, conc: usize, seconds: u64) {
     let blaster = blaster.to_string();
     // 2 本目以降を先に張ってスレッドへ渡し、**1 本目はこのスレッドで回す**。
     // こうすると `--conc 1` では下の `for` が 1 度も回らず、スレッドを 1 本も
-    // 足さない元のままの経路になる (§2 の「トンネル 1 本」はこの条件の値なので、
+    // 足さない元のままの経路になる (`docs/status.md` の「トンネル 1 本」はこの条件の値なので、
     // 並列を足したことで数字が動かないようにする)。
     let mut readers = Vec::new();
     let mut failed = 0usize;

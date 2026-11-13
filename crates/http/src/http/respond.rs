@@ -16,7 +16,7 @@ pub(super) fn write_error(client: &mut impl Write, status: u16, reason: &str) ->
 ///
 /// OPTIONS は `200` で本文なし。TRACE は `200` + `Content-Type: message/http` で、受け取った要求行と
 /// ヘッダーをそのまま返す。ただし `Cookie`・`Authorization`・`Proxy-Authorization` の行は返さない
-/// (§9.3.8 は「機微な値を含む行を除いてよい」。TRACE で認証情報を読み出す手口を塞ぐ)。返したら閉じる
+/// (RFC 9110 §9.3.8 は「機微な値を含む行を除いてよい」。TRACE で認証情報を読み出す手口を塞ぐ)。返したら閉じる
 pub(super) fn write_max_forwards_zero(
     client: &mut impl Write,
     trace: bool,
@@ -98,7 +98,7 @@ mod tests {
     use super::*;
 
     /// TRACE の本文は要求行とヘッダーをそのまま返すが、`Cookie` / `Authorization` /
-    /// `Proxy-Authorization` の行は返さない (§9.3.8)。
+    /// `Proxy-Authorization` の行は返さない (RFC 9110 §9.3.8)。
     #[test]
     fn trace_body_echoes_the_request_without_credentials() {
         let raw: Vec<String> = [

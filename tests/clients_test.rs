@@ -212,7 +212,7 @@ fn test_integration_clients_reads_the_user_agent_only_on_the_first_request() {
     assert_eq!(status_number(&row, "literal_targets"), 2, "{}", row);
 }
 
-/// `rtt_ms` の母数に**内部エンドポイントだけを読んだ接続を混ぜない** (T15.0 (12))。
+/// `rtt_ms` の母数に**内部エンドポイントだけを読んだ接続を混ぜない** (T15.0)。
 ///
 /// 同じ行の中で `requests` は「プロキシとして通した要求」、`rtt_ms.samples` は
 /// 「閉じた接続すべて」だったので、`/status` を 5 秒おきに引く監視が居るだけで

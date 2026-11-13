@@ -17,15 +17,15 @@ pub struct Sample {
     /// その窓にプロセスが使った CPU (us。`/proc/self/stat` の utime + stime の増分)
     pub cpu_us: u64,
     pub stages: Stages,
-    /// 役割ごとの CPU と状態 (T14.3 (2))
+    /// 役割ごとの CPU と状態 (T14.3)
     pub threads: Threads,
-    /// その窓にロックが取り合いになった回数 ([`crate::sync::LOCK_NAMES`] の順。T14.3 (3))
+    /// その窓にロックが取り合いになった回数 ([`crate::sync::LOCK_NAMES`] の順。T14.3)
     pub locks: [u64; crate::sync::LOCK_NAMES.len()],
     /// その窓にワーカーの待ち行列で待った仕事の数・合計 ms・最大 ms
     pub queue_waited: u64,
     pub queue_ms_sum: u64,
     pub queue_ms_max: u64,
-    /// その窓に CPU を多く使ったスレッド (多い順。空の枠は `tid == 0`。T15.0 (5))
+    /// その窓に CPU を多く使ったスレッド (多い順。空の枠は `tid == 0`。T15.0)
     pub threads_top: [TopThread; TOP_THREADS],
     /// **走れるのに走れなかった時間**の増分 (us。[`ROLES`] の順)。
     /// `None` = `schedstat` が読めない環境 (`/profile` では `null`)
@@ -36,7 +36,7 @@ pub struct Sample {
 }
 
 impl Sample {
-    /// **プロセスの CPU/要求** (us)。§2 の loopback の 41 us/要求 と同じ物差し。
+    /// **プロセスの CPU/要求** (us)。`docs/status.md` の loopback の 41 us/要求 と同じ物差し。
     pub fn cpu_per_request_us(&self) -> Option<f64> {
         (self.requests > 0).then(|| self.cpu_us as f64 / self.requests as f64)
     }

@@ -19,9 +19,9 @@
 //! | `errors` | エラーが 5 分で [`ERRORS_MIN`] 件以上 (**`/slo` の `error_rate` と同じ数え方**: 名前解決の失敗 (原因 `dns` の全部) と 443・80 以外の宛先のエラーは数えない。T32.36) |
 //! | `active_high` | 同時接続の山が `max_conns` の [`ACTIVE_PERCENT`]% 以上 (T14.6 の写真と同じ閾。写真があればその番号) |
 //! | `rejected` | `rejected_overload` / `evicted_idle` / `rejected_client_acl` が増えた |
-//! | `cpu_throttled` | 直近 5 分に絞られた期間の割合が [`CPU_THROTTLED`] 以上 (T15.0 (6)) |
-//! | `tunnel_spin` | 5 秒に [`TUNNEL_SPIN_DELTA`] 回以上空回りするトンネルが [`TUNNEL_SPIN_SECS`] 秒続いた (T15.0 (6)) |
-//! | `dns_miss_rate` | 名前解決に成功したミス (`dns_misses − dns_fail_misses`。`/slo` と同じ。T32.36) が直近 1 時間で [`DNS_MISS_RATE`] 回/接続 以上 (T15.0 (9)) |
+//! | `cpu_throttled` | 直近 5 分に絞られた期間の割合が [`CPU_THROTTLED`] 以上 (T15.0) |
+//! | `tunnel_spin` | 5 秒に [`TUNNEL_SPIN_DELTA`] 回以上空回りするトンネルが [`TUNNEL_SPIN_SECS`] 秒続いた (T15.0) |
+//! | `dns_miss_rate` | 名前解決に成功したミス (`dns_misses − dns_fail_misses`。`/slo` と同じ。T32.36) が直近 1 時間で [`DNS_MISS_RATE`] 回/接続 以上 (T15.0) |
 //! | `new_client` | `/clients` の `first_seen` がこの周期の窓の中 (**規則 6**。T14.54) |
 //!
 //! **規則 6 だけは形が違う**: 上の 8 種が「立つ / 収まる」の状態を持つ (同じ種類は
@@ -73,7 +73,7 @@ pub(crate) use detector::Detector;
 pub(crate) const CONNECT_RATIO: f64 = 3.0;
 /// (1) かつ、この ms 以上のときだけ (速いところの 3 倍は異常ではない)。
 pub(crate) const CONNECT_MIN_MS: f64 = 50.0;
-/// (1) かつ、5 分の窓にこの本数以上あるときだけ (T15.0 (9))。
+/// (1) かつ、5 分の窓にこの本数以上あるときだけ (T15.0)。
 ///
 /// p95 は 250 ms 超が 1〜2 本しかない窓では**窓の最大値に潰れる**
 /// ([`crate::window`] の `.min(self.ms_max)`。**これは仕様で、触らない**)。
@@ -105,21 +105,21 @@ pub(crate) const DNS_CANARY_RATIO: f64 = 3.0;
 pub(crate) const ERRORS_MIN: u64 = 5;
 /// (4) 同時接続の山が `max_conns` のこの割合 (%) 以上で立つ (T14.6 の写真と同じ閾)。
 pub(crate) const ACTIVE_PERCENT: usize = 50;
-/// (7) 直近 5 分に絞られた期間の割合がこれ以上で立つ (T15.0 (6))。
+/// (7) 直近 5 分に絞られた期間の割合がこれ以上で立つ (T15.0)。
 ///
 /// 2026-09-18 のデプロイ先は約 100%、0 時間の雪像ではほぼ 0% だったので、
 /// この 2 つを分けられる所に置く。
 pub const CPU_THROTTLED: f64 = 0.50;
 /// (7) 立っている間はこの割合を下回るまで収まらない (`connect_p95` と同じ形)。
 pub(crate) const CPU_THROTTLED_CLEAR: f64 = 0.25;
-/// (8) 1 周期にこの回数以上空回りしたトンネルを「回っている」とみなす (T15.0 (6))。
+/// (8) 1 周期にこの回数以上空回りしたトンネルを「回っている」とみなす (T15.0)。
 ///
 /// 本番の周期は 5 秒なので「5 秒で 1,000 回以上」= 200 回/秒。T15.5 の空回りは
 /// 秒あたり数万で増え続ける形だったので、平常時とは桁が違う。
 pub(crate) const TUNNEL_SPIN_DELTA: u64 = 1_000;
-/// (8) 回りっ放しがこの秒だけ続いたら 1 件 (T15.0 (6))。
+/// (8) 回りっ放しがこの秒だけ続いたら 1 件 (T15.0)。
 pub(crate) const TUNNEL_SPIN_SECS: u64 = 60;
-/// (9) 名前解決のミスが直近 1 時間でこの回数/接続 以上で立つ (T15.0 (9))。
+/// (9) 名前解決のミスが直近 1 時間でこの回数/接続 以上で立つ (T15.0)。
 ///
 /// 閾の根拠: Phase 13 (keep-warm が効かない世界) が 0.55、いまの切り方 9 通りの幅が
 /// 0.094〜0.171、再起動後の最初の 6 時間だけが 0.291。T15.4 (窓 3,600 秒) のあとの
@@ -129,7 +129,7 @@ pub(crate) const DNS_MISS_RATE: f64 = 0.20;
 pub(crate) const DNS_MISS_RATE_CLEAR: f64 = 0.10;
 /// (9) 1 時間の窓にこの本数以上の確立があるときだけ判定する (率の分母)。
 pub(crate) const DNS_MISS_RATE_MIN_CONNECTS: u64 = 30;
-/// (9) 起動からこの秒が経つまでは判定しない (T15.0 (9))。
+/// (9) 起動からこの秒が経つまでは判定しない (T15.0)。
 ///
 /// 再起動の直後は**どの名前もまだ warm でない**ので、ミス率は構造的に高い
 /// (実測 0.291)。それを「異常」と書くと、再起動のたびに 1 件出る。
@@ -164,7 +164,7 @@ pub(crate) const BASE_SECS: u64 = 3600;
 /// 条件を外れてから解除の 1 件を書くまで (秒)。
 pub(crate) const CLEAR_SECS: u64 = WINDOW_SECS;
 
-/// CPU の絞りを判定してよいか (**5 分ぶん標本が溜まったか**。T15.0 (6))。
+/// CPU の絞りを判定してよいか (**5 分ぶん標本が溜まったか**。T15.0)。
 ///
 /// 渡すのは「**いちばん最初に読めた標本からの秒**」で、窓の両端の差ではない。
 /// 標本の時刻は生の epoch 秒 (`now_epoch()`) で、履歴スレッドの 1 周は
@@ -193,11 +193,11 @@ pub(crate) enum Kind {
     ActiveHigh,
     /// 上限や接続元の一覧で断った / 追い出した
     Rejected,
-    /// cgroup の CPU の上限で絞られ続けている (T15.0 (6))
+    /// cgroup の CPU の上限で絞られ続けている (T15.0)
     CpuThrottled,
-    /// 起こされても 1 バイトも進まないトンネルが回り続けている (T15.0 (6))
+    /// 起こされても 1 バイトも進まないトンネルが回り続けている (T15.0)
     TunnelSpin,
-    /// 名前解決のミスの**率**が高い (T15.0 (9))
+    /// 名前解決のミスの**率**が高い (T15.0)
     DnsMissRate,
 }
 
@@ -246,7 +246,7 @@ impl Kind {
 /// 標本 (`/history` のリング) から読めない値。**テストはここへ直接流し込む**
 /// (時刻も `t` で注入する)。累計のものは判定が 1 本前 (か 5 分前) との差だけを見る。
 ///
-/// `Eq` を持たないのは [`Counters::cpu_quota_cores`] が `f64` だから (T15.0 (6))。
+/// `Eq` を持たないのは [`Counters::cpu_quota_cores`] が `f64` だから (T15.0)。
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct Counters {
     /// いつ (epoch 秒。標本の `t` と同じ)
@@ -259,7 +259,7 @@ pub(crate) struct Counters {
     pub rejected_client_acl: u64,
     /// 山の写真の通算 (T14.6)。増えていれば「この周期で 1 枚撮れた」= その番号
     pub shots: u64,
-    /// cgroup の `cpu.stat` の累計 (T15.0 (6))。**親の階層の値のことがある**ので、
+    /// cgroup の `cpu.stat` の累計 (T15.0)。**親の階層の値のことがある**ので、
     /// 判定が見るのは 5 分の窓の**増分どうしの比**だけ
     pub cpu_nr_throttled: u64,
     pub cpu_nr_periods: u64,
@@ -271,7 +271,7 @@ pub(crate) struct Counters {
     /// `0` = 標本が無い / `--lite`) と、その [`crate::profile::ROLES`] の添字
     pub cpu_top_tid: u32,
     pub cpu_top_role: u8,
-    /// 起動からの秒 (T15.0 (9))。**`Detector` が最初の `t` を覚える案は採らない** —
+    /// 起動からの秒 (T15.0)。**`Detector` が最初の `t` を覚える案は採らない** —
     /// `.rrd` から読み戻した直後の窓を「起動直後」と区別できないため
     pub uptime_secs: u64,
     /// canary の名前解決の中央値 (ms。直近 [`BASE_SECS`] 秒。T17.1)。
@@ -281,7 +281,7 @@ pub(crate) struct Counters {
 
 impl Counters {
     /// 標本 1 本ぶん集める (履歴スレッドから)。原子 2 つと写真の通算 1 つ、
-    /// それに T15.0 (6)(9) の 4 つ (メモリ上の窓 2 つと `/proc/self/stat` 1 回)。
+    /// それに T15.0 の 4 つ (メモリ上の窓 2 つと `/proc/self/stat` 1 回)。
     fn take(metrics: &Metrics, s: &Sample) -> Counters {
         // カーネルの窓は同じ周期で既に進んでいる (`tick.rs` が標本を取るときに読む)
         let k = crate::kernel::latest().unwrap_or_default();
@@ -289,7 +289,7 @@ impl Counters {
         let top = metrics.profile.recent_totals(0, 1).threads_top[0];
         Counters {
             t: s.t,
-            // 標本が既に持っている (`/history` の列。T14.2 (3))
+            // 標本が既に持っている (`/history` の列。T14.2)
             evicted_idle: s.evicted_idle,
             rejected_overload: metrics.rejected_overload.load(Ordering::Relaxed),
             rejected_client_acl: metrics.rejected_client_acl.load(Ordering::Relaxed),

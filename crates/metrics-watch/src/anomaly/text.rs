@@ -44,7 +44,7 @@ pub(super) struct Facts<'a> {
     pub(super) totals: [u64; 3],
     /// この周期に撮れた山の写真の番号
     pub(super) shot: Option<u64>,
-    /// 直近 5 分の CPU の絞り (T15.0 (6))
+    /// 直近 5 分の CPU の絞り (T15.0)
     pub(super) cpu: CpuWindow,
     /// いちばん回っているトンネル (多くて 1 本) と、閾を越えた本数、続いている秒
     pub(super) spinning: &'a [SpinningConn],
@@ -195,7 +195,7 @@ fn rejected_text(head: &str, f: &Facts<'_>) -> String {
     s
 }
 
-/// (7) `cpu_throttled` が立ったとき。CPU の上限で絞られ続けている (T15.0 (6))。**割合**で書く
+/// (7) `cpu_throttled` が立ったとき。CPU の上限で絞られ続けている (T15.0)。**割合**で書く
 fn cpu_throttled_text(head: &str, f: &Facts<'_>) -> String {
     format!(
         "{}: {:.0}% of {} cpu periods throttled in {}m (threshold {:.0}%; quota {:.2} cores, used {:.2}{})",
@@ -210,7 +210,7 @@ fn cpu_throttled_text(head: &str, f: &Facts<'_>) -> String {
     )
 }
 
-/// (8) `tunnel_spin` が立ったとき。起こされても進まないトンネルが回り続けている (T15.0 (6))
+/// (8) `tunnel_spin` が立ったとき。起こされても進まないトンネルが回り続けている (T15.0)
 fn tunnel_spin_text(head: &str, f: &Facts<'_>) -> String {
     let mut s = format!("{}:", head);
     match f.spinning.first() {
@@ -235,7 +235,7 @@ fn tunnel_spin_text(head: &str, f: &Facts<'_>) -> String {
     s
 }
 
-/// (9) `dns_miss_rate` が立ったとき。名前解決のミスの**率** (T15.0 (9))。窓は 1 時間
+/// (9) `dns_miss_rate` が立ったとき。名前解決のミスの**率** (T15.0)。窓は 1 時間
 ///
 /// 名前解決に成功したミスで数える (T32.36)。失敗のぶんを外していればその回数も書く
 fn dns_miss_rate_text(head: &str, base: &Summary) -> String {

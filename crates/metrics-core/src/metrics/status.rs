@@ -282,7 +282,7 @@ fn boot_id() -> Option<String> {
 /// `/status` の先頭 (版と、起動からの窓の目印)。
 ///
 /// **応答の形の版は先頭の鍵** (T14.49)。読む道具が先頭 64 バイトで分岐できる。
-/// 窓の目印 (T12.4 (4)) は、`since_start_secs` から下が起動から、`restored_since` が
+/// 窓の目印 (T12.4) は、`since_start_secs` から下が起動から、`restored_since` が
 /// `hosts[]` / `clients[]` の通算の始まり (epoch 秒、`0` = 無し)。
 fn push_head(
     out: &mut String,

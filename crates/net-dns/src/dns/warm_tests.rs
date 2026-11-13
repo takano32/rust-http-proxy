@@ -63,7 +63,7 @@ fn wait_refreshes(want: u64) {
     wait_refreshes_within(want, Duration::from_secs(5));
 }
 
-/// T13.1 (a): 直近 TTL 内に使われた名前は期限の 3/4 で裏で引き直され、
+/// T13.1: 直近 TTL 内に使われた名前は期限の 3/4 で裏で引き直され、
 /// 期限を過ぎたはずの t=61 秒でも**ヒット**する (ミスにならない)。
 #[test]
 fn a_hot_name_is_refreshed_before_it_expires() {
@@ -93,7 +93,7 @@ fn a_hot_name_is_refreshed_before_it_expires() {
     assert_eq!((h4 - h3, m4 - m3), (1, 0), "t=61 でもヒット");
 }
 
-/// T13.1 (c): 同じ名前に同時に 10 本来ても、裏の引き直しは 1 本だけ
+/// T13.1: 同じ名前に同時に 10 本来ても、裏の引き直しは 1 本だけ
 /// (要求ごとにスレッドも `getaddrinfo` も増やさない)。
 #[test]
 fn ten_callers_trigger_one_refresh() {
@@ -116,7 +116,7 @@ fn ten_callers_trigger_one_refresh() {
     assert_eq!(tally().3, r0 + 1, "引き直したのは 1 本だけ");
 }
 
-/// T14.1 (a): TTL 4 秒・W 60 秒で t=0 と t=10 に使った名前は warm になり、
+/// T14.1: TTL 4 秒・W 60 秒で t=0 と t=10 に使った名前は warm になり、
 /// 使われないまま 3 秒 (3/4 TTL) ごとに裏で引き直されるので **t=40 でもヒット**する。
 ///
 /// 3 秒ずつ実時間を待たずに、`warm_due_now` で「次に引き直す時刻」を今にして回す。
@@ -159,7 +159,7 @@ fn a_warm_name_is_kept_fresh_while_it_is_not_used() {
     clear();
 }
 
-/// T14.1 (b): 1 回しか使われていない名前は warm にならないので、裏の引き直しも
+/// T14.1: 1 回しか使われていない名前は warm にならないので、裏の引き直しも
 /// 走らず t=10 で**ミス**になる (誰も来ない名前に `getaddrinfo` を払わない)。
 #[test]
 fn a_name_used_once_never_becomes_warm() {
@@ -185,7 +185,7 @@ fn a_name_used_once_never_becomes_warm() {
     clear();
 }
 
-/// T14.1 (c): 最後の使用から W 秒過ぎたら warm を外して引き直しを止める。
+/// T14.1: 最後の使用から W 秒過ぎたら warm を外して引き直しを止める。
 #[test]
 fn a_warm_name_stops_when_nobody_uses_it() {
     let _guard = RESOLVE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -211,7 +211,7 @@ fn a_warm_name_stops_when_nobody_uses_it() {
     clear();
 }
 
-/// T14.1 (d): 同時に warm でいられるのは [`MAX_WARM`] 件まで。33 個目を入れると
+/// T14.1: 同時に warm でいられるのは [`MAX_WARM`] 件まで。33 個目を入れると
 /// **最後の使用がいちばん古い** 1 件が外れる。
 #[test]
 fn the_warm_set_is_capped_and_drops_the_oldest() {
@@ -296,7 +296,7 @@ fn warm_evicted_does_not_count_a_victim_already_gone_from_the_table() {
     clear();
 }
 
-/// T14.1 (e): `PROXY_DNS_WARM_SECS=0` なら keep-warm は働かず、T13.1 の動き
+/// T14.1: `PROXY_DNS_WARM_SECS=0` なら keep-warm は働かず、T13.1 の動き
 /// (直近 TTL 内に使われた名前だけ、当たりのついでに 1 回引き直す) に戻る。
 #[test]
 fn zero_warm_window_falls_back_to_t131() {
@@ -316,7 +316,7 @@ fn zero_warm_window_falls_back_to_t131() {
     assert!(!is_warm(host), "0 なら warm にしない");
     assert_eq!(warm_count(), 0, "待ち行列は空のまま");
 
-    // t=61: 引き直しから 11 秒なのでまだ期限内 (T13.1 の (a) と同じ)
+    // t=61: 引き直しから 11 秒なのでまだ期限内 (T13.1 と同じ)
     age_entry(host, Duration::from_secs(11), Duration::from_secs(70));
     let (h2, m2, _, _) = tally();
     resolve_host(host, 80).unwrap();
@@ -326,7 +326,7 @@ fn zero_warm_window_falls_back_to_t131() {
     clear();
 }
 
-/// T15.0 (7): 予定から [`REFRESH_LATE_AFTER`] 以上遅れて始まった引き直しを数える
+/// T15.0: 予定から [`REFRESH_LATE_AFTER`] 以上遅れて始まった引き直しを数える
 /// (引き直しは 1 本のスレッドが順にやるので、詰まるとここに出る)。
 #[test]
 fn a_late_refresh_is_counted() {
@@ -369,7 +369,7 @@ fn a_late_refresh_is_counted() {
     clear();
 }
 
-/// T15.0 (7): 裏の引き直しの**失敗**と所要時間を数える。失敗しても
+/// T15.0: 裏の引き直しの**失敗**と所要時間を数える。失敗しても
 /// `resolved_at` は動かないので、この名前は次の期限でミスになる。
 #[test]
 fn a_failed_refresh_is_counted_with_its_time() {

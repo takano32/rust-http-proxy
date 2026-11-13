@@ -36,11 +36,11 @@ pub(super) struct Entry {
     /// 引き直しで答えの集合が変わった回数 (`/dns` の `changes`。T14.37)。
     /// **最初に答えを得たときは数えない** (変化ではないので)
     pub(super) changes: u64,
-    /// この名前のミスを種類別に数えたもの (`/dns` の `misses_by_kind`。T15.0 (7))。
+    /// この名前のミスを種類別に数えたもの (`/dns` の `misses_by_kind`。T15.0)。
     /// 並びは [`MissKind::index`] で、**和は `misses` と一致する**。
     /// 表いっぱい (4,096 件) でも +128 KiB
     pub(super) misses_by_kind: [u64; 4],
-    /// **warm な状態で**この名前が引かれた回数 (`/dns` の `warm_requests`。T15.0 (7))。
+    /// **warm な状態で**この名前が引かれた回数 (`/dns` の `warm_requests`。T15.0)。
     /// keep-warm が実際に何回の要求を救ったかは、これと `refreshes` を比べて読む
     /// (引き直し 1 回あたり何回の要求が当たったか)。比べる相手が累計なので、
     /// **warm を外れて入り直しても 0 に戻さない**
@@ -76,7 +76,7 @@ impl Entry {
 }
 
 /// 表を引いて出た答え。**数える (原子操作) のは鍵を放してから**なので、
-/// 鍵の内側では「どれだったか」だけを持って出る (T12.4 (2))。
+/// 鍵の内側では「どれだったか」だけを持って出る (T12.4)。
 pub(super) enum Looked {
     /// 期限内の答え
     Hit(Vec<IpAddr>),
@@ -88,7 +88,7 @@ pub(super) enum Looked {
     Negative(io::Error),
 }
 
-/// ミス 1 件の種類 (T15.0 (7))。**表の鍵の内側でしか決められない**: 鍵を放したあとの
+/// ミス 1 件の種類 (T15.0)。**表の鍵の内側でしか決められない**: 鍵を放したあとの
 /// 書き戻しは `entry().or_insert_with()` で入れ物を作り直すので、「ミスの直前の姿」が
 /// 読めない。[`Looked`] と同じ流儀で、鍵の内側で決めて外で数える。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -132,7 +132,7 @@ pub(super) struct Lookup {
     pub(super) pref: Option<bool>,
     /// 表から答えが出たか (`None` = このあとミスになる)
     pub(super) found: Option<Looked>,
-    /// ミスだったときの種類 (T15.0 (7))
+    /// ミスだったときの種類 (T15.0)
     pub(super) miss_kind: MissKind,
     /// 裏の引き直しを頼むか (期限前の先回り (T13.1) と serve-stale (T21.3))
     pub(super) ask: bool,
@@ -172,7 +172,7 @@ impl Entry {
         let mut found: Option<Looked> = None;
         let mut miss_kind = MissKind::Cold;
         let mut ask = false;
-        // **`warm` はここで読む** (T15.0 (7)): 下の `warm_promote` が `e.warm = true` を
+        // **`warm` はここで読む** (T15.0): 下の `warm_promote` が `e.warm = true` を
         // 書くので、あとで読むと「2 回目の使用でミスした」が `warm_stale` に化ける
         let was_warm = e.warm;
         // 「熱い」= **この参照の 1 つ前**の使用が TTL 以内。印はここで更新する
@@ -185,7 +185,7 @@ impl Entry {
         // 待ち行列に入れると `dns-refresh` の 1 本が本当に熱い名前を待たせる
         let promote = !e.warm && !window.is_zero() && idle < window && !e.addrs.is_empty();
         e.prev_used = e.last_used;
-        // warm の間に来た要求を数える (T15.0 (7)。**「要求の経路は増やさない」の
+        // warm の間に来た要求を数える (T15.0。**「要求の経路は増やさない」の
         // 例外その 1**: 既に握っている鍵の内側の、非原子の加算 1 つ・分岐なしで、
         // システムコールも確保も増えない)
         e.warm_requests += u64::from(was_warm);
@@ -227,7 +227,7 @@ impl Entry {
         }
         if found.is_none() {
             // ここまで来た = 表では答えられない = このあとミスになる。種類の優先順位は
-            // **warm_stale → negative → expired → cold** (T15.0 (7))。`refresh_one` は
+            // **warm_stale → negative → expired → cold** (T15.0)。`refresh_one` は
             // 失敗しても `failed_at` を書かない (上のコメント) ので、warm な名前に
             // 載っている失敗は要求の経路が書いたもの = 「引き直しが間に合っていない」の
             // 証拠は `warm` の旗の方が強い

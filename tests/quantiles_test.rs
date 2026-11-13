@@ -1,6 +1,6 @@
 //! 直近の窓の正確な分位点 `/status` の `recent_quantiles` の結合テスト (T14.31)。
 //!
-//! いままでの p50 / p95 は **12 段の区間の内側を線形補間した値**で (T12.4 (3))、
+//! いままでの p50 / p95 は **12 段の区間の内側を線形補間した値**で (T12.4)、
 //! 5〜10 ms の区間に入る限り 5.0〜10.0 のどこかを返していた。T14.99 の判定
 //! 「平常時の CONNECT 確立 p50 8.3 → 6 ms 以下」を **1 ms 単位で読む**ために、
 //! 確立時間そのものを 1,024 本 (CONNECT / forward 別) の環状に持つ。
@@ -13,7 +13,7 @@
 //! (d) `memory.rings.quantiles` が 24 KiB 固定。
 //!
 //! 3 本目の環 `wait` (利用者が待つ時間 = `queue + client_read + dns + connect`。
-//! T15.0 (2)) も同じ 4 点で見る。縛るのは **`wait.n == connect.n`** と
+//! T15.0) も同じ 4 点で見る。縛るのは **`wait.n == connect.n`** と
 //! **`wait` の各分位点 ≥ `connect` の同じ分位点** (`queue` が 0 でない状況は手元では
 //! 作りにくいので、数字そのものは縛らない)。
 //!
@@ -105,7 +105,7 @@ fn test_integration_a_status_shows_the_exact_recent_quantiles() {
     assert!(cp50 > 0.0, "確立の p50 が 0: {}", connect);
     assert!(cp50 < 1000.0, "loopback で 1 秒はかからない: {}", connect);
 
-    // 3 本目の環 `wait` (T15.0 (2))。本数は確立と同じで、各分位点は確立以上
+    // 3 本目の環 `wait` (T15.0)。本数は確立と同じで、各分位点は確立以上
     let wait = json::object(&q, "wait");
     let (wn, wp50) = check_shape(&wait, "wait");
     assert_eq!(wn, cn, "`wait` の本数が確立と違う: {}", q);
@@ -131,7 +131,7 @@ fn test_integration_a_status_shows_the_exact_recent_quantiles() {
         forward
     );
 
-    // `memory.rings.quantiles` は固定 24 KiB (3 系統 × 1,024 本 × 8 B。T15.0 (2))
+    // `memory.rings.quantiles` は固定 24 KiB (3 系統 × 1,024 本 × 8 B。T15.0)
     let rings = json::object(&json::last_object(&status, "memory"), "rings");
     assert_eq!(json::number(&rings, "quantiles"), 24576.0, "{}", rings);
     assert!(

@@ -49,7 +49,7 @@ fn test_metrics() {
     );
 }
 
-/// 同時接続の**山** (`/history` の `active_peak`。T15.0 (10))。
+/// 同時接続の**山** (`/history` の `active_peak`。T15.0)。
 ///
 /// 見るのは 4 つ: (a) 5 秒より短い山は瞬間値 (`active_connections`) からは
 /// 見えないが山には残る、(b) 読むと **0 ではなく今の本数**に戻る

@@ -119,7 +119,7 @@ pub(super) fn fetch(
         // 接続にかかった時間は「オリジンを掴むまで − 名前解決」で出す。時計を読むのは
         // ここで 1 回だけで、プールから再利用できたときは 2 回目を読まない (熱い経路)
         let acquire_started = Instant::now();
-        // この時計より**前に**払われた名前解決 (入口の ACL) を控える (T15.0 (1))。
+        // この時計より**前に**払われた名前解決 (入口の ACL) を控える (T15.0)。
         // thread-local の読み 1 回で、時計もシステムコールも増えない
         let dns_before = crate::dns::peek_resolve_cost().0;
         let (mut server, reused) = match acquire_origin(
@@ -154,7 +154,7 @@ pub(super) fn fetch(
             &mut send_continue,
             &mut body_cut,
         )?;
-        // 要求をオリジンへ送り終えた境目 (T14.3 (1))。ここが forward に足す唯一の時計
+        // 要求をオリジンへ送り終えた境目 (T14.3)。ここが forward に足す唯一の時計
         let sent_at = crate::profile::mark();
         // 1xx (100 と 101 を除く) はヘッダーだけクライアントへ中継し、最終応答を読み続ける (T19.6)。
         // HTTP/1.0 のクライアントへは送らない (RFC 9110 §15.2 の MUST NOT。1.0 のクライアントは
@@ -219,7 +219,7 @@ pub(super) fn fetch(
                 // (本文の転送は相手と回線の都合なので、待ちの物差しにはこちらを使う)
                 x.ctx.detail.first_byte_ms =
                     Some(x.ctx.started.elapsed().as_millis().min(u64::MAX as u128) as u64);
-                // 要求を送るのにかかった時間 = 「送り終えるまで」− 名前解決 − 接続 (T14.3 (1))
+                // 要求を送るのにかかった時間 = 「送り終えるまで」− 名前解決 − 接続 (T14.3)
                 if let Some(at) = sent_at {
                     let acquire_and_send =
                         crate::profile::ms_u32(at.saturating_duration_since(acquire_started));

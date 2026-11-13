@@ -155,7 +155,7 @@ fn rows_are_cut_to_the_budget_newest_first() {
     assert!(small.contains("[1000245,49,"), "{}", small);
 }
 
-/// `rows_within_page` は「新しい方から `offset` 本飛ばして `n` 本」(T15.0 (11))。
+/// `rows_within_page` は「新しい方から `offset` 本飛ばして `n` 本」(T15.0)。
 ///
 /// 環は時刻で引けないので頁は本数で切る。縛るのは 3 つ: **返す並びは古い順**のまま、
 /// 頁を継いでいくと**全部が重複なく揃う**、`n` で切れたぶんは打ち切りではない
@@ -400,7 +400,7 @@ fn a_sample_stays_small_enough_for_the_rings() {
     );
 }
 
-/// `used_bytes` は**いま入っているぶん**なので、標本を積むと増える (T15.0 (13))。
+/// `used_bytes` は**いま入っているぶん**なので、標本を積むと増える (T15.0)。
 ///
 /// 「起動直後と 1 時間後で増える」は待てないので、`push` を 2 回して見る。
 /// 満杯の見積もり ([`capacity_bytes`]) は動かない。

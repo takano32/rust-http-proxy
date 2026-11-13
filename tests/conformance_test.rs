@@ -1,7 +1,7 @@
 //! RFC から外れていた小さい振る舞いの結合テスト (T27.8)。2026-10-24 に 0.27.1 を叩いて見つけた 6 つ。
 //!
 //! (a) `Max-Forwards: 0` の TRACE / OPTIONS は自分で応え、0 でなければ 1 減らして転送する (RFC 9110 §7.6.2)
-//! (b) URI の userinfo (`http://user:pw@host/`) は 400 (§4.2.4。今までは `user:pw@host` を引きに行って 502)
+//! (b) URI の userinfo (`http://user:pw@host/`) は 400 (RFC 9110 §4.2.4。今までは `user:pw@host` を引きに行って 502)
 //! (c) `#fragment` はオリジンへ送らない (RFC 9112 §3.2)
 //! (d) 版が `HTTP/1.x` でない要求 (`HTTP/9.9`・HTTP/2 の preface) は 505
 //! (e) CONNECT の宛先にポートが無い・0 なら 400 (今までは 502)

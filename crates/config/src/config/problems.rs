@@ -249,7 +249,7 @@ fn edit_distance(a: &str, b: &str) -> usize {
 mod tests {
     use super::*;
 
-    // 名前は前置きを外したもの (`check-docs.sh` の (b) がコードの `"PROXY_…"` を README の表と突き合わせるため)
+    // 名前は前置きを外したもの (`check-docs.sh` の環境変数の検査がコードの `"PROXY_…"` を README の表と突き合わせるため)
     const KNOWN: &[&str] = &["TIMEOUT_SECS", "KEEPALIVE_SECS", "PORT"];
 
     #[test]

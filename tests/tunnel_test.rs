@@ -313,7 +313,7 @@ fn test_integration_reused_relay_pipe_never_leaks_bytes() {
     }
 }
 
-/// つながらないオリジンのエラーの原因が `/status` の `errors_by_cause` に乗ること (T12.4 (2))。
+/// つながらないオリジンのエラーの原因が `/status` の `errors_by_cause` に乗ること (T12.4)。
 ///
 /// 2 つ試す: **閉じたポート** (即 `ECONNREFUSED`) は `refused`、
 /// **TEST-NET-1** (`192.0.2.1`、RFC 5737 の文書用アドレスで応答しない) は `timeout`。

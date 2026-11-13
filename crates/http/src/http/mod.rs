@@ -89,7 +89,7 @@ pub struct Shared<'a> {
     /// `Connection: keep-alive` を付けたまま閉じていたので、その応答を読んだ直後に
     /// 次の要求を送ったクライアントが取りこぼしていた (T12.6 の小物)
     pub last: bool,
-    /// ここまでに測った段階 (`queue`。T14.3 (1))。
+    /// ここまでに測った段階 (`queue`。T14.3)。
     /// **本体クレートが測った値をそのまま運ぶだけ**で、ここでは時計を読まない
     pub stages: crate::metrics::StageMs,
     /// 要求行が届いた時刻 (`client_read` の起点)。終わりは**この関数の入口で既に
@@ -116,7 +116,7 @@ type ClientWriter<'s> = BufWriter<GuardedWrite<'s>>;
 ///
 /// 中身は [`handle_http_parsed`] の戻り値 (`Keep` / `Close` はクライアント接続を次の要求に
 /// 使えるか、`Err` は書けなかった)。`io::Error` から作れるので、段の中では `?` がそのまま使える。
-/// `io::Result<bool>` を包まずに 3 つの形の enum にしてある (T34.8 (d))。
+/// `io::Result<bool>` を包まずに 3 つの形の enum にしてある (T34.8)。
 enum Done {
     Keep,
     Close,
@@ -341,7 +341,7 @@ fn forward(
         mapped: origin.mapped,
         pool_key,
         // `queue` は本体クレートが測った値、`client_read` は「要求行が届いてから
-        // `started` まで」(入口で読んだ時計をそのまま使う。T14.3 (1))
+        // `started` まで」(入口で読んだ時計をそのまま使う。T14.3)
         detail: Detail {
             stages: StageMs {
                 client_read: shared.read_started.map_or(0, |t| {

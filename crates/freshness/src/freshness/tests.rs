@@ -88,7 +88,7 @@ fn max_age_s_maxage_and_expires() {
     assert!(response_policy(200, &hdrs(&[("expires", "0")]), &c, NOW).is_none());
 }
 
-/// 読めない `max-age` / `s-maxage` は「既に古い」(T28.10 (d))。バリデータが無ければ保存しない、
+/// 読めない `max-age` / `s-maxage` は「既に古い」(T28.10)。バリデータが無ければ保存しない、
 /// あれば毎回再検証 (TTL 0) で保存する。読める値は今までどおり。
 #[test]
 fn unreadable_max_age_is_stale() {
@@ -282,7 +282,7 @@ fn accept_encoding_is_normalized() {
     assert_eq!(accept_encoding_variant(Some("gzip, gzip")), "gzip");
 }
 
-/// T28.13 (b): 速い道 (無い・空・小文字のトークン 1 つ) も遅い道と同じ正規形。
+/// T28.13: 速い道 (無い・空・小文字のトークン 1 つ) も遅い道と同じ正規形。
 #[test]
 fn accept_encoding_fast_path_matches_the_slow_one() {
     for (v, want) in [
@@ -338,7 +338,7 @@ fn cookie_request_needs_explicit_freshness_or_public() {
     );
 }
 
-/// T28.13 (a): 借用の並び (名前の大小を問わない) で読んでも、小文字の組と同じ方針。
+/// T28.13: 借用の並び (名前の大小を問わない) で読んでも、小文字の組と同じ方針。
 #[test]
 fn policy_from_borrowed_lines_matches_the_pairs() {
     let cases: &[&[(&str, &str)]] = &[

@@ -8,7 +8,7 @@ use super::{DNS_CAUSES, Detail, ERR_CAUSES, HostOutcome};
 
 /// 応答時間ヒストグラムの上限 (ms)。最後の区間は上限なし。
 ///
-/// **1 ms 〜 10 s の 24 段、公比およそ 1.5** (T12.4 (1))。10 段だった頃は
+/// **1 ms 〜 10 s の 24 段、公比およそ 1.5** (T12.4)。10 段だった頃は
 /// デプロイ先の 50 ホスト中 29 (要求数で 74%) が `p50 = p95 = max` になっていた:
 /// 257 ms が (250, 500] の 1 区間に全部入り、区間内を補間しても観測した最大値で
 /// 頭打ちになるため。段を細かくすると同じ補間のままで分位点が意味を持つ
@@ -42,7 +42,7 @@ pub struct HostStats {
     pub buckets: [u64; LATENCY_BOUNDS_MS.len() + 1],
     /// 最後に要求を受けた時刻 (epoch 秒)
     pub last_seen: u64,
-    /// 名前解決にかかった時間の合計 (ms) と、OS へ問い合わせた回数 (T12.4 (2))
+    /// 名前解決にかかった時間の合計 (ms) と、OS へ問い合わせた回数 (T12.4)
     pub dns_ms_sum: u64,
     pub dns_misses: u64,
     /// 接続 (SYN → 確立) にかかった時間の合計 (ms)。名前解決のぶんは含まない
@@ -439,7 +439,7 @@ mod tests {
         assert_eq!(a.rtt_us_min, 5);
     }
 
-    /// T12.4 (1) の形: 257 ms × 90 + 290 ms × 10 で p50 < p95、最大値で頭打ち、空は 0。
+    /// T12.4 の形: 257 ms × 90 + 290 ms × 10 で p50 < p95、最大値で頭打ち、空は 0。
     #[test]
     fn the_quantile_interpolates_inside_the_bucket_and_caps_at_the_max() {
         let mut s = HostStats::default();

@@ -78,10 +78,10 @@ pub struct TableRow {
     /// 引き直しで答えの集合が変わった回数 (T14.37)。`refreshes + misses` のうち
     /// どれだけ答えが動いたかが、TTL の長さを決める材料になる
     pub changes: u64,
-    /// warm な状態でこの名前が引かれた回数 (通算。T15.0 (7))
+    /// warm な状態でこの名前が引かれた回数 (通算。T15.0)
     pub warm_requests: u64,
     /// ミスの種類別の回数 (通算。並びは cold / expired / warm_stale / negative。
-    /// T15.0 (7))。**和は `misses` と一致する**
+    /// T15.0)。**和は `misses` と一致する**
     pub misses_by_kind: [u64; 4],
 }
 
@@ -200,7 +200,7 @@ pub fn status_json() -> String {
     let (us, misses) = resolve_cost_total();
     let timeout = super::timeout();
     let (timeouts, busy, late, in_flight) = super::resolver_counters();
-    // ミスの内訳と引き直しの様子 (T15.0 (7))。`misses_by_kind` の 4 つの和は `misses` と
+    // ミスの内訳と引き直しの様子 (T15.0)。`misses_by_kind` の 4 つの和は `misses` と
     // 一致する。`refresh_*` は `dns-refresh` スレッド 1 本ぶん
     let by_kind = [
         MISS_COLD.load(Ordering::Relaxed),

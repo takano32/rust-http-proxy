@@ -480,12 +480,12 @@ def head_lines(d):
 
 
 def requests_lines(d):
-    """§1 要求数 (日別。バーストの窓も入れた全部)。"""
+    """「要求数」の節 (日別。バーストの窓も入れた全部)。"""
     out = []
     p = out.append
     days, stats, week = d["days"], d["stats"], d["week"]
     n = sd.n
-    p("## 1. 要求数 (日別)")
+    p("## 要求数 (日別)")
     p("")
     p("**バーストの窓も入れた**その日の全部 (表 2 と 3 は平常時だけなので本数が合わない)。")
     p("")
@@ -506,12 +506,12 @@ def requests_lines(d):
 
 
 def connect_lines(d):
-    """§2 CONNECT 確立 p50 / p95 (日別。平常時)。"""
+    """「CONNECT 確立 p50 / p95」の節 (日別。平常時)。"""
     out = []
     p = out.append
     days, stats, week = d["days"], d["stats"], d["week"]
     n, ms = sd.n, sd.ms
-    p("## 2. CONNECT 確立 p50 / p95 (日別)")
+    p("## CONNECT 確立 p50 / p95 (日別)")
     p("")
     p("平常時 (バーストの窓を外した標本) の値。`/history` の対数バケツから "
       "`crates/metrics-profile/src/window.rs` の `Window::quantile_ms` と同じ補間で出す。")
@@ -532,13 +532,13 @@ def connect_lines(d):
 
 
 def dns_lines(d):
-    """§3 名前解決のミス率 (日別。平常時)。"""
+    """「名前解決のミス率」の節 (日別。平常時)。"""
     out = []
     p = out.append
     days, stats, week = d["days"], d["stats"], d["week"]
     n, ms, ratio = sd.n, sd.ms, sd.ratio
     w = week["normal"]
-    p("## 3. 名前解決のミス率 (日別)")
+    p("## 名前解決のミス率 (日別)")
     p("")
     p("| 日 | ミス/接続 | ミス | ミス 1 回 ms | 接続 1 本あたり ms |")
     p("|---|---:|---:|---:|---:|")
@@ -553,12 +553,12 @@ def dns_lines(d):
 
 
 def error_lines(d):
-    """§4 エラー (原因別。その週に出た原因だけを列にする)。"""
+    """「エラー」の節 (原因別。その週に出た原因だけを列にする)。"""
     out = []
     p = out.append
     days, stats, week = d["days"], d["stats"], d["week"]
     n = sd.n
-    p("## 4. エラー (原因別)")
+    p("## エラー (原因別)")
     p("")
     cols = used_causes(d)
     if not cols:
@@ -587,12 +587,12 @@ def error_lines(d):
 
 
 def burst_lines(d):
-    """§5 山 (`/bursts` の写真か、無ければ同時接続の最大と外した窓)。"""
+    """「山」の節 (`/bursts` の写真か、無ければ同時接続の最大と外した窓)。"""
     out = []
     p = out.append
     days, stats, week = d["days"], d["stats"], d["week"]
     n = sd.n
-    p("## 5. 山 (バースト)")
+    p("## 山 (バースト)")
     p("")
     if d["has_bursts"]:
         p(f"`/bursts` の写真 (T14.6) がこの週に **{len(d['shots'])} 枚**。")
@@ -633,12 +633,12 @@ def burst_lines(d):
 
 
 def client_lines(d, top):
-    """§6 接続元の出入り (日別の出入りと、週の上位 `top` 件)。"""
+    """「接続元の出入り」の節 (日別の出入りと、週の上位 `top` 件)。"""
     out = []
     p = out.append
     days = d["days"]
     n, ms = sd.n, sd.ms
-    p("## 6. 接続元の出入り")
+    p("## 接続元の出入り")
     p("")
     if not d["clients"]:
         p("`/clients` (T14.7) も `/status` の `clients[]` もこの入力に無い。")
@@ -679,12 +679,12 @@ def client_lines(d, top):
 
 
 def slow_host_lines(d, top):
-    """§7 遅かったホスト 上位 `top` (`avg_ms` × 要求数)。"""
+    """「遅かったホスト」の節 上位 `top` (`avg_ms` × 要求数)。"""
     out = []
     p = out.append
     n, ms = sd.n, sd.ms
     h = d["hosts"]
-    p(f"## 7. 遅かったホスト 上位 {top} (`avg_ms` × 要求数)")
+    p(f"## 遅かったホスト 上位 {top} (`avg_ms` × 要求数)")
     p("")
     if not h["rows"]:
         p("`/hosts` がこの入力に無い。")
@@ -715,11 +715,11 @@ def slow_host_lines(d, top):
 
 
 def new_host_lines(d, top):
-    """§8 新しく見たホスト (前の雪像に無かった名前)。"""
+    """「新しく見たホスト」の節 (前の雪像に無かった名前)。"""
     out = []
     p = out.append
     days = d["days"]
-    p("## 8. 新しく見たホスト (前の雪像に無かった名前)")
+    p("## 新しく見たホスト (前の雪像に無かった名前)")
     p("")
     nh = d["new_hosts"]
     if not nh or not nh["pairs"]:

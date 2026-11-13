@@ -99,7 +99,7 @@ fn print_capabilities(caps: &Capabilities, config: &Config) {
             }
         )
     );
-    // どの階層の `cpu.stat` を読むことになるか (T15.0 (6))。自分の cgroup に cpu
+    // どの階層の `cpu.stat` を読むことになるか (T15.0)。自分の cgroup に cpu
     // コントローラが無いと親の値を読むので、`nr_throttled` が誰のものかはここで分かる。
     // **引くのはここと `/status` を組むときだけ** (5 秒の標本では引かない)
     let cpu_path: Option<PathBuf> = proxy_server::sysinfo::cgroup::cgroup_cpu_path();

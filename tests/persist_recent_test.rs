@@ -181,7 +181,7 @@ fn test_integration_individual_records_survive_a_restart() {
 
 /// 実バイナリで、**停止シグナルのあと同じ `$HOME` で起こし直す**と個票が残っていること。
 ///
-/// 周期を待たずに (5 秒) 終わるのは、SIGTERM の後始末が最後の 1 回を書くため (T14.9 (4))。
+/// 周期を待たずに (5 秒) 終わるのは、SIGTERM の後始末が最後の 1 回を書くため (T14.9)。
 #[test]
 fn test_integration_a_stop_signal_writes_the_last_records() {
     let dir = temp_dir("sigterm");

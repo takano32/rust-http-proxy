@@ -57,7 +57,7 @@ fn feed_with(h: &History, d: &mut Detector, s: Sample, c: Counters) -> Vec<Fired
     feed_conns(h, d, None, s, c)
 }
 
-/// 接続の表も渡して 1 本流す (`tunnel_spin` の判定に要る。T15.0 (6))。
+/// 接続の表も渡して 1 本流す (`tunnel_spin` の判定に要る。T15.0)。
 fn feed_conns(
     h: &History,
     d: &mut Detector,
@@ -77,7 +77,7 @@ fn feed_conns(
     )
 }
 
-/// **起動からの秒**を渡せる版 (T15.0 (9))。[`feed`] は [`Counters::default`] を
+/// **起動からの秒**を渡せる版 (T15.0)。[`feed`] は [`Counters::default`] を
 /// 渡すので `uptime_secs` が 0 のまま = 暖機中扱いになる。
 fn feed_uptime(h: &History, d: &mut Detector, s: Sample, uptime: u64) -> Vec<Fired> {
     feed_with(
@@ -91,7 +91,7 @@ fn feed_uptime(h: &History, d: &mut Detector, s: Sample, uptime: u64) -> Vec<Fir
     )
 }
 
-/// cgroup の CPU の**累計**を渡して 1 本流す (T15.0 (6))。
+/// cgroup の CPU の**累計**を渡して 1 本流す (T15.0)。
 fn feed_cpu(
     h: &History,
     d: &mut Detector,

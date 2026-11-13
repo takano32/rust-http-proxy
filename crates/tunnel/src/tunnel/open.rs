@@ -56,9 +56,9 @@ pub(super) struct Info {
     pub(super) started: Instant,
     /// ホスト別の応答時間は接続確立まで (トンネル自体の寿命は応答時間ではない)
     pub(super) connect_took: Duration,
-    /// 確立までの内訳 (名前解決 / 接続 / 勝った族。T12.4 (2)) と段階 (T14.3 (1))
+    /// 確立までの内訳 (名前解決 / 接続 / 勝った族。T12.4) と段階 (T14.3)
     pub(super) detail: Detail,
-    /// `200 Connection Established` を書き終えた時刻 (`first_relay` の起点。T14.3 (1))。
+    /// `200 Connection Established` を書き終えた時刻 (`first_relay` の起点。T14.3)。
     /// `--lite` では `None` = 時計を読まない
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))] // Linux でだけ使う (T36.31)
     pub(super) established: Option<Instant>,
@@ -99,11 +99,11 @@ pub(super) fn open(req: TunnelRequest<'_>) -> io::Result<Opened> {
     } = req;
     let started = Instant::now();
     // この時計より**前に**払われた名前解決 (入口の ACL。`PROXY_ALLOW_LOCAL=false` が
-    // 既定なので普通はここに入る) を控える (T15.0 (1))。thread-local の読み 1 回で、
+    // 既定なので普通はここに入る) を控える (T15.0)。thread-local の読み 1 回で、
     // 時計もシステムコールも増えない。使い道は下の [`Detail::of_connect`] の引き算だけ
     let dns_before = dns::peek_resolve_cost().0;
     // `client_read` は「要求行が届いてからここまで」(入口で読んだ時計をそのまま使うので、
-    // 1 本あたりの時計は増えない。T14.3 (1))
+    // 1 本あたりの時計は増えない。T14.3)
     if let Some(t) = read_started {
         stages.client_read = crate::profile::ms_u32(started.saturating_duration_since(t));
     }
@@ -137,7 +137,7 @@ pub(super) fn open(req: TunnelRequest<'_>) -> io::Result<Opened> {
     }
     client.write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")?;
     client.flush()?;
-    // トンネル越しの TLS 握手の往復を測る起点 (T14.3 (1))。`--lite` では読まない
+    // トンネル越しの TLS 握手の往復を測る起点 (T14.3)。`--lite` では読まない
     let established = crate::profile::mark();
     if !prefix.is_empty() {
         server.write_all(prefix)?;
@@ -201,7 +201,7 @@ fn refuse_connect(
             more
         );
     }
-    // `Date` と `Content-Length: 0` も付ける (RFC 9110 §6.6.1・§8.6。T32.15 (5)。T29.9 の漏れ)
+    // `Date` と `Content-Length: 0` も付ける (RFC 9110 §6.6.1・§8.6。T32.15。T29.9 の漏れ)
     let mut head = [0u8; crate::httpdate::ERROR_HEAD_MAX];
     let _ = client.write_all(crate::httpdate::error_head(code, reason, &mut head));
     let detail = Detail::of_connect(

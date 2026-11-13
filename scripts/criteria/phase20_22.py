@@ -19,9 +19,9 @@ from .restarts import restart_info
 # --- Phase 20 (T20.1。phase18 の 10 行の物差しを直したもの) ---
 
 def _p20_heap(c, th):
-    """T20.1 (g): `heap_used + mmap − cache_memory` が 0 時間の雪像から 5 MB 以上増えていないか。
+    """T20.1: `heap_used + mmap − cache_memory` が 0 時間の雪像から 5 MB 以上増えていないか。
 
-    phase18 の (g) (`_p18_heap`) から**メモリのキャッシュ** (`memory.cache_memory`) を引いたもの。
+    phase18 の `heap_used + mmap` の行 (`_p18_heap`) から**メモリのキャッシュ** (`memory.cache_memory`) を引いたもの。
     キャッシュは上限まで使ってよい作りなので、入ったぶんは漏れではない (T18.99 は 13.4 MB 入って
     +15.7 MB と出た。引くと +2.2 MB)。**`cache_memory` の欄が無い版は 0 として扱わず
     「判定できず」**。ほかの読み方 (`--zero` が要る・後の雪像と同じ起動であること・`heap_free` と

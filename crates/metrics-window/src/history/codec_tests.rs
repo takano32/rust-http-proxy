@@ -9,7 +9,7 @@ use super::*;
 ///
 /// 縛っているのは値の保存だけでなく **[`Sample::encode`] と [`Sample::decode`] の
 /// 並びが同じこと**。`/history` の列数を見る検査 (`the_history_json_is_compact`) は
-/// 順番の食い違いを通してしまい、統計が別の意味で読み戻る (T15.0 (10))。
+/// 順番の食い違いを通してしまい、統計が別の意味で読み戻る (T15.0)。
 /// 同じ値を 2 つ置くとその 2 つの入れ替えが見えなくなるので、**値は全部違える**こと。
 #[test]
 fn sample_encoding_round_trips() {
@@ -18,7 +18,7 @@ fn sample_encoding_round_trips() {
     connect.observe(3);
     let mut forward = Window::default();
     forward.observe(9999);
-    // `connect` / `forward` のどちらとも件数・合計・最大・段が違う窓 (T15.0 (10))
+    // `connect` / `forward` のどちらとも件数・合計・最大・段が違う窓 (T15.0)
     let mut wait = Window::default();
     wait.observe(1);
     wait.observe(40);
@@ -87,7 +87,7 @@ fn sample_encoding_round_trips() {
     assert_eq!(Sample::decode(&enc), Some(s));
     assert_eq!(Sample::decode(&[0u8; 104]), None);
 
-    // T15.0 (10) で足した 20 項目が**レコードの末尾**に並んでいること (手前の欄は
+    // T15.0 で足した 20 項目が**レコードの末尾**に並んでいること (手前の欄は
     // 1 つも動いていない = 版 3 のレコードがそのまま読み継げる)
     let mut d = crate::rrd::Dec(&enc[V3_FIXED_ITEMS * 8..]);
     assert_eq!(
@@ -139,7 +139,7 @@ fn sample_encoding_round_trips() {
 /// **T14.14 の 60 は「版 3 を始めた時点の予備」** ([`V3_SPARE_ITEMS`] = 64) の話で、
 /// 欄を足すたびに減る今の予備の話ではない。T14.14 はそれを
 /// `SAMPLE_SPARE_ITEMS >= 60` と書き損ねていて、**4 項目を超えて足すと組み立てで
-/// 落ちた** (T15.0 (10) で式を直した。60 項目は T14.6 の閉じた理由 8 + 寿命とバイトの 24・
+/// 落ちた** (T15.0 で式を直した。60 項目は T14.6 の閉じた理由 8 + 寿命とバイトの 24・
 /// T14.10 の canary 2・T14.12 のカーネルと cgroup 23 を全部載せてもまだ入る量)。
 #[test]
 fn the_version3_slack_started_at_sixty_and_what_is_left_survives_a_round_trip() {
@@ -191,7 +191,7 @@ fn the_version3_slack_started_at_sixty_and_what_is_left_survives_a_round_trip() 
     let _ = std::fs::remove_file(&path);
 }
 
-/// `evicted_idle` は**レコードの余白に足した**ので `.rrd` の版は上がらない (T14.2 (3))。
+/// `evicted_idle` は**レコードの余白に足した**ので `.rrd` の版は上がらない (T14.2)。
 ///
 /// 見るのは 2 つ: (a) 63 項目が領域 (508 B) に収まっていて、まだ余白があること、
 /// (b) 版 2 で書かれた 62 項目のレコード (末尾はゼロ埋め) を読むと
@@ -235,7 +235,7 @@ fn evicted_idle_fits_in_the_record_slack_and_old_records_still_decode() {
     );
 }
 
-/// T15.0 (10) の 20 列も**レコードの余白に足した**ので `.rrd` の版は上がらない。
+/// T15.0 の 20 列も**レコードの余白に足した**ので `.rrd` の版は上がらない。
 ///
 /// 見るのは 3 つ: (a) 83 項目が 1 レコード (1,020 B) に収まっていて予備が残っている、
 /// (b) **版 3 の 63 項目のレコード** (末尾はゼロ埋め) を読むと新しい 20 列が 0 になり、

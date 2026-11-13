@@ -127,7 +127,7 @@ fn test_integration_config_shows_effective_values_and_their_source() {
             ("PROXY_KEEPALIVE_SECS", "7", "env", "環境変数で渡した行"),
             ("PROXY_TIMEOUT_SECS", "30", "default", "書いていない行"),
             // CONNECT 専用の締め切りも書いていないので、既定の 3 秒が出どころ `default` で出る
-            // (`PROXY_TIMEOUT_SECS` は 30 のまま。T15.6 (2)、既定を 5 秒にした T23.3、3 秒にした T28.43)
+            // (`PROXY_TIMEOUT_SECS` は 30 のまま。T15.6、既定を 5 秒にした T23.3、3 秒にした T28.43)
             (
                 "PROXY_CONNECT_TIMEOUT_SECS",
                 "3",

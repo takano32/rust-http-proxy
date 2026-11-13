@@ -1,6 +1,6 @@
 [package]
 name = "proxy-sys"
-version = "0.34.165"
+version = "0.37.8"
 edition = "2024"
 
 [lib]

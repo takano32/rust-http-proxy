@@ -14,7 +14,7 @@ fn numeric_parameters_fall_back_to_the_default() {
     assert_eq!(str_param(None, "sort"), "");
 }
 
-/// `?offset=` は**下限 0** (`num_param` は `.clamp(1, max)` なので 0 を通せない。T15.0 (11))。
+/// `?offset=` は**下限 0** (`num_param` は `.clamp(1, max)` なので 0 を通せない。T15.0)。
 #[test]
 fn the_offset_parameter_starts_at_zero() {
     assert_eq!(offset_param(None, 2000), 0);

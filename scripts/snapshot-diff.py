@@ -22,7 +22,7 @@
 #    `-errors_n_500` `-connections` `-log_n_500` … を名前で見分ける。取得時刻は接頭辞の
 #    `YYYY-MM-DDTHHMM[SS]Z` から読む。`-metrics` と `-dashboard` は JSON ではないので見ない。)
 #
-# 出すもの (T14.17 の (1)〜(9)):
+# 出すもの (T14.17):
 #   1. 再起動をまたいでいるか (`uptime_secs` / `since_start_secs` と `version`)
 #   2. `/history` を**再起動時刻で切った**平常時 (1 時間 300 本未満の標本) の前後 — T14.0 の表の形。
 #      `/history` の確立の区間には**失敗した接続の時間も入っている**ので、後の雪像の `/recent` から
@@ -39,7 +39,7 @@
 #   9. `--criteria phase14|phase15|phase17|phase18|phase20|phase21|phase22|phase23|phase24|phase25|phase26|phase27|phase28|phase29|phase30|T35|T36|T37` で **Phase の完了の定義に対する判定表**
 #      (満たした / 届かず / 判定できず)。判定の 1 行 = 1 つの関数で、`RULES` に並べてある
 #      (**判定の部は `scripts/snapshot_criteria.py`**。T20.1 で割った)
-#      (T15.0 (15)。**材料の部が雪像に無ければ「判定できず」**で、0 とは書かない)。
+#      (T15.0。**材料の部が雪像に無ければ「判定できず」**で、0 とは書かない)。
 #      phase18 (T18.2) は phase17 の 8 行 + `--zero FILE` (0 時間の雪像) からの
 #      `heap_used + mmap` の増え + `ipv6.request_probes` の 10 行。
 #      phase20 (T20.1) は同じ 10 行の物差しを直したもの: `heap_used + mmap` から
@@ -351,7 +351,7 @@ def sum_samples(rows, limit):
            # T32.17: 名前解決に失敗したミスとその待ち (欄の無い版では None のまま。下で鍵ごと消す)
            "dns_fail_misses": None, "dns_fail_ms_sum": None,
            "causes": [0] * len(CAUSE_NAMES), "active_max": 0, "requests": None,
-           # T15.0 (10) の列 (無い版では `dns_warm_avg` が None、残りは 0 のまま)
+           # T15.0 の列 (無い版では `dns_warm_avg` が None、残りは 0 のまま)
            "active_peak": 0, "requests_delta": 0, "bytes_delta": 0, "dns_warm_avg": None,
            # T16.0 の列 (無い版では None)
            "dns_warm_max": None}
@@ -582,7 +582,7 @@ def recent_connects(snap):
 def summary_url(since, until, res, normal=True):
     """同じ期間・同じ切り方をサーバーに畳ませる URL (T.14.24)。
 
-    この道具が §2 でやっている集計 (1 時間 300 本以上の標本を外して 12 段の
+    この道具が「平常時の前後」でやっている集計 (1 時間 300 本以上の標本を外して 12 段の
     ヒストグラムを足す) と**同じ求め方**がプロキシ側に入っているので、
     `/history` を丸ごと取らずに 1 要求で同じ数字が取れる。
     """
@@ -921,7 +921,7 @@ def daily_snapshots(dirname, b):
 # ---------------------------------------------------------------- 組み立て
 
 def build(a, b, args):
-    # `/daily` は雪像に入っていないので、渡されたら新しい雪像の部として足す (T15.15 (2))
+    # `/daily` は雪像に入っていないので、渡されたら新しい雪像の部として足す (T15.15)
     if getattr(args, "daily", None):
         b["daily"] = load(args.daily)
     # `/profile?res=60` も雪像に入らない (256 KiB で切れる部とは別に取る)。phase17 の CPU の行の材料 (T17.0a)
@@ -980,9 +980,9 @@ def add_extras(out, a, b, args, info, hist, hosts, majors, status_b, overload):
 
     足す順は割る前と同じ (`--out json` の鍵の順が変わらない)。
     """
-    # `other` (表からあふれたホストの畳み先) は §3 の比べの表から外して印を付ける (T28.19)。
+    # `other` (表からあふれたホストの畳み先) は「ホスト別」の比べの表から外して印を付ける (T28.19)。
     # **`--criteria` のときは足さない** (過去の判定表の出力を 1 バイトも変えない決まり。
-    # 行そのものは `hosts.rows` に残すので、エラーの合計 (§7) は変わらない)
+    # 行そのものは `hosts.rows` に残すので、エラーの合計 (「エラーの原因別」) は変わらない)
     if not args.criteria:
         hosts["folded"] = [r for r in hosts["rows"] if is_folded(r)]
     # 成功した接続だけの確立時間 (T20.1)。**phase14〜phase18 の出力は変えない**ので、そのときは鍵ごと足さない
@@ -1005,7 +1005,7 @@ def add_extras(out, a, b, args, info, hist, hosts, majors, status_b, overload):
         out["criteria"] = judge(args.criteria, hist, hosts, majors, status_b, overload,
                                 CRITERIA[args.criteria], a=a, b=b, info=info,
                                 dns=out["dns"], errors=out["errors"], burst=args.burst)
-    # 日次の雪像の表 (T18.2 (2))。渡されたときだけ鍵を足す
+    # 日次の雪像の表 (T18.2)。渡されたときだけ鍵を足す
     if getattr(args, "daily_snapshots", None):
         out["daily_snapshots"] = daily_snapshots(args.daily_snapshots, b)
 
@@ -1027,7 +1027,7 @@ def render(d, top):
     # 9 (判定表。中身は `snapshot_criteria.py`)
     if "criteria" in d:
         render_criteria(d, d["hosts"].get("group") == "domain")
-    # 日次の雪像の表 (`--daily-snapshots`。T18.2 (2))。判定表の下に置く
+    # 日次の雪像の表 (`--daily-snapshots`。T18.2)。判定表の下に置く
     if "daily_snapshots" in d:
         render_daily_snapshots(d)
 
@@ -1052,7 +1052,7 @@ def render_title(d):
 
 
 def render_restart(d):
-    """§1 再起動 (`restart_info` の結果)。"""
+    """「再起動」の節 (`restart_info` の結果)。"""
     p = print
     r = d["restart"]
     p("## 1. 再起動")
@@ -1077,7 +1077,7 @@ def render_restart(d):
 
 
 def render_history(d):
-    """§2 平常時の前後: 見出しと切り方の前置き (表と注は下の 2 つ)。"""
+    """「平常時の前後」の節: 見出しと切り方の前置き (表と注は下の 2 つ)。"""
     p = print
     h = d["history"]
     p("## 2. 平常時の前後 (`/history` を再起動時刻で切る)")
@@ -1109,7 +1109,7 @@ def render_history(d):
 
 
 def render_history_table(d, h):
-    """§2 の前後の表 (確立・名前解決・初バイト・バースト込み・山とエラー)。"""
+    """「平常時の前後」の表 (確立・名前解決・初バイト・バースト込み・山とエラー)。"""
     p = print
     bef, aft = h["before"], h["after"]
     bef_all, aft_all = h["before_all"], h["after_all"]
@@ -1169,7 +1169,7 @@ def render_history_table(d, h):
 
 
 def dns_ok_text(x, x_all):
-    """§2 の「名前解決の失敗を除く」ミスの 1 セル (T.32.17)。欄の無い版はそう書く。"""
+    """「平常時の前後」の「名前解決の失敗を除く」ミスの 1 セル (T.32.17)。欄の無い版はそう書く。"""
     if "dns_ok_per_connect" not in x:
         return "— (`/history` に `dns_fail_misses` が無い)"
     t = f"**{x['dns_ok_per_connect']:.3f} 回/接続**"
@@ -1181,7 +1181,7 @@ def dns_ok_text(x, x_all):
 
 
 def render_history_notes(d, h):
-    """§2 の表の下の注 (失敗した接続の割合・サーバー側の要約の URL と突き合わせ)。"""
+    """「平常時の前後」の表の下の注 (失敗した接続の割合・サーバー側の要約の URL と突き合わせ)。"""
     p = print
     aft = h["after"]
     if "recent_connect" in d and aft["connects"] \
@@ -1219,7 +1219,7 @@ def render_history_notes(d, h):
 
 
 def render_hosts(d, top):
-    """§3 ホスト別 (`/hosts` の差分)。"""
+    """「ホスト別」の節 (`/hosts` の差分)。"""
     p = print
     a, b = d["a"], d["b"]
     hs = d["hosts"]
@@ -1289,7 +1289,7 @@ def render_hosts(d, top):
 
 
 def render_clients(d, top):
-    """§4 接続元別 (`/clients` の差分)。"""
+    """「接続元別」の節 (`/clients` の差分)。"""
     p = print
     cl = d["clients"]
     # `distinct_targets` / `agent` / `ports` は `.rrd` に残らない**起動からの**欄なので、
@@ -1328,7 +1328,7 @@ def render_clients(d, top):
 
 
 def render_rtt_split(d):
-    """§4 の下の、接続元の RTT 別の表 (T.29.18。`rtt_split` があるときだけ)。"""
+    """「接続元別」の下の、接続元の RTT 別の表 (T.29.18。`rtt_split` があるときだけ)。"""
     p = print
     rs = d.get("rtt_split")
     if rs:
@@ -1358,7 +1358,7 @@ def render_rtt_split(d):
 
 
 def render_dns(d):
-    """§5 名前解決 (`/dns` の warm と引き直し)。"""
+    """「名前解決」の節 (`/dns` の warm と引き直し)。"""
     p = print
     dn = d["dns"]
     p("## 5. 名前解決 (`/dns` の warm と引き直し)")
@@ -1389,7 +1389,7 @@ def render_dns(d):
 
 
 def render_events(d, top):
-    """§6 その間の出来事 (`/events`)。"""
+    """「その間の出来事」の節 (`/events`)。"""
     p = print
     ev = d["events"]
     p("## 6. その間の出来事 (`/events`)")
@@ -1410,7 +1410,7 @@ def render_events(d, top):
 
 
 def render_errors(d):
-    """§7 エラーの原因別。"""
+    """「エラーの原因別」の節。"""
     p = print
     er = d["errors"]
     p("## 7. エラーの原因別")
@@ -1443,7 +1443,7 @@ def render_errors(d):
 
 
 def render_bursts(d, top):
-    """§8 バースト (`/bursts`)。"""
+    """「バースト」の節 (`/bursts`)。"""
     p = print
     bu = d["bursts"]
     p("## 8. バースト (`/bursts`)")

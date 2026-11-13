@@ -45,7 +45,7 @@ pub struct TcpSnmp {
 ///
 /// `inuse` は IPv4 の表だけを数える (IPv6 は `sockstat6`) が、`tw` (TIME_WAIT) は
 /// カーネルが族をまたいで 1 つの死刑囚リストで持っているので全部が入る。
-/// この `tw` が loopback の CONNECT のベンチを律速していたもの (TODO.md §1。
+/// この `tw` が loopback の CONNECT のベンチを律速していたもの (`docs/measuring.md`。
 /// この機械は `tcp_max_tw_buckets = 32768`)。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SockStat {
@@ -195,7 +195,7 @@ FRAG: inuse 0 memory 0
         assert_eq!(s.curr_estab, 16);
     }
 
-    /// TIME_WAIT は `sockstat` の `tw` (§1 の `tcp_max_tw_buckets = 32768` に当たるもの)。
+    /// TIME_WAIT は `sockstat` の `tw` (`docs/measuring.md` の `tcp_max_tw_buckets = 32768` に当たるもの)。
     #[test]
     fn reads_the_time_wait_count_from_sockstat() {
         let s = parse_sockstat(SOCKSTAT).unwrap();

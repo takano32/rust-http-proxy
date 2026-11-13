@@ -92,7 +92,7 @@ pub struct Idle {
     grace: Duration,
     /// アクセスログと統計に要る素性
     info: Info,
-    /// いま預けられているなら、預けた時刻 (T14.3 (1))
+    /// いま預けられているなら、預けた時刻 (T14.3)
     parked_at: Option<Instant>,
     /// 預けられていた合計 (ms)
     parked_ms: u32,
@@ -105,7 +105,7 @@ pub struct Idle {
     /// 読まない (詰まらない中継は 1 回も読まない)。ms ではなく us で積むのは、
     /// 1 ms に満たない待ちを何度も繰り返すトンネルで切り捨てが積み上がらないように
     stall_us: [u64; SIDES],
-    /// **起こされたのに 1 バイトも進まなかった**周の数 (T15.0 (4))。
+    /// **起こされたのに 1 バイトも進まなかった**周の数 (T15.0)。
     ///
     /// T15.5 で消した空回りの型 (`poll` が `POLLHUP` で返るのに誰も読まない) は、
     /// これが秒あたり数万で増え続ける形だった。預けても引き継ぐので `Idle` の欄
@@ -132,7 +132,7 @@ impl Drop for Idle {
         for d in self.dirs.iter_mut() {
             d.drop_relay();
         }
-        // 段階 (T14.3 (1))。`relay` は `report` が引き算で出す
+        // 段階 (T14.3)。`relay` は `report` が引き算で出す
         self.info.detail.stages.first_relay = self.flow.first_relay_ms;
         self.info.detail.stages.park = self.parked_ms;
         // 閉じた理由 (T14.4): 中継の中で決まっていればそれ、決まっていなければ
@@ -191,7 +191,7 @@ impl Idle {
         self.parked_at = None;
     }
 
-    /// 預かり所から戻ってきた (預けられていた時間を足す。T14.3 (1))。
+    /// 預かり所から戻ってきた (預けられていた時間を足す。T14.3)。
     fn unpark(&mut self) {
         if let Some(t) = self.parked_at.take() {
             let parked = t.elapsed();
@@ -221,7 +221,7 @@ impl Idle {
         if let Some(s) = &self.info.slot {
             s.set_bytes(self.flow.transferred);
         }
-        // 預けた時刻 (T14.3 (1))。預かってもらえなければ `no_park` が消す。
+        // 預けた時刻 (T14.3)。預かってもらえなければ `no_park` が消す。
         // 猶予を伸ばす判定 (T32.19) にも使うので `--lite` でも読む (預ける 1 回に 1 回)
         self.parked_at = Some(Instant::now());
     }
@@ -250,7 +250,7 @@ impl Idle {
         let flow = &mut self.flow;
         // 書けるのを待った時間 (T14.42)。預けても引き継ぐので `Idle` の欄
         let stall_us = &mut self.stall_us;
-        // 空回りの証拠 (T15.0 (4))。`spins` は預けても引き継ぐので `Idle` の欄、
+        // 空回りの証拠 (T15.0)。`spins` は預けても引き継ぐので `Idle` の欄、
         // 残りの 2 つは**前の周の `poll`** の結果なので輪の外の局所変数
         // (待ちに入る所は `poll` の前なので、そこで置けるのは 1 周前の旗)
         let spins = &mut self.spins;
@@ -275,7 +275,7 @@ impl Idle {
             }
             if progressed {
                 // 1 バイトでも動いた (EOF を読んだのも「動いた」) ので、前の周の
-                // 起床はちゃんと仕事になった = 空回りではない (T15.0 (4))。
+                // 起床はちゃんと仕事になった = 空回りではない (T15.0)。
                 // **ここで倒さないと、普通に流れているトンネルが 1 往復ごとに
                 // 1 回数えて**しまう: 起こされた次の周は `fill` が進んで
                 // `continue` し、その次の周に `EAGAIN` で待ちへ来るため
@@ -292,7 +292,7 @@ impl Idle {
             // 持たせると起こし方が 2 通りになる。寿命も短いので単純さを採る
             // ここで止まる = 今の合計が落ち着いた値。`/connections` に見せるのは
             // この 1 回だけで、バイトごとにも splice ごとにも書かない (T13.4)。
-            // **T15.0 (4)**: 同じ 1 回で空回りの証拠も置く。ここに来た時点で
+            // **T15.0**: 同じ 1 回で空回りの証拠も置く。ここに来た時点で
             // 「1 バイトも進まなかった」は確定している (上の `if progressed` を
             // 通り抜けている) ので、空回りかどうかは「**前の周の `poll` が
             // 起床を返したか**」だけで決まる。数え上げも書き込みも `slot` の
@@ -318,7 +318,7 @@ impl Idle {
                 flow.close = Some(CloseReason::Error(ErrCause::Timeout));
                 break;
             }
-            // 次に待ちへ入るときに置く証拠 (T15.0 (4))。旗は**この周の `poll` が
+            // 次に待ちへ入るときに置く証拠 (T15.0)。旗は**この周の `poll` が
             // 返したもの**で、置くのは次の周の待ちの直前 (待ちに入る所は `poll` の
             // 前なので、そこで置けるのは 1 周前の旗)。T15.5 で関心の無い記述子には
             // `-1` を渡すようにしたので、`revents` が立つのは面倒を見る向きがある
@@ -419,7 +419,7 @@ pub fn resume(mut idle: Box<Idle>) {
     idle.unpark();
     if let Some(s) = idle.slot() {
         s.set_state(ConnState::Relaying);
-        // 預かり所から戻ると**別のスレッド**が受け持つ (T15.0 (4))。
+        // 預かり所から戻ると**別のスレッド**が受け持つ (T15.0)。
         // 番号を引くのはスレッドの一生に 1 回で、ここは原子の書き込み 1 回
         s.set_tid(sys::gettid());
     }

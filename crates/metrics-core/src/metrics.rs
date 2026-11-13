@@ -63,7 +63,7 @@ pub struct Metrics {
     pub start_time: Instant,
     pub total_requests: AtomicU64,
     pub active_connections: AtomicUsize,
-    /// **前回の標本からの同時接続の真の山** (`/history` の `active_peak`。T15.0 (10))。
+    /// **前回の標本からの同時接続の真の山** (`/history` の `active_peak`。T15.0)。
     ///
     /// `active_max` は 5 秒ごとの瞬間値の最大なので、5 秒より短い山を取りこぼす
     /// (実測で取りこぼしが分かっていたので、この列を足した)。ここは
@@ -238,7 +238,7 @@ impl Metrics {
 
     pub fn inc_active_conn(&self) {
         // 戻り + 1 = いまの本数。5 秒ごとの瞬間値では取りこぼす短い山を、ここで拾う
-        // (T15.0 (10))。**足すのは原子の読み 1 回と比較 1 回**で、越えたときだけ書く
+        // (T15.0)。**足すのは原子の読み 1 回と比較 1 回**で、越えたときだけ書く
         let now = self.active_connections.fetch_add(1, Ordering::Relaxed) + 1;
         if now > self.active_peak.load(Ordering::Relaxed) {
             self.active_peak.fetch_max(now, Ordering::Relaxed);

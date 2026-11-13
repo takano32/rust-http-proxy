@@ -46,7 +46,7 @@ pub struct Conn {
     workers: Arc<workers::Workers>,
     /// 接続元の IP を文字列にしたもの (X-Forwarded-For と統計に毎要求要るので接続ごとに 1 回だけ作る)
     peer_ip: String,
-    /// この接続で **1 回でもプロキシとして通す要求を受けたか** (T15.0 (12))。
+    /// この接続で **1 回でもプロキシとして通す要求を受けたか** (T15.0)。
     ///
     /// `clients[]` の同じ行の中で `requests` は「プロキシとして通した要求」なのに
     /// `rtt_ms.samples` は「閉じた接続すべて」で母数が違っていた (`/status` を引くだけの
@@ -65,10 +65,10 @@ pub struct Conn {
     /// `ActiveGuard::drop` の 1 回ずつだけ**で、状態はこの `Arc` の原子に書く
     /// (`--lite` では `None` = 何も記録しない)
     slot: Option<Arc<recent::ConnSlot>>,
-    /// 次の要求に載せる「ワーカーを待った時間」(ms。T14.3 (1))。accept と
+    /// 次の要求に載せる「ワーカーを待った時間」(ms。T14.3)。accept と
     /// 預かり所からの起床で入り、要求 1 つに載せたら 0 に戻る
     queue_ms: u32,
-    /// 預かり所がワーカーへ渡した時刻 (`--lite` では `None`。T14.3 (1))
+    /// 預かり所がワーカーへ渡した時刻 (`--lite` では `None`。T14.3)
     queued_at: Option<Instant>,
     /// 閉じた接続の個票 (`/recent`) に載せる値の積み上げ (T14.4)。
     ///
@@ -97,7 +97,7 @@ pub enum Step {
         addrs: Option<Vec<std::net::IpAddr>>,
         /// そのホストで最後に勝った族 (T12.1)。同じ鍵取りで受け取ったもの
         preferred: Option<bool>,
-        /// ここまでに測った段階 (`queue`。T14.3 (1))
+        /// ここまでに測った段階 (`queue`。T14.3)
         stages: metrics::StageMs,
         /// 要求行が届いた時刻 (`client_read` の起点。終わりは `tunnel::open` の入口の時計)
         read_started: Option<Instant>,
@@ -187,7 +187,7 @@ pub fn attach_origin_rtt(pool: &mut pool::Pool, metrics: Arc<Metrics>) {
     }));
 }
 
-/// いまのスレッドの番号 (`gettid`。T15.0 (4))。Linux 以外は `0` = 「分からない」。
+/// いまのスレッドの番号 (`gettid`。T15.0)。Linux 以外は `0` = 「分からない」。
 ///
 /// システムコールを引くのは**スレッドの一生に 1 回**だけで (`sys::gettid` が
 /// スレッドローカルに控える)、ここは 2 回目からは読み出し 1 回。
@@ -307,11 +307,11 @@ impl Conn {
             park,
             workers,
             peer_ip,
-            // プロキシとして通す要求はまだ 1 つも来ていない (T15.0 (12))
+            // プロキシとして通す要求はまだ 1 つも来ていない (T15.0)
             proxied: false,
             overflow,
             slot,
-            // accept からワーカーが動き出すまで (T14.3 (1))。時計は accept で
+            // accept からワーカーが動き出すまで (T14.3)。時計は accept で
             // 読んだ 1 回だけで、終わりは番人が既に読んでいる `started` を使う
             queue_ms: queued_at.map_or(0, |t| {
                 profile::ms_u32(active_started.saturating_duration_since(t))
@@ -363,14 +363,14 @@ impl Conn {
     }
 
     /// いま受け持っているスレッドの番号を枠へ書く (原子 1 回。`--lite` では何もしない。
-    /// T15.0 (4))。**呼ぶのはワーカーがこの接続を取ったときだけ**で、要求ごとには触らない。
+    /// T15.0)。**呼ぶのはワーカーがこの接続を取ったときだけ**で、要求ごとには触らない。
     pub fn set_tid(&self) {
         if let Some(slot) = &self.slot {
             slot.set_tid(current_tid());
         }
     }
 
-    /// ワーカーの待ち行列へ入れる直前に呼ぶ (`queue` の段階の起点。T14.3 (1))。
+    /// ワーカーの待ち行列へ入れる直前に呼ぶ (`queue` の段階の起点。T14.3)。
     /// `--lite` では時計を読まない。
     pub fn mark_queued(&mut self) {
         self.queued_at = profile::mark();
@@ -391,7 +391,7 @@ impl Conn {
             tally.rtt_us[recent::CLIENT_SIDE] = rtt_us;
             tally.retrans[recent::CLIENT_SIDE] = retrans;
             slot.finish(reason, tally, self.served as u32);
-            // 接続元の表 (`clients[]`) に入れるのは**プロキシとして使われた接続だけ** (T15.0 (12))。
+            // 接続元の表 (`clients[]`) に入れるのは**プロキシとして使われた接続だけ** (T15.0)。
             // `/status` を引くだけの接続を混ぜると、同じ行の `requests` (プロキシとして通した
             // 要求) と `rtt_ms.samples` (閉じた接続すべて) で母数が食い違う。個票 (`/recent`) の
             // `rtt_ms` は接続 1 本ごとの値なので、こちらは今までどおり全部に入れる
@@ -537,14 +537,14 @@ fn park_now(mut conn: Box<Conn>) -> Result<(), Box<Conn>> {
 /// 監視スレッドから戻ってきた接続もここに入る。
 pub fn run_conn(mut conn: Box<Conn>) {
     let conn_id = conn.conn_id;
-    // 預かり所から戻ってきた接続が待ち行列に居た時間 (T14.3 (1))。
+    // 預かり所から戻ってきた接続が待ち行列に居た時間 (T14.3)。
     // accept の分は `Conn::new` が入れてあるので、ここで読むのは起床した接続だけ
     if let Some(t) = conn.queued_at.take() {
         conn.queue_ms = profile::ms_u32(t.elapsed());
     }
     // ワーカーが取った (預かり所から戻ってきた接続もここを通る。T13.4)
     conn.set_state(recent::ConnState::Serving);
-    // いま受け持っているスレッドの番号 (T15.0 (4))。**accept 直後の 1 本目も、
+    // いま受け持っているスレッドの番号 (T15.0)。**accept 直後の 1 本目も、
     // 預かり所から起こされた 1 本も、ワーカーのスレッドで通るのはここ**なので、
     // 書き先は 1 か所で足りる (`Conn::new` の登録はこのすぐ手前・同じスレッド、
     // `IdleWatch::resume_conn` は監視スレッドなのでそこで書くと監視の番号になる)。

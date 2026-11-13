@@ -1,4 +1,4 @@
-//! 状態ファイル (`.rust-http-proxy.rrd`) の版上げの結合テスト (T12.4 (1)、T14.14)。
+//! 状態ファイル (`.rust-http-proxy.rrd`) の版上げの結合テスト (T12.4、T14.14)。
 //!
 //! 実バイナリを起こして 3 つを見る:
 //!
@@ -74,7 +74,7 @@ fn test_integration_an_old_state_file_is_replaced_by_the_new_fixed_size_one() {
         "ファイルの実サイズも固定"
     );
 
-    // ---- `/status` の窓とプロセスの数え物 (T12.4 (4)) ----
+    // ---- `/status` の窓とプロセスの数え物 (T12.4) ----
     assert!(
         status.contains("\"since_start_secs\":") && status.contains("\"restored_since\":"),
         "窓の目印が無い: {}",

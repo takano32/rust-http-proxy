@@ -47,7 +47,7 @@ pub(crate) fn default_max_conns() -> usize {
 /// 山の写真 (`/bursts`) を撮る割合の既定 (`PROXY_BURST_PERCENT`。T14.6)。
 ///
 /// `PROXY_MAX_CONNS` の半分を越えたら 1 枚撮る。半分なのは、デプロイ先の山 (218 / 240) が
-/// 上限の 91% まで行った実測 (§2) に対して、**山が立ち始めた時点**を残したいため
+/// 上限の 91% まで行った実測 (`docs/measurements.md` の「デプロイ先の現在地」) に対して、**山が立ち始めた時点**を残したいため
 /// (上限の間際まで待つと、T13.2 の追い出しが動いたあとの姿しか撮れない)。
 pub(crate) const DEFAULT_BURST_PERCENT: usize = 50;
 

@@ -1,6 +1,6 @@
-// `scripts/check-dashboard.js` の節: 16. T15.0 (14) の 5 枚のカード (T34.140 で割った。単体では動かさない。
+// `scripts/check-dashboard.js` の節: 16. T15.0 の 5 枚のカード (T34.140 で割った。単体では動かさない。
 // 前の節の `const` を使うので、`check-dashboard.js` が名前の順につないで 1 つの本文として回す)
-// 16. T15.0 (14) の 5 枚のカード。作り物は**インラインの定数**で、5 枚それぞれに
+// 16. T15.0 の 5 枚のカード。作り物は**インラインの定数**で、5 枚それぞれに
 // 「欄がある版」と「**欄が無い古い版**」の 2 通りを通す。
 //
 // 「古い版」は**引数で渡された実出力から T15.0 の欄を消して**作る。作り置きの実出力
@@ -37,13 +37,13 @@ const oldSamples = api.toSamples(oldHist);
 // `/profile` から単位 3 の末尾 2 列を消した「古い版」
 const oldProf = api.toProfile(withoutCols(pj, ['threads_top', 'run_delay_us']));
 
-// (a) CPU の絞り。`/history` の `kernel` に T15.0 (6) が `cpu_nr_periods` を**末尾に**足した版
+// (a) CPU の絞り。`/history` の `kernel` に T15.0 が `cpu_nr_periods` を**末尾に**足した版
 const fakeKernelNew = {
   interval_secs: 5,
   keys: fakeKernel.keys.concat(['cpu_nr_periods']),
   samples: [fakeKernel.samples[0].concat([50]), fakeKernel.samples[1].concat([null])],
 };
-if (checkKernelHistory(fakeKernelNew, '作り置き (T15.0 (6))') !== 2) fail('新しい kernel を読めていない');
+if (checkKernelHistory(fakeKernelNew, '作り置き (T15.0)') !== 2) fail('新しい kernel を読めていない');
 const kernNew = api.toKernel({ kernel: fakeKernelNew });
 if (kernNew.length !== 2) fail('/history の kernel を 2 標本で読めていない: ' + kernNew.length);
 if (kernNew[0].cpu_nr_periods !== 50) fail('cpu_nr_periods が列名で読めていない');
@@ -108,7 +108,7 @@ for (const [what, series] of [
   }
 }
 
-// (b) 動かないトンネル。T15.0 (4) の欄は**既定のままなら 1 バイトも出ない**ので、
+// (b) 動かないトンネル。T15.0 の欄は**既定のままなら 1 バイトも出ない**ので、
 // 古い版の応答と「何も起きていない応答」は同じ形になる (どちらも 0 件)
 const idleConnJson = {
   connections: [
@@ -264,7 +264,7 @@ const wc = waitStatus.recent_quantiles;
 for (const q of ['p50', 'p90', 'p99', 'max']) {
   if (!(wc.wait[q] >= wc.connect[q])) fail('wait.' + q + ' が connect を下回った');
 }
-// `/history` に T15.0 (10) の 4 列を足した版 (**古い版の末尾に**足すだけ。既に持っている
+// `/history` に T15.0 の 4 列を足した版 (**古い版の末尾に**足すだけ。既に持っている
 // 実出力を渡されても鍵が重複しないように、土台は列を落とした `oldHist`)
 const waitHist = Object.assign({}, oldHist, {
   keys: oldHist.keys.concat(['waits', 'wait_ms_sum', 'wait_ms_max', 'wait_buckets']),

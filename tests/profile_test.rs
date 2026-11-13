@@ -1,4 +1,4 @@
-//! `/profile` の結合テスト (T14.3 (4))。
+//! `/profile` の結合テスト (T14.3)。
 //!
 //! 見るのは「実際に通した要求の段階が、その形で `/profile` に出てくるか」だけ。
 //! スレッドの標本 (`profile-sample` スレッド) はここでは起こさないので `sampler` は
@@ -37,7 +37,7 @@ fn test_integration_profile_has_the_shape_the_dashboard_reads() {
         "\"sample_ms\":",
         "\"sampler\":\"off\"",
         "\"bounds_ms\":[1,2,5,10,25,50,100,250,500,1000,2500,5000]",
-        // 新しい欄は**末尾**に足す (画面は位置で開くので、古い読み手はそのまま動く。T15.0 (5))
+        // 新しい欄は**末尾**に足す (画面は位置で開くので、古い読み手はそのまま動く。T15.0)
         // T16.0 は `user_us` (役割ごと) と `cpu_user_us` (プロセス全体) を末尾に足した
         "\"keys\":[\"t\",\"requests\",\"cpu_us\",\"connect\",\"forward\",\"threads\",\"locks\",\"queue\",\"threads_top\",\"run_delay_us\",\"user_us\",\"cpu_user_us\"]",
         "\"lock_names\":[\"stats\",\"dns\",\"park\",\"workers\"]",
@@ -149,7 +149,7 @@ fn test_integration_profile_resolution() {
     );
 }
 
-/// 窓が埋まっても応答は 256 KiB 以下で、入り切らない古い標本は落ちること (T14.3 (4))。
+/// 窓が埋まっても応答は 256 KiB 以下で、入り切らない古い標本は落ちること (T14.3)。
 ///
 /// 全部の段階と全部の役割が埋まった「いちばん大きい標本」を上限まで積む
 /// (デプロイ先の静かな窓は `0` 1 文字なのでずっと小さい)。
@@ -250,7 +250,7 @@ fn test_integration_profile_is_off_in_lite_mode() {
     assert!(endpoint_json(port, "/").contains("/profile"));
 }
 
-/// `?n=` と `?offset=` で **720 標本ぜんぶが 1 枚ずつ読める** (T15.0 (11))。
+/// `?n=` と `?offset=` で **720 標本ぜんぶが 1 枚ずつ読める** (T15.0)。
 ///
 /// `/profile?res=5` はデプロイ先の実測で 720 標本のうち 456 しか返らない (T15.0 の行の形。
 /// 標本の JSON の行が 256 KiB に入り切らない。T16.0 で行が太ったので少し減るが未測定) ので、雪像 1 枚で全部読むには頁が要る。ここで縛るのは
@@ -318,7 +318,7 @@ fn test_integration_profile_pages_the_samples_with_n_and_offset() {
     );
 }
 
-/// `?summary=1` は標本を返さず、5 分 / 1 時間 / 全部 の 3 段だけ (T15.0 (11))。
+/// `?summary=1` は標本を返さず、5 分 / 1 時間 / 全部 の 3 段だけ (T15.0)。
 #[test]
 fn test_integration_profile_summary_folds_three_spans() {
     profile::set_enabled(true);

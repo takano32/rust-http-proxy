@@ -26,7 +26,7 @@ pub(super) struct Ctx<'a> {
     pub mapped: bool,
     /// ホスト別統計のキー (`scheme://host:port`)
     pub pool_key: &'a str,
-    /// 1 要求の内訳 (名前解決 / 接続 / 勝った族 / エラーの原因。T12.4 (2))。
+    /// 1 要求の内訳 (名前解決 / 接続 / 勝った族 / エラーの原因。T12.4)。
     /// オリジンへ行った経路だけが埋める (キャッシュ HIT では全部 0)
     pub detail: Detail,
     /// クライアントから受けたバイト (要求のヘッダーと本文)。接続の個票の「上り」(T14.4)
@@ -42,7 +42,7 @@ impl Ctx<'_> {
         let outcome = HostOutcome::from_access(cache, status);
         // 経過時間は 1 回だけ引く (clock_gettime は要求ごとに効いてくる)
         let took = self.started.elapsed();
-        // 本文を流した時間 = 全体 − 初バイトまで (T14.3 (1))。**時計は足さない**
+        // 本文を流した時間 = 全体 − 初バイトまで (T14.3)。**時計は足さない**
         // (ここまでに読んだ 2 つの差で出す。キャッシュ HIT は初バイトが無いので全部が本文)
         let mut detail = self.detail;
         if crate::profile::on() {

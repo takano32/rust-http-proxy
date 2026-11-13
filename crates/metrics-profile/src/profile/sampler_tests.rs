@@ -306,7 +306,7 @@ fn the_run_delay_is_null_without_schedstat() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **実機で**、回り続けているスレッドが `threads_top` の先頭に出ること (T15.0 (5))。
+/// **実機で**、回り続けているスレッドが `threads_top` の先頭に出ること (T15.0)。
 ///
 /// `sample` は 2 回呼ぶ (CPU は前回との差で積むので、1 回目は「生まれてからのぶん」)。
 /// 空回りの犯人を名前で指せるのがこの欄の目的なので `comm` も見る。

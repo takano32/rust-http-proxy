@@ -53,7 +53,7 @@ impl Sample {
         push_u64(out, self.dns_miss_ms, self.dns_misses > 0);
         out.push(',');
         push_u64(out, self.state_file_errors, self.has(SRC_STATE_FILE));
-        // **[`KEYS`] の末尾に足したもの** (T15.0 (6))
+        // **[`KEYS`] の末尾に足したもの** (T15.0)
         out.push(',');
         push_u64(out, self.cpu_nr_periods, cpu);
         // T16.0 で末尾に足したもの (`user_usec` の行が無い `cpu.stat` では `null`)
@@ -136,7 +136,7 @@ fn push_cgroup_cpu(
         l.cpu_nr_throttled, l.cpu_throttled_usec
     );
     push_f64(out, l.cpu_quota_cores, l.cpu_quota_cores > 0.0);
-    // **ここから下は T15.0 (6) で末尾に足したもの** (既存の 3 鍵の順は動かさない)。
+    // **ここから下は T15.0 で末尾に足したもの** (既存の 3 鍵の順は動かさない)。
     // `nr_periods` は割合の分母、`path` はどの階層を読んでいるか、
     // `since_start` は**このプロセスが始まってからの**増分 (累計は親の値を含む)
     let _ = write!(out, ",\"nr_periods\":{},\"path\":", l.cpu_nr_periods);

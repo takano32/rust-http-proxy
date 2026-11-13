@@ -26,7 +26,7 @@ fn reset_ipv6_state() {
 #[cfg(target_os = "linux")]
 fn blackhole_v6_and_live_v4() -> Option<(TcpListener, TcpStream, TcpListener, Vec<SocketAddr>)> {
     use std::os::fd::AsRawFd;
-    // `libc` は使わない (§0)。`listen(2)` だけ直接宣言する
+    // `libc` は使わない (仕様 S25)。`listen(2)` だけ直接宣言する
     unsafe extern "C" {
         fn listen(fd: i32, backlog: i32) -> i32;
     }

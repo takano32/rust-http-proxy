@@ -95,7 +95,7 @@ pub const SIDES: usize = 2;
 /// [`RecentEntry::rtt_us`] / [`ConnTally::rtt_us`] の添字。
 pub const CLIENT_SIDE: usize = 0;
 pub const ORIGIN_SIDE: usize = 1;
-/// 側の名前 ([`CLIENT_SIDE`] / [`ORIGIN_SIDE`] の並び。`half_closed` の値。T15.0 (4))。
+/// 側の名前 ([`CLIENT_SIDE`] / [`ORIGIN_SIDE`] の並び。`half_closed` の値。T15.0)。
 pub const SIDE_NAMES: [&str; SIDES] = ["client", "origin"];
 
 /// [`STAGE_NAMES`] の添字。

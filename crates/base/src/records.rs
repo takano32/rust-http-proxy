@@ -1,7 +1,7 @@
 //! 記録を一括で止める / 接続元をハッシュにする旗 (`PROXY_RECORDS`。T14.41)。
 //!
 //! T13.4〜T14.7 で個票 (接続元 IP・宛先・`User-Agent`・SNI) が増えた。**認証は入れない**
-//! 方針 (§0) なので、公開ポートで動かすと `/recent` `/errors` `/connections` `/clients`
+//! 方針 (仕様 S25) なので、公開ポートで動かすと `/recent` `/errors` `/connections` `/clients`
 //! `/log` `/events` `/trace` `/bursts` は誰でも読める。利用者以外の人の情報を残さないために、
 //! **記録を 1 つの旗で全部止める** ([`Mode::Off`]) か、**接続元 IP を復元できない形で持つ**
 //! ([`Mode::Hashed`]) 選択肢をここに置く。
@@ -64,7 +64,7 @@ impl Mode {
 /// `.env` の書き方を読む。読めない書き方は `None` (呼ぶ側が既定に落とす)。
 ///
 /// `PROXY_STATS_PERSIST` などと同じく `off` / `no` / `0` / `false` も受ける
-/// (利用者が `off` と書けば通ることを優先。理由は §0 の「既定で安全な方」)。
+/// (利用者が `off` と書けば通ることを優先。理由は `docs/goals.md` の「既定で安全な方」)。
 pub fn parse(s: &str) -> Option<Mode> {
     match s.trim().to_ascii_lowercase().as_str() {
         "on" | "yes" | "1" | "true" => Some(Mode::On),
@@ -99,7 +99,7 @@ pub fn recording() -> bool {
 
 /// この起動の塩 (`RandomState` の種 + 時刻 + プロセス番号 + スタックのアドレス)。
 ///
-/// 外部クレートは足さない方針 (§0) なので、[`crate::via`] の印と同じ作り方をする
+/// 外部クレートは足さない方針 (仕様 S25) なので、[`crate::via`] の印と同じ作り方をする
 /// (`crate::entropy::boot_entropy`。印とは別に 1 回呼んで覚える)。
 /// **起動ごとに変わる**ので、同じ接続元でも再起動すれば別の値になり、値から IP を
 /// 引き当てる表 (IPv4 は 43 億通りしかない) を作り置きできない。

@@ -80,7 +80,7 @@ fn test_integration_inspect_page_is_served_even_in_lite_mode() {
 
 /// T14.44 で足した 3 枚 (「今日」「今週」「出来事と異常」) の配線。
 ///
-/// 中身が正しいかは `scripts/check-dashboard.js` の 15 番目の検査 (実出力と
+/// 中身が正しいかは `scripts/check-dashboard.js` の「調査」ページの「今日」「今週」「出来事と異常」の検査 (実出力と
 /// 匿名化した実データ) が見るので、ここで見るのは**節がページにあること**と、
 /// **`--lite` でも 200 のまま**であること (3 枚は「記録していません」と出す)。
 #[test]

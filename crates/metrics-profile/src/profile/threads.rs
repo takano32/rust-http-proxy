@@ -1,6 +1,6 @@
 //! スレッドの役割と状態の表 (`/proc/<pid>/task/<tid>/{stat,syscall}` の読みを枠に落とす)。
 
-/// スレッドの役割 ([`Threads`] の順。T14.3 (2))。
+/// スレッドの役割 ([`Threads`] の順。T14.3)。
 ///
 /// `accept` は主スレッド (tid == pid)、残りはスレッド名 (`/proc/<pid>/task/<tid>/stat` の
 /// 2 番目の項目) で決める。表に無い名前 (`env-reload` / `blocklist` / `shutdown` …) は `other`。
@@ -160,7 +160,7 @@ pub type Threads = [RoleWindow; ROLES.len()];
 /// `threads_top` に残すスレッドの数 (CPU の多い順)。
 pub const TOP_THREADS: usize = 8;
 
-/// **その窓で CPU を多く使ったスレッド 1 本** (T15.0 (5))。
+/// **その窓で CPU を多く使ったスレッド 1 本** (T15.0)。
 ///
 /// 役割ごとの集計では「`conn` 役の `running` がいつも 2.0 本」までしか読めず、
 /// **どのスレッドが回っているか**が出ない。空回り (T15.5) や確立の尾を追うときは

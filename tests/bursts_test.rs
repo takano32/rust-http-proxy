@@ -172,7 +172,7 @@ fn test_integration_history_carries_the_closed_connection_distribution() {
     let (proxy_port, metrics) = burst_proxy(8, 50);
 
     // トンネルを 1 本張って少し流し、**クライアントが先に EOF を出して**閉じる
-    // (= `client_eof`。`tests/recent_test.rs` の (a) と同じ手順)
+    // (= `client_eof`。`tests/recent_test.rs` の `test_integration_recent_records_a_closed_tunnel` と同じ手順)
     let mut tunnel = open_tunnel(proxy_port, echo_port);
     tunnel.write_all(b"hello").unwrap();
     let mut buf = [0u8; 5];

@@ -11,7 +11,7 @@ use proxy_base::sync::LockExt;
 
 use crate::cpu::Charge;
 
-/// 内蔵オリジンが返す本文の大きさ。§1 の既定 (`--body-bytes 1024`) と揃えてある。
+/// 内蔵オリジンが返す本文の大きさ。`docs/measuring.md` のベンチの既定 (`--body-bytes 1024`) と揃えてある。
 const BODY_BYTES: usize = 1024;
 
 /// 内蔵オリジンが「もう終わり」に気づくまでの待ち (読み取りタイムアウト)。
@@ -36,7 +36,7 @@ impl Server {
         let stop = Arc::new(AtomicBool::new(false));
         let conns: Arc<Mutex<Vec<JoinHandle<()>>>> = Arc::new(Mutex::new(Vec::new()));
         // 応答は 1 回の `write_all` で出す。`no-store` なのでキャッシュには入らない
-        // (§1 のベンチの既定と同じ条件 = 毎回オリジンまで行く)
+        // (`docs/measuring.md` のベンチの既定と同じ条件 = 毎回オリジンまで行く)
         let body = vec![b'x'; BODY_BYTES];
         let mut response = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\

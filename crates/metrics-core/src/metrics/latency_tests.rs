@@ -30,7 +30,7 @@ fn quantiles_interpolate_within_buckets() {
     assert_eq!(HostStats::default().quantile_ms(0.5), 0.0);
 }
 
-/// T12.4 (1) の受け入れ基準: **区間が 10 段だった頃は 257 ms が (250, 500] に全部入り、
+/// T12.4 の受け入れ基準: **区間が 10 段だった頃は 257 ms が (250, 500] に全部入り、
 /// 補間しても観測した最大値で頭打ちになって p50 = p95 = max = 290 になっていた**。
 /// 24 段では 257 ms と 290 ms が (210, 315] に入り、区間内の補間が意味を持つ。
 #[test]
@@ -59,7 +59,7 @@ fn the_deployed_shape_of_257ms_gets_a_real_median() {
     assert!(p50 < p95, "p50 {} p95 {}", p50, p95);
 }
 
-/// 同じく T12.4 (1): AAAA の無いホスト (デプロイ先の p50 5.1 ms) が潰れないこと。
+/// 同じく T12.4: AAAA の無いホスト (デプロイ先の p50 5.1 ms) が潰れないこと。
 #[test]
 fn a_five_millisecond_host_keeps_a_five_millisecond_median() {
     let m = Metrics::new();
@@ -208,7 +208,7 @@ fn dns_failures_are_split_after_the_eight_causes() {
     }
 }
 
-/// 内訳はホスト別の行と区間の合計の両方に乗る (T12.4 (2) / (3))。
+/// 内訳はホスト別の行と区間の合計の両方に乗る (T12.4)。
 #[test]
 fn the_breakdown_lands_on_the_host_row_and_the_interval() {
     let m = Metrics::new();

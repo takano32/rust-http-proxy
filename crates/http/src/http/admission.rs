@@ -101,7 +101,7 @@ pub(super) fn check<'a>(
     let version = parts.next().unwrap_or("HTTP/1.0");
     let http11 = version == "HTTP/1.1";
     // `Transfer-Encoding` の最後がちょうど 1 回の `chunked` でない要求 (RFC 9112 §6.3) と、
-    // HTTP/1.0 の要求の `Transfer-Encoding` (§6.1 は「枠組みが壊れているとして扱う」) は 400 (T27.6)。
+    // HTTP/1.0 の要求の `Transfer-Encoding` (RFC 9112 §6.1 は「枠組みが壊れているとして扱う」) は 400 (T27.6)。
     // 今までは `xchunked`・`gzip` を本文なしとしてヘッダーだけ転送し、本文はクライアントの
     // 次の要求として読まれていた (`xchunked` と `Content-Length` が両方あると CL で読んで両方を転送した)
     if req.te_invalid || (req.te_present && !http11) {
@@ -183,7 +183,7 @@ pub(super) fn keep_client(
 /// `Expect: 100-continue` の本文つきの要求に、本文を読む前に `100 Continue` を 1 回返すか
 /// (RFC 9110 §10.1.1。T28.3)。今までは自分でも返さず、オリジンの 100 も中継しないので、
 /// 100 を厳密に待つクライアントは締め切りまで本文を送らず、こちらは本文を待って止まっていた。
-/// HTTP/1.0 の要求の 100-continue は無視する (§10.1.1)
+/// HTTP/1.0 の要求の 100-continue は無視する (RFC 9110 §10.1.1)
 #[inline]
 pub(super) fn wants_continue(req: &RequestHeaders, http11: bool, framing: Framing) -> bool {
     req.expect_continue && http11 && matches!(framing, Framing::Chunked | Framing::Length(1..))

@@ -80,7 +80,7 @@ pub(super) fn check_request_line(line: &str) -> Result<RequestLine<'_>, RequestL
 }
 
 /// 版が `HTTP/d.d` の形か (RFC 9112 §2.3。T29.8)。`HTTP` は大小を区別する (`HTTP-name = %s"HTTP"`。
-/// T32.15 (6)。T29.8 では問わずに `http/1.1` を通していた)。
+/// T32.15。T29.8 では問わずに `http/1.1` を通していた)。
 /// 形が合っていて `1.x` でないもの (`HTTP/2.0`・`HTTP/9.9`) は呼ぶ側が 505 にする。
 #[inline]
 fn version_syntax_ok(v: &str) -> bool {

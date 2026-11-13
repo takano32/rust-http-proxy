@@ -7,7 +7,7 @@ use crate::recent::{
 };
 
 /// `poll` の旗は `IN|HUP` のように表の順の名前で並べ、下位 16 bit がクライアント側・上位が
-/// オリジン側 (T15.0 (4)。T34.2 で直に押さえる)。
+/// オリジン側 (T15.0。T34.2 で直に押さえる)。
 #[test]
 fn revents_are_packed_per_side_and_named_in_order() {
     let packed = pack_revents(0x001 | 0x010, 0x004);
@@ -26,7 +26,7 @@ fn revents_are_packed_per_side_and_named_in_order() {
 }
 
 /// 半閉じは「側 + 1」を上位 8 bit、接続を受けてからの ms を下位 56 bit に詰め、`0` は「まだ」
-/// (T15.0 (4)。T34.2 で直に押さえる)。
+/// (T15.0。T34.2 で直に押さえる)。
 #[test]
 fn half_closed_packs_the_side_and_the_ms_and_zero_means_not_yet() {
     assert_eq!(unpack_half_closed(0), None);
@@ -115,7 +115,7 @@ fn closing_a_connection_leaves_one_entry() {
     );
     // T14.3 が埋める段階はまだ 0 なので 1 バイトも出さない
     assert!(!json.contains("queue"), "{}", json);
-    // 空回りと半閉じ (T15.0 (4)) は、`/connections` と違ってここでは 0 でも `null` でも
+    // 空回りと半閉じ (T15.0) は、`/connections` と違ってここでは 0 でも `null` でも
     // 必ず出す (件数で切る口なので「欄が無い」= 古い版と区別させるため)
     assert!(json.contains("\"spins\":0"), "{}", json);
     assert!(
@@ -124,7 +124,7 @@ fn closing_a_connection_leaves_one_entry() {
         json
     );
     // 上限は欄が増えたぶん引き上げてある (T14.5 の `rtt_ms` / `retrans`、T14.26 の
-    // 向き別、T14.46 の `syn_retrans` で 363 B、T15.0 (4) の 3 欄で +51 B = 実測 414 B)
+    // 向き別、T14.46 の `syn_retrans` で 363 B、T15.0 の 3 欄で +51 B = 実測 414 B)
     assert!(json.len() <= 450, "ありふれた 1 件が {} B", json.len());
     println!("closed entry: typical {} B\n  {}", json.len(), json);
 }
@@ -158,7 +158,7 @@ fn the_first_close_reason_wins() {
 ///
 /// 1 件の目安は 300 B (T14.5 のカーネルの RTT 2 側ぶんで 256 B から上がった)。
 /// ここで見るのは「起こりえない桁 (転送 20 桁、段階の ms が 6 つとも 7 桁、
-/// RTT と再送が 4,294,967,295、T15.0 (4) の `spins` が 20 桁) を並べても
+/// RTT と再送が 4,294,967,295、T15.0 の `spins` が 20 桁) を並べても
 /// リングが 2,000 × 760 B = 1,484 KiB を越えない」ことだけで、
 /// `/recent?n=2000` の応答は 256 KiB のバイト数打ち切りに当たるのが設計どおり
 /// (`crates/endpoints` のテストで見る)。
@@ -171,7 +171,7 @@ fn the_worst_closed_entry_stays_small() {
     );
     slot.begin_tunnel(&"sub.".repeat(40));
     slot.on_park();
-    // トンネル 1 本の証拠も最悪の値で (T15.0 (4))
+    // トンネル 1 本の証拠も最悪の値で (T15.0)
     slot.set_relaying(u64::MAX, u64::MAX, pack_revents(0x03d, 0x03d));
     slot.set_half_closed(ORIGIN_SIDE);
     slot.finish(
@@ -194,14 +194,14 @@ fn the_worst_closed_entry_stays_small() {
     assert!(e.target.len() <= MAX_RECENT_TARGET, "{}", e.target.len());
     assert!(e.client.len() <= MAX_CLIENT, "{}", e.client.len());
     let json = e.to_json();
-    // 上限は欄が増えたぶん引き上げてある (T14.55 で 633 B、T15.0 (4) の
+    // 上限は欄が増えたぶん引き上げてある (T14.55 で 633 B、T15.0 の
     // `spins` / `half_closed` / `half_closed_ms` で +71 B = 実測 704 B)
     assert!(json.len() <= 760, "最悪の 1 件が {} B", json.len());
     println!("closed entry: worst {} B", json.len());
 }
 
 /// トンネル 1 本の証拠 (`tid` / `spins` / `revents` / 半閉じ / 暇な秒) が枠に入り、
-/// `/connections` の 1 行と個票の両方に出ること (T15.0 (4))。
+/// `/connections` の 1 行と個票の両方に出ること (T15.0)。
 ///
 /// **既定のままの行には 1 バイトも足さない**ことも一緒に縛る: `/connections` は
 /// 「256 KiB に 1,000 本」の口で、実測の余りは 1 行あたり 4.7 B しか無い。
@@ -261,7 +261,7 @@ fn a_tunnel_slot_carries_the_evidence_of_a_spin() {
     assert!(j.contains(&format!("\"half_closed_ms\":{}", ms)), "{}", j);
 }
 
-/// 半閉じは**先に EOF を出した側**だけを残す (1 本につき 1 回。T15.0 (4))。
+/// 半閉じは**先に EOF を出した側**だけを残す (1 本につき 1 回。T15.0)。
 /// http の行には `idle_secs` を出さない (`bytes` を置くのはトンネルだけ)。
 #[test]
 fn the_first_half_close_wins_and_http_rows_have_no_idle_secs() {

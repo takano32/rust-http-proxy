@@ -10,7 +10,7 @@ use crate::recent::{ConnTable, SpinningConn};
 use super::text::{Facts, cleared_text, fired_text, new_client_text};
 use super::*;
 
-/// [`Detector`] が覚えておく CPU の 1 点 (5 分の増分を出すため。T15.0 (6))。
+/// [`Detector`] が覚えておく CPU の 1 点 (5 分の増分を出すため。T15.0)。
 #[derive(Clone, Copy, Debug, Default)]
 struct CpuPoint {
     t: u64,
@@ -90,12 +90,12 @@ pub(crate) struct Detector {
     state: [KindState; KINDS.len()],
     /// 規則 6 (初めて見た接続元。T14.54)
     new_clients: NewClients,
-    /// 直近 5 分ぶんの CPU の累計 (T15.0 (6))。61 点しか持たない
+    /// 直近 5 分ぶんの CPU の累計 (T15.0)。61 点しか持たない
     cpu_hist: VecDeque<CpuPoint>,
-    /// **いちばん最初に読めた** cgroup の標本の時刻 (T15.0 (6))。
+    /// **いちばん最初に読めた** cgroup の標本の時刻 (T15.0)。
     /// 「窓が 5 分ぶん溜まったか」([`cpu_window_is_full`]) の起点
     cpu_since: Option<u64>,
-    /// 回りっ放しのトンネルを最初に見つけた時刻 (T15.0 (6))。
+    /// 回りっ放しのトンネルを最初に見つけた時刻 (T15.0)。
     /// [`KindState`] は「立つ / 解除」しか持たないので、「1 分続いたら」は
     /// **[`KINDS`] の外に状態を持つ規則** ([`NewClients`] と同じ形) で数える
     spin_since: Option<u64>,
@@ -129,7 +129,7 @@ pub(super) struct Reading {
     pub(super) totals: [u64; 3],
     /// この周期に撮れた山の写真の番号
     pub(super) shot: Option<u64>,
-    /// 直近 5 分の CPU の絞り (T15.0 (6))
+    /// 直近 5 分の CPU の絞り (T15.0)
     pub(super) cpu: CpuWindow,
     /// 回っているトンネル (多くて 1 本) と、閾を越えた本数、続いている秒
     pub(super) spinning: Vec<SpinningConn>,
@@ -174,7 +174,7 @@ impl Detector {
     /// (`since <= t <= until`、5 秒の解像度)。**本番では `h` に今の標本が積まれた
     /// あとに呼ぶ** (履歴スレッドの `push` の直後)。
     ///
-    /// `conns` は「いま空回りしているトンネル」を引く先 (T15.0 (6))。
+    /// `conns` は「いま空回りしているトンネル」を引く先 (T15.0)。
     /// **[`ConnTable::update_rates`] のあと**に呼ぶこと (同じ周期の差分を読むため)。
     /// `None` なら `tunnel_spin` は判定しない。
     pub(crate) fn observe(
@@ -360,7 +360,7 @@ impl Detector {
         out
     }
 
-    /// 直近 [`WINDOW_SECS`] 秒ぶんの CPU の増分 (T15.0 (6))。
+    /// 直近 [`WINDOW_SECS`] 秒ぶんの CPU の増分 (T15.0)。
     ///
     /// 累計そのものは**このプロセスより前から**動いている (自分の階層に cpu
     /// コントローラが無ければ親の値を読む) ので、生の値では何も言えない。

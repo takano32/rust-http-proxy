@@ -42,7 +42,7 @@ fn keeps_the_newest_samples_in_order() {
     assert_eq!(h.len(), DEFAULT_N + 5);
     let json = h.to_json();
     assert_eq!(rows(&json), DEFAULT_N);
-    // 応答の形の版が先頭、標本は配列の配列で、キーはその後ろに 1 回だけ (T12.4 (3)、T14.49)
+    // 応答の形の版が先頭、標本は配列の配列で、キーはその後ろに 1 回だけ (T12.4、T14.49)
     assert!(
         json.starts_with("{\"schema\":1,\"interval_secs\":5,\"keys\":[\"t\","),
         "{}",
@@ -50,7 +50,7 @@ fn keeps_the_newest_samples_in_order() {
     );
     assert!(json.contains("\"samples\":[[5,10,0,5,0,"), "{}", json);
     // 標本の配列の閉じ方は変えず、その**後ろ**に閉じた接続の分布が付く (T14.6)。
-    // 末尾は T15.0 (10) で足した `wait_buckets` と 4 列 (`dns_warm` /
+    // 末尾は T15.0 で足した `wait_buckets` と 4 列 (`dns_warm` /
     // `requests_delta` / `bytes_delta` / `active_peak`)、そのうしろが T16.0 の 3 列
     // (`dns_warm_max` / `dns_warm_sum` / `gauge_n`)、さらにうしろが T28.45 の
     // `excess` の窓 4 列と `dns_fail_misses`、そのうしろが T29.12 の `conn_excess` の窓 4 列、
@@ -65,7 +65,7 @@ fn keeps_the_newest_samples_in_order() {
         "{}",
         &json[json.len() - 600..]
     );
-    // `keys` の隣に同じ長さの `key_kinds` が並ぶ (T15.0 (10))
+    // `keys` の隣に同じ長さの `key_kinds` が並ぶ (T15.0)
     assert!(
         json.contains("\"evicted_idle\",\"waits\",\"wait_ms_sum\",\"wait_ms_max\",\"wait_buckets\",\"dns_warm\",\"requests_delta\",\"bytes_delta\",\"active_peak\",\"dns_warm_max\",\"dns_warm_sum\",\"gauge_n\",\"excesses\",\"excess_ms_sum\",\"excess_ms_max\",\"excess_buckets\",\"dns_fail_misses\",\"conn_excesses\",\"conn_excess_ms_sum\",\"conn_excess_ms_max\",\"conn_excess_buckets\",\"other_port_attempts\",\"other_port_errors\",\"dns_fail_ms_sum\",\"web_dns_misses\",\"web_dns_ms_sum\"],\"key_kinds\":[\"time\",\"cumulative\","),
         "{}",
@@ -164,7 +164,7 @@ fn minute_and_hour_windows_are_rolled_up() {
     assert_eq!(hq.front().unwrap().t % 3600, 0);
 }
 
-/// T12.4 (3) の受け入れ基準: **2 つの区間に別々の分位点が出る**こと。
+/// T12.4 の受け入れ基準: **2 つの区間に別々の分位点が出る**こと。
 /// 累計しか無かった頃は「起動からの平均」しか読めず、直した前後が同じ数字に混ざっていた。
 #[test]
 fn two_intervals_keep_their_own_medians() {
@@ -192,7 +192,7 @@ fn two_intervals_keep_their_own_medians() {
     assert!((agg.connect.avg_ms() - 132.0).abs() < 1e-9);
 }
 
-/// `/history?res=5` の**既定** (720 標本) が 512 KiB に収まること (T12.4 (3))。
+/// `/history?res=5` の**既定** (720 標本) が 512 KiB に収まること (T12.4)。
 /// 値は「1 年動かしたあと」を想定した大きめの桁で埋める (短い数字で測ると通ってしまう)。
 ///
 /// リングは 6 時間ぶん (4,320 本) 持つ (T14.32) が、**既定の応答は今までどおり**で、
@@ -260,7 +260,7 @@ fn a_full_hour_of_samples_fits_in_512_kib() {
     );
 }
 
-/// 区間の分位点は区間内を補間し、その窓の最大値で頭打ちになる (T12.4 (3) の受け入れ基準)。
+/// 区間の分位点は区間内を補間し、その窓の最大値で頭打ちになる (T12.4 の受け入れ基準)。
 #[test]
 fn window_quantiles_land_inside_the_bucket() {
     let mut a = Window::default();
@@ -327,7 +327,7 @@ fn downsampling_sums_the_windows_and_keeps_the_peaks() {
     // 平均に畳むと 23 になって山が消える
     assert_eq!(agg.active_max, 41);
     assert_eq!(agg.fds_max, 30);
-    // T15.0 (10) で足した列。`wait` は `connect` と同じ区間の窓なので足し合わせ
+    // T15.0 で足した列。`wait` は `connect` と同じ区間の窓なので足し合わせ
     assert_eq!((agg.wait.count, agg.wait.ms_max), (2, 300));
     // 通算は最後の値、その隣の区間の値は足し合わせ (同じ表に 2 種類あることを縛る)
     assert_eq!((agg.requests, agg.requests_delta), (130, 40));

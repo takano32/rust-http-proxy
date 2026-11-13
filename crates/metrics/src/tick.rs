@@ -53,7 +53,7 @@ pub fn spawn_every(
 struct Tick {
     /// 前に転送速度を控えた時刻 (T14.39)。1 回目は `None` = 控えるだけで速さは出さない
     swept: Option<Instant>,
-    /// 前の標本の通算 (`requests` / `bytes`)。**区間の値をここで作る** (T15.0 (10))。
+    /// 前の標本の通算 (`requests` / `bytes`)。**区間の値をここで作る** (T15.0)。
     /// リングから引き算で作らないのは、再起動の段差と欠けた標本で狂うため。
     /// 1 回目は `None` = 控えるだけで差は出さない (`swept` と同じ形)
     totals: Option<(u64, u64)>,
@@ -96,7 +96,7 @@ impl Tick {
     }
 
     /// 5 秒の標本を取り、通算を標本化した 2 列 (`requests` / `bytes`) の**区間の値**を埋める
-    /// (T15.0 (10))。既存の 2 列はそのまま残し、隣に足す
+    /// (T15.0)。既存の 2 列はそのまま残し、隣に足す
     fn sample(&mut self, metrics: &Metrics, cache: &Cache) -> Sample {
         let mut sample = take_sample(metrics, cache);
         if let Some((requests, bytes)) = self.totals {
@@ -205,16 +205,16 @@ pub fn take_sample(metrics: &Metrics, cache: &Cache) -> Sample {
         threads_max: threads,
         fds_max: fds,
         evicted_idle: metrics.evicted_idle.load(Ordering::Relaxed),
-        // 利用者が待つ時間 (`queue + client_read + dns + connect`。T15.0 (2) が埋めた)
+        // 利用者が待つ時間 (`queue + client_read + dns + connect`。T15.0 が埋めた)
         wait: iv.wait,
-        // いま warm な名前の**件数** (`/status` の `dns.warm` と同じ数。T15.0 (8))。
+        // いま warm な名前の**件数** (`/status` の `dns.warm` と同じ数。T15.0)。
         // `config.dns_warm` は窓の**秒数**で意味が違う
         dns_warm,
-        // 区間の値は `spawn_every` のクロージャが前回の通算との差で埋める (T15.0 (10))。
+        // 区間の値は `spawn_every` のクロージャが前回の通算との差で埋める (T15.0)。
         // ここで `take_sample` 単体を呼ぶ道 (`/history?summary=1` の道具など) では 0
         requests_delta: 0,
         bytes_delta: 0,
-        // 5 秒より短い山も落とさない同時接続の山 (T15.0 (10))。読むと今の本数に戻る
+        // 5 秒より短い山も落とさない同時接続の山 (T15.0)。読むと今の本数に戻る
         active_peak: metrics.take_active_peak() as u64,
         // 5 秒の標本は「1 本ぶん」: 最大も合計も値そのもの、標本数 1 (T16.0)。
         // 粗い解像度へは最大・合計・合計で畳み、平均は合計 ÷ 標本数で出す

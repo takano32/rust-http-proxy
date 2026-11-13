@@ -299,7 +299,7 @@ def row_of(key, a, b):
         err = 0.05 * (cur["timed"] + old["timed"]) / d_timed
     else:
         avg, err = None, None
-    # 待ちの内訳 (T12.4 (2) より前の古い雪像には無いので、無ければ 0)
+    # 待ちの内訳 (T12.4 より前の古い雪像には無いので、無ければ 0)
     def d(name):
         return cur.get(name, 0) - old.get(name, 0)
     causes = [x - y for x, y in zip(pad_causes(cur), pad_causes(old))]

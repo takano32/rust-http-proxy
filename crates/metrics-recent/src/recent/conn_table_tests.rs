@@ -4,7 +4,7 @@ use super::*;
 use crate::recent::{CLIENT_SIDE, ConnState};
 
 /// 直近の周期に `min_delta` 回以上空回りした接続を多い順 (同点は通し番号の順) に `max` 本まで、
-/// 閾を越えた総数と一緒に返す (T15.0 (6)。T34.2 で直に押さえる)。
+/// 閾を越えた総数と一緒に返す (T15.0。T34.2 で直に押さえる)。
 #[test]
 fn spinning_lists_the_worst_tunnels_first_and_counts_the_rest() {
     let t = ConnTable::new();

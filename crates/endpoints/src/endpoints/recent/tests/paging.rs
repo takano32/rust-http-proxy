@@ -2,7 +2,7 @@
 
 use super::*;
 
-/// `next_offset` は「続きがあれば次の `offset`、無ければ `null`」(T15.0 (11))。
+/// `next_offset` は「続きがあれば次の `offset`、無ければ `null`」(T15.0)。
 #[test]
 fn the_next_offset_is_null_at_the_end() {
     assert_eq!(next_offset(0, 500, 2000), "500");
@@ -14,7 +14,7 @@ fn the_next_offset_is_null_at_the_end() {
     assert_eq!(next_offset(2000, 0, 2000), "null");
 }
 
-/// `/recent?offset=` の 4 頁で **2,000 本が重複なく揃う** (T15.0 (11))。
+/// `/recent?offset=` の 4 頁で **2,000 本が重複なく揃う** (T15.0)。
 ///
 /// 1 枚では [`MAX_BODY`] に 615 本しか入らない (1 件 424 B × 2,000 = 828 KiB) ので、
 /// 雪像を 1 枚で読むには頁が要る。ここで縛るのは「4 頁の `id` の集合が
@@ -90,7 +90,7 @@ fn the_recent_endpoint_pages_through_the_whole_ring_with_offset() {
     });
 }
 
-/// `/hosts?offset=` の 2 頁で **1,000 ホストが重複なく揃う** (T15.0 (11))。
+/// `/hosts?offset=` の 2 頁で **1,000 ホストが重複なく揃う** (T15.0)。
 ///
 /// 1 枚では 639 件で切れていた (1,000 件 × 408 B = 398 KiB)。2 枚の雪像の差分から
 /// 8 ホストが黙って落ちたのがこの欄を足した理由なので、**落ちないこと**を縛る。

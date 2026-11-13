@@ -55,7 +55,7 @@ fn decodes_chunked_with_extensions_and_trailers() {
     assert_eq!(rest, b"NEXT", "bytes after the body stay in the stream");
 }
 
-/// T32.15 (3): データの後ろのごみ・`+` 付きの大きさは `InvalidData`。LF だけの行は今までどおり受ける。
+/// T32.15: データの後ろのごみ・`+` 付きの大きさは `InvalidData`。LF だけの行は今までどおり受ける。
 #[test]
 fn chunked_rejects_junk_after_data_and_signed_sizes() {
     for raw in [

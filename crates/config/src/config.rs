@@ -62,7 +62,7 @@ pub struct Config {
     /// `min(1024, /proc/sys/net/core/somaxconn)`。T14.47)。
     ///
     /// **持っているのは実効値** (`0` はここには残らない。`auto` を数に直す `max_conns` と同じ形)。
-    /// `std` の `TcpListener::bind` は 128 固定で、accept ループが 1 本 (§4 の T4.3) なので
+    /// `std` の `TcpListener::bind` は 128 固定で、accept ループが 1 本 (T4.3。`docs/rejected.md`) なので
     /// ブラウザの同時 CONNECT で溢れ、**SYN が捨てられてクライアントが 1 秒後に再送する**。
     /// **`.env` の再読込では変わらない** (待ち受けは起動時に 1 回作るもの)
     pub listen_backlog: u32,
@@ -81,7 +81,7 @@ pub struct Config {
     pub min_transfer: proxy_base::minrate::MinRate,
     /// **オリジンへの TCP の確立だけ** (CONNECT と、T28.8 から forward) に効く締め切り (`PROXY_CONNECT_TIMEOUT_SECS`、`0` で無期限)。
     ///
-    /// **既定は 3 秒** ([`DEFAULT_CONNECT_TIMEOUT`](timeouts::DEFAULT_CONNECT_TIMEOUT)。T15.6 (2)、T23.3、T28.43)。実効値は
+    /// **既定は 3 秒** ([`DEFAULT_CONNECT_TIMEOUT`](timeouts::DEFAULT_CONNECT_TIMEOUT)。T15.6、T23.3、T28.43)。実効値は
     /// [`connect_timeout_for`] が 1 か所で決める (未設定なら 3 秒と [`Config::timeout`] の
     /// 小さい方。`PROXY_TIMEOUT_SECS=0` でも 3 秒)。`PROXY_TIMEOUT_SECS` は CONNECT の
     /// オリジン接続だけでなく forward の読み書き・クライアントソケット・キャッシュの
@@ -214,7 +214,7 @@ pub struct Config {
     /// キャッシュ・統計の永続化・ブロックリストを止め、ログを warn にする
     pub lite: bool,
     /// `/profile` のスレッドの標本を取る間隔 (`PROXY_PROFILE_SAMPLE_MS`、既定 1,000、
-    /// `0` で止める)。**`--lite` では `/profile` ごと off** (T14.3 (2))
+    /// `0` で止める)。**`--lite` では `/profile` ごと off** (T14.3)
     pub profile_sample_ms: u64,
     /// 起動直後に **loopback だけで 3 秒**の自己ベンチを回すか
     /// (`PROXY_SELF_BENCH`、既定 off。T14.43)。

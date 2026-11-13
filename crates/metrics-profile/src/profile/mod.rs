@@ -24,7 +24,7 @@
 //! `Ctx::log` の `took`、`report` の `alive`) をそのまま使うので増やしていない。
 //! **`--lite` では時計も読まない** ([`on`] が偽なら [`mark`] が `None` を返すだけ。T1.4)。
 //!
-//! # スレッドの標本 (T14.3 (2))
+//! # スレッドの標本 (T14.3)
 //!
 //! `profile-sample` スレッド 1 本が `PROXY_PROFILE_SAMPLE_MS` (既定 1,000、`0` で止める)
 //! ごとに `/proc/self/task/*/stat` (名前 / 状態 / utime / stime) と
@@ -34,7 +34,7 @@
 //! (seccomp / `hidepid` / Linux 以外) では `sampler` が `"partial"` か `"off"` に落ちる。
 //!
 //! 役割の集計だけでは「どのスレッドが回っているか」が出ないので、**その窓で CPU を
-//! 多く使ったスレッド上位 8 本** ([`TopThread`]) も一緒に持つ (T15.0 (5))。
+//! 多く使ったスレッド上位 8 本** ([`TopThread`]) も一緒に持つ (T15.0)。
 //!
 //! **状態の割合は「どこで待っているか」であって「どこで CPU を使っているか」ではない。**
 //! `/proc/<tid>/syscall` は、そのスレッドが CPU に乗っている間は中身に関係なく
@@ -79,7 +79,7 @@ pub use threads::{NSTATES, ROLES, RoleWindow, TOP_THREADS, Threads, TopThread, s
 /// 段階の窓を畳む間隔と本数 (5 秒 × 720 = 1 時間、60 秒 × 1,440 = 1 日)。
 pub const RESOLUTIONS: [(u64, usize); 2] = [(5, 720), (60, 1440)];
 
-/// 標本 1 本のバイト (`/status` の `memory.rings` の見積もりが使う。T15.0 (13))。
+/// 標本 1 本のバイト (`/status` の `memory.rings` の見積もりが使う。T15.0)。
 ///
 /// **数字をここに書き写さない** (型を足すたびに古くなる)。実際の値は単体テスト
 /// `a_sample_stays_small_enough_for_the_rings` を `-- --nocapture` で回すと出る。
@@ -87,7 +87,7 @@ pub(crate) const fn sample_bytes() -> usize {
     size_of::<Sample>()
 }
 
-/// 2 つの環が**満杯のとき**のバイト (`/status` の `memory.rings.profile`。T15.0 (13))。
+/// 2 つの環が**満杯のとき**のバイト (`/status` の `memory.rings.profile`。T15.0)。
 ///
 /// T14.21 の `rings` は「満杯のときの見積もり」で揃えてあるので、ここも同じ数え方。
 /// いま埋まっているぶんは [`Profile::used_bytes`]。

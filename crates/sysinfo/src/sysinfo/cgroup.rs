@@ -23,7 +23,7 @@ pub struct CgroupCpu {
     pub throttled_usec: Option<u64>,
     /// `cpu.max` の quota ÷ period (= 使えるコア数)。`max` (無制限) なら `None`
     pub quota_cores: Option<f64>,
-    /// `cpu.stat` の `nr_periods` (CPU の期間の数、累計。T15.0 (6))。
+    /// `cpu.stat` の `nr_periods` (CPU の期間の数、累計。T15.0)。
     ///
     /// **`nr_throttled` の分母**。これが無いと「41 回絞られた」が
     /// 「41 / 8,123 = 0.5%」なのか「41 / 41 = 100%」なのか決まらない。
@@ -146,7 +146,7 @@ fn parse_cpu_stat(text: &str) -> Option<CpuStat> {
     (s.nr_periods.is_some() || s.nr_throttled.is_some() || s.throttled_usec.is_some()).then_some(s)
 }
 
-/// いま `cpu.stat` を実際に読んでいるファイルの道 (T15.0 (6))。
+/// いま `cpu.stat` を実際に読んでいるファイルの道 (T15.0)。
 ///
 /// **5 秒ごとには呼ばない** — 呼ぶのは `/status` を組むときと `--check` のときだけ。
 /// 自分の階層に cpu コントローラが無いと [`find_up`] は**親の値**を読むので、
@@ -178,7 +178,7 @@ fn find_up<T>(dir: &Path, root: &Path, name: &str, parse: impl Fn(&str) -> Optio
     find_up_at(dir, root, name, parse).map(|(_, v)| v)
 }
 
-/// [`find_up`] と同じ探し方で、**読めたファイルの道も**返す (T15.0 (6))。
+/// [`find_up`] と同じ探し方で、**読めたファイルの道も**返す (T15.0)。
 fn find_up_at<T>(
     dir: &Path,
     root: &Path,
@@ -295,7 +295,7 @@ full avg10=2.99 avg60=2.10 avg300=0.90 total=166527343
         assert_eq!(cpu.nr_throttled, Some(41));
         assert_eq!(cpu.throttled_usec, Some(1_234_567));
         assert_eq!(cpu.quota_cores, Some(2.0));
-        // `nr_throttled` の分母 (T15.0 (6))。41 / 8,123 = 0.5% と読める
+        // `nr_throttled` の分母 (T15.0)。41 / 8,123 = 0.5% と読める
         assert_eq!(cpu.nr_periods, Some(8_123));
         // ユーザー空間とカーネル側 (T16.0)。同じファイルから
         assert_eq!(cpu.usage_usec, Some(31_572_850_999));
@@ -327,7 +327,7 @@ full avg10=2.99 avg60=2.10 avg300=0.90 total=166527343
         assert_eq!(cpu.nr_throttled, Some(41), "親の cpu.stat まで遡る");
         assert_eq!(cpu.nr_periods, Some(8_123), "分母も同じ階層から");
         assert_eq!(cpu.quota_cores, Some(1.5), "1.5 < 4.0 (max は無制限)");
-        // **どの階層を読んだか**が道で分かる (自分のではなく根の `cpu.stat`。T15.0 (6))
+        // **どの階層を読んだか**が道で分かる (自分のではなく根の `cpu.stat`。T15.0)
         assert_eq!(
             cgroup_cpu_path_in(&leaf, &root),
             Some(root.join("cpu.stat"))

@@ -188,7 +188,7 @@ fn write_response_lines(
         };
         let (k, v) = (&line[..colon], &line[colon + 1..]);
         let name = k.trim_ascii();
-        // 名前が token でない行 (`X A: b`・`: v`) は落とす (RFC 9110 §5.1。T32.15 (2))。今まではオリジンの
+        // 名前が token でない行 (`X A: b`・`: v`) は落とす (RFC 9110 §5.1。T32.15)。今まではオリジンの
         // 行をそのまま渡していた (要求の側は T29.8 から 400)。どのみち落とす名前では字を見ないよう最後に置く
         if is_hop_by_hop_name(name)
             || named_in_connection(name)
@@ -279,7 +279,7 @@ pub fn sanitize_response_head(head: &[u8]) -> ResponseHead {
             fold_target = None;
             continue;
         };
-        // 名前が token でない行は落とす ([`write_response_head`] と同じ。T32.15 (2))
+        // 名前が token でない行は落とす ([`write_response_head`] と同じ。T32.15)
         if !ascii::is_token(k.trim_ascii()) {
             fold_target = None;
             continue;

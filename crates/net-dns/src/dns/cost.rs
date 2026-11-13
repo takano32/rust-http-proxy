@@ -34,7 +34,7 @@ pub fn take_resolve_cost() -> (u64, u64) {
     ((us + 500) / 1000, n)
 }
 
-/// 直近の名前解決の費用を**読むだけ** (0 に戻さない。T15.0 (1))。丸め方は
+/// 直近の名前解決の費用を**読むだけ** (0 に戻さない。T15.0)。丸め方は
 /// [`take_resolve_cost`] と同じなので、同じ箱を読んでいる限り値は一致する。
 ///
 /// 使い道は 1 つで、**自分の時計を始める前に「もう払われているぶん」を控える**こと。
@@ -50,7 +50,7 @@ pub fn peek_resolve_cost() -> (u64, u64) {
 ///
 /// 本番でここに書くのは [`resolve_host`](super::resolve_host) のミスの経路 1 か所だけ (原子と同じ場所で
 /// 書いている) なので、呼ぶのはテストだけ。入口の ACL が**時計より前に**払った状態を
-/// 作って、[`peek_resolve_cost`] を使う引き算 (T15.0 (1)) を確かめるために使う。
+/// 作って、[`peek_resolve_cost`] を使う引き算 (T15.0) を確かめるために使う。
 pub fn note_resolve_cost(us: u64, misses: u64) {
     RESOLVE_COST.set({
         let (s, n) = RESOLVE_COST.get();

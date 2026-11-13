@@ -4,7 +4,7 @@
 use super::host_table::web_port;
 use super::*;
 
-/// 利用者が待つ時間の系列 `wait` (T15.0 (2))。
+/// 利用者が待つ時間の系列 `wait` (T15.0)。
 ///
 /// 4 つの値がそろうのは [`Metrics::record`] だけなので、和を作るのもここ 1 か所。
 /// **既存の `connect` の系列は 1 バイトも触らない** (新しい系列として足す)。
@@ -39,7 +39,7 @@ fn the_wait_series_is_the_sum_of_four_stages() {
     // 5 + 2 + 10 + 26 = 43 ms (環は us。確立の段は `took` の端数を残す)
     assert_eq!(w.p50_us, 43_000);
     assert!(w.p50_us >= c.p50_us, "待ちが確立より短いことはない");
-    // 区間の窓 (`/history` の列を足すのは T15.0 (10))
+    // 区間の窓 (`/history` の列を足すのは T15.0)
     let iv = m.take_interval();
     assert_eq!((iv.wait.count, iv.wait.ms_sum, iv.wait.ms_max), (1, 43, 43));
     assert_eq!(iv.connect.count, 1, "確立の窓は今までどおり");

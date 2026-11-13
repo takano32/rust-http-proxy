@@ -52,7 +52,7 @@ pub fn has_flag(query: Option<&str>, key: &str) -> bool {
     parse_query(q).iter().any(|(k, v)| k == key && v != "0")
 }
 
-/// `?offset=N` を読む (無い / 読めない値は 0。上は `max` で止める。T15.0 (11))。
+/// `?offset=N` を読む (無い / 読めない値は 0。上は `max` で止める。T15.0)。
 ///
 /// 読むのは `/recent` `/hosts` `/profile` `/dns` の 4 つで (`/dns` は T27.1)、**読み方はここ 1 か所**に置く。
 /// [`num_param`] と別なのは**下限が 0** だから (あちらは `.clamp(1, max)` なので

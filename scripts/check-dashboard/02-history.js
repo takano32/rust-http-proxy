@@ -22,7 +22,7 @@ const names = [
   'connectKpi',
   // KPI「今日の SLO」の値を選ぶ側 (T14.50)
   'sloKpi',
-  // T15.0 (14) の 5 枚のカードが読む側 (どれも DOM に触らない)
+  // T15.0 の 5 枚のカードが読む側 (どれも DOM に触らない)
   'toKernel',
   'cpuThrottle',
   'topThreads',
@@ -35,7 +35,7 @@ const names = [
   'nearWaitKpi',
   // T29.19: キャッシュ命中率に母数
   'hitKpi',
-  // 100% の横棒 1 本を組み立てる側 (T15.0 (14) で tooltip の整形を呼ぶ側に渡せるようにした)
+  // 100% の横棒 1 本を組み立てる側 (T15.0 で tooltip の整形を呼ぶ側に渡せるようにした)
   'stackHtml',
   'esc',
   'fmtMs',

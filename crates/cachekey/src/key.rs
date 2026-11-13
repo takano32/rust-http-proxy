@@ -40,7 +40,7 @@ pub fn cache_key(method: &str, url: &str) -> CacheKey {
     cache_key_variant(method, url, "")
 }
 
-/// URL のうち大小を区別しない先頭 (スキームと authority = `scheme://host:port`) の長さ (T28.10 (a))。
+/// URL のうち大小を区別しない先頭 (スキームと authority = `scheme://host:port`) の長さ (T28.10)。
 ///
 /// RFC 3986 §6.2.2.1 はスキームとホストの大小を区別しない。`://` が無ければ 0 (何も畳まない)。
 /// authority は最初の `/`・`?`・`#` の手前まで (`parse_origin` と同じ切り方)。
@@ -58,7 +58,7 @@ fn case_insensitive_prefix(url: &[u8]) -> usize {
 
 /// `variant` (正規化した Accept-Encoding など) で表現を分けたキー。空文字なら `cache_key` と同じ。
 ///
-/// URL のスキームとホストは**小文字に畳んで**から混ぜる (T28.10 (a))。`http://LOCALHOST:P/x` が
+/// URL のスキームとホストは**小文字に畳んで**から混ぜる (T28.10)。`http://LOCALHOST:P/x` が
 /// `http://localhost:P/x` の項目に当たるように。もともと小文字の URL はバイト列が変わらないので、
 /// 今までのキー (ディスクに残った項目) はそのまま使える。パスの大小は区別する (RFC 3986 のとおり)。
 pub fn cache_key_variant(method: &str, url: &str, variant: &str) -> CacheKey {
@@ -131,7 +131,7 @@ mod tests {
         assert!(CacheKey::from_hex("zz000000000000000000000000000000").is_none());
     }
 
-    /// スキームとホストの大小は畳み、パスの大小は区別する (T28.10 (a))。
+    /// スキームとホストの大小は畳み、パスの大小は区別する (T28.10)。
     #[test]
     fn scheme_and_host_are_case_insensitive() {
         let a = cache_key("GET", "http://localhost:8080/x");

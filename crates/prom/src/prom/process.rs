@@ -134,7 +134,7 @@ pub(super) fn request_metrics(out: &mut String, m: &Metrics, conc: Concurrency) 
         "Connection thread limit (PROXY_MAX_THREADS after auto sizing; 0 = unlimited)",
     );
     line(out, "max_threads", "", conc.max_threads);
-    // 接続スレッドの数はラベル付きの 1 系列にそろえた (T11.5 の候補 → T12.4 (4))。
+    // 接続スレッドの数はラベル付きの 1 系列にそろえた (T11.5 の候補 → T12.4)。
     // **旧名 (`sorahost_live_threads` / `sorahost_idle_threads`) も出し続ける** (はじめは 1 版だけのつもりだった。T28.23 で残すと決めた)
     // ので、監視側は次の版までに `sorahost_threads{state=...}` へ移せる
     header(
@@ -159,7 +159,7 @@ pub(super) fn request_metrics(out: &mut String, m: &Metrics, conc: Concurrency) 
         "Connection threads waiting for work (deprecated: use sorahost_threads{state=\"idle\"})",
     );
     line(out, "idle_threads", "", conc.idle_threads);
-    // プロセス全体の数え物 (接続スレッドとは別。`/proc` を読むのはこのパスだけ。T12.4 (4))
+    // プロセス全体の数え物 (接続スレッドとは別。`/proc` を読むのはこのパスだけ。T12.4)
     if let Some(n) = crate::sysinfo::process_threads() {
         header(
             out,
@@ -301,7 +301,7 @@ pub(super) fn origin_metrics(out: &mut String, m: &Metrics) {
 
 /// CONNECT の確立・名前解決・カーネルの RTT (`connect_seconds`・`dns_seconds`・`rtt_seconds`)。
 pub(super) fn connect_metrics(out: &mut String, m: &Metrics, totals: &Interval) {
-    // CONNECT 確立の全体のヒストグラム (Phase 13 が最初に見る数字。T12.4 (4))。
+    // CONNECT 確立の全体のヒストグラム (Phase 13 が最初に見る数字。T12.4)。
     // ホスト別の `sorahost_host_request_duration_seconds` と違い、**区間は 12 段**で
     // 履歴 (`/history`) と同じ刻み。合計は起動からの累計
     header(
@@ -389,7 +389,7 @@ pub(super) fn canary_metrics(out: &mut String) {
 
 /// ロックの取り合い (`lock_contention_total`)。
 pub(super) fn lock_metrics(out: &mut String) {
-    // ロックの取り合い (T14.3 (3))。`try_lock` が失敗した = **本当に待たされた**回数の
+    // ロックの取り合い (T14.3)。`try_lock` が失敗した = **本当に待たされた**回数の
     // 累計で、4 つのロックは別々のクレート (統計 / 名前解決 / 預かり所 / ワーカー) に居る
     header(
         out,

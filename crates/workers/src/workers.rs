@@ -66,7 +66,7 @@ struct Inner {
     /// 空いているスレッドへの送り口 (後入れ先出し)
     idle: Vec<Sender<Job>>,
     /// 上限に達したので待たせている仕事 (先入れ先出し)。**捨てない**。
-    /// 積んだ時刻も一緒に持ち、取り出すときに待った時間を数える (T14.3 (3))
+    /// 積んだ時刻も一緒に持ち、取り出すときに待った時間を数える (T14.3)
     queue: VecDeque<(Instant, Job)>,
     /// 生きているスレッドの数 (走っている + 空き置き場に積んである + これから起こす)
     live: usize,
@@ -320,7 +320,7 @@ fn spawn_conn_thread(
     }
 }
 
-/// 待ち行列から取り出した仕事の「待った時間」を数えて中身を返す (T14.3 (3))。
+/// 待ち行列から取り出した仕事の「待った時間」を数えて中身を返す (T14.3)。
 fn take_queued((at, job): (Instant, Job)) -> Job {
     crate::sync::note_queue_wait(at.elapsed().as_millis().min(u64::MAX as u128) as u64);
     job

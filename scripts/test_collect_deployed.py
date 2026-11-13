@@ -266,12 +266,12 @@ class CollectBeforeZeroTest(unittest.TestCase):
     @staticmethod
     def judged(out):
         """要約の末尾の判定の節。"""
-        return out[out.index("## 6. 完了の定義に対する判定"):]
+        return out[out.index("## 完了の定義に対する判定"):]
 
     def test_the_default_criteria_is_T37_against_the_previous_snapshot(self):
         d, out, _ = self.run_collect(criteria=None)
         tail = self.judged(out)
-        self.assertIn("## 6. 完了の定義に対する判定 (snapshot-diff.py --criteria T37)", tail)
+        self.assertIn("## 完了の定義に対する判定 (snapshot-diff.py --criteria T37)", tail)
         self.assertIn("1〜27 行の並びと材料は T36 と同じです。直したのは 1 行 (T37.1)", tail)
         # T36.2: CPU の 2 行は機械の速さの物差しで割ってから比べ、物差しの前後の比は表示だけの 27 行目
         self.assertIn("機械の速さの物差し: `history` 役の CPU ÷ その役の標本の数 (us/秒) の前後の比", tail)
@@ -309,7 +309,7 @@ class CollectBeforeZeroTest(unittest.TestCase):
         self.assertIn("- 前回: `%s`" % os.path.join(d, self.PREV), out)
         self.assertIn("- 判定表の相手 (`BEFORE`): `%s`" % path, out)
         # 「2. 前回との差分」の相手は直前の 1 枚のまま。判定表はそこには出ない
-        head = out[:out.index("## 3. ホスト別")]
+        head = out[:out.index("## ホスト別 (status-diff.py)")]
         self.assertIn("### snapshot-diff: `%s` →" % os.path.join(d, self.PREV), head)
         self.assertNotIn("完了の定義に対する判定", head)
         tail = self.judged(out)
@@ -366,7 +366,7 @@ class CollectBeforeZeroTest(unittest.TestCase):
         self.assertIn("`cache_memory` 0.0 → 0.0", tail)
         self.assertIn("**日次の雪像**", tail)
         # 「2. 前回との差分」の表には成功した接続だけの行が出る (この雪像に `/recent` の部は無い)
-        self.assertIn("| CONNECT 確立 (**成功した接続だけ**) |", out[:out.index("## 3. ホスト別")])
+        self.assertIn("| CONNECT 確立 (**成功した接続だけ**) |", out[:out.index("## ホスト別 (status-diff.py)")])
 
     def test_zero_is_passed_to_the_heap_row(self):
         _, out, _ = self.run_collect(files={"2025-12-31T060000Z-snapshot.json": self.zero()},
@@ -972,7 +972,7 @@ class CollectFromServerTest(unittest.TestCase):
         }
 
     def test_a_daily_snapshot_over_the_limit_is_warned(self):
-        """T29.16 (a): 取り寄せた雪像の大きさと上限 (`limit_bytes`、無ければ 4 MiB) の割合を 1 行ずつ出し、
+        """T29.16: 取り寄せた雪像の大きさと上限 (`limit_bytes`、無ければ 4 MiB) の割合を 1 行ずつ出し、
         90% 以上なら警告する (日次が上限を越えると `recent` が 256 KiB に戻る)。"""
         _, out = self.run_from_server(self.listing(), pad={self.DAY: 4 * 1024 * 1024 + 10})
         line = [x for x in out.splitlines() if self.DAY + "T000000Z-snapshot.json`: " in x]
@@ -1057,7 +1057,7 @@ class CollectFromServerTest(unittest.TestCase):
         self.assertIn("いまの版 `0.28.48+c0ffee1` (`/status`) で選んだ", out)
         self.assertIn("- 判定表の相手 (`BEFORE`): `%s`" % before, out)
         self.assertIn("- 0 時間の雪像 (`ZERO`): `%s`" % zero, out)
-        self.assertIn("## 1. 要点", out)
+        self.assertIn("## 要点", out)
         # 本番の要約はファイルにも残り、そこにも前提が入る
         mds = [n for n in os.listdir(d) if n.endswith("-collect.md")]
         self.assertEqual(len(mds), 1, os.listdir(d))

@@ -103,12 +103,12 @@ pub struct RecentEntry {
     /// `client` が大きい = 利用者の下り回線か端末が読んでいない、`origin` が大きい =
     /// オリジンか利用者の上りが詰まっている。CONNECT のトンネルだけが埋める
     pub stall_ms: [u32; SIDES],
-    /// 中継の輪が「起こされたのに 1 バイトも進まなかった」回数の通算 (T15.0 (4))。
+    /// 中継の輪が「起こされたのに 1 バイトも進まなかった」回数の通算 (T15.0)。
     /// 寿命に対して桁違いに大きければ空回り (T15.5 の形)。トンネルだけが埋める
     pub spins: u64,
     /// 半閉じの (向き, 半閉じから閉じるまでの ms)。半閉じしていなければ `None`。
     /// 向きは「**先に EOF を出した側**」で、閉じた理由 (`client_eof` / `server_eof`) と
-    /// 同じ出どころ (`Idle::first_eof`)。T15.0 (4)
+    /// 同じ出どころ (`Idle::first_eof`)。T15.0
     pub half_closed: Option<(usize, u64)>,
 }
 
@@ -197,7 +197,7 @@ impl RecentEntry {
             ",\"stall_ms\":{{\"client\":{},\"origin\":{}}}",
             self.stall_ms[CLIENT_SIDE], self.stall_ms[ORIGIN_SIDE],
         );
-        // 空回りの回数と半閉じの向き (T15.0 (4))。**末尾に足した** (既存の鍵の順は
+        // 空回りの回数と半閉じの向き (T15.0)。**末尾に足した** (既存の鍵の順は
         // 変えない)。`/connections` と違ってここは件数で切る口なので、0 でも必ず出す
         // (`syn_retrans` / `stall_ms` と同じ扱い)。半閉じしていない接続は `null`
         let _ = write!(out, ",\"spins\":{}", self.spins);

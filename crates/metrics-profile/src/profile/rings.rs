@@ -135,7 +135,7 @@ impl Profile {
         self.len(0) == 0
     }
 
-    /// **いま環に入っているぶん**のバイト (`/status` の `memory.rings_used.profile`。T15.0 (13))。
+    /// **いま環に入っているぶん**のバイト (`/status` の `memory.rings_used.profile`。T15.0)。
     ///
     /// `--lite` では標本を 1 本も作らないので 0。満杯のときの見積もりは
     /// [`capacity_bytes`](super::capacity_bytes)。
@@ -160,7 +160,7 @@ impl Profile {
         self.rows_within_page(res, budget, usize::MAX, 0)
     }
 
-    /// [`Profile::rows_within`] の**ページ送りつき** (`/profile?n=&offset=`。T15.0 (11))。
+    /// [`Profile::rows_within`] の**ページ送りつき** (`/profile?n=&offset=`。T15.0)。
     ///
     /// 環は時刻で引ける作りになっていない (新しい順に詰めるだけ) ので、`since=` /
     /// `until=` ではなく「新しい方から何本飛ばして、何本返すか」で切る。`offset` は

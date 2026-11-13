@@ -26,7 +26,7 @@ pub fn resolve_host_marked(host: &str, port: u16) -> io::Result<(Vec<IpAddr>, Op
     let ttl = ttl();
     if ttl.is_zero() {
         MISSES.fetch_add(1, Ordering::Relaxed);
-        // 表を触らないので「直前の姿」も無い = いつも `cold` (T15.0 (7))
+        // 表を触らないので「直前の姿」も無い = いつも `cold` (T15.0)
         MISS_COLD.fetch_add(1, Ordering::Relaxed);
         return pool::resolve(host, port).map(|a| (a, None, false));
     }
@@ -35,7 +35,7 @@ pub fn resolve_host_marked(host: &str, port: u16) -> io::Result<(Vec<IpAddr>, Op
     let window = warm_window();
     // 鍵の内側で決めたこと (表に載っていない名前は `Lookup::ABSENT` = `cold` のミス)
     let look = {
-        // 取り合いを数える (T14.3 (3))。空いていれば `locked` と同じ費用
+        // 取り合いを数える (T14.3)。空いていれば `locked` と同じ費用
         let mut guard = TABLE.locked_counted(&crate::sync::LOCK_CONTENDED[crate::sync::LOCK_DNS]);
         let table = guard.get_or_insert_with(HashMap::new);
         match table.get_mut(&key) {
@@ -84,9 +84,9 @@ pub fn resolve_host_marked(host: &str, port: u16) -> io::Result<(Vec<IpAddr>, Op
         None => {}
     }
     MISSES.fetch_add(1, Ordering::Relaxed);
-    // 種類別も同じ場所で 1 つ (T15.0 (7)。**4 つの和は `MISSES` と一致する**)
+    // 種類別も同じ場所で 1 つ (T15.0。**4 つの和は `MISSES` と一致する**)
     miss_kind.counter().fetch_add(1, Ordering::Relaxed);
-    // ミスのときだけ `Instant` を 2 回読む (当たりの経路は 1 命令も増えない。T12.4 (2))
+    // ミスのときだけ `Instant` を 2 回読む (当たりの経路は 1 命令も増えない。T12.4)
     let t0 = Instant::now();
     // 締め切りつきで別のスレッドに引かせる (T32.11。`PROXY_DNS_TIMEOUT_SECS=0` なら自分で引く)
     let result = pool::resolve(host, port);

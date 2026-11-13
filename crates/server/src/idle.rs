@@ -115,7 +115,7 @@ mod linux {
             }
         }
 
-        /// 受け持つスレッドが居なくなったことを書く (原子 1 回。T15.0 (4))。
+        /// 受け持つスレッドが居なくなったことを書く (原子 1 回。T15.0)。
         ///
         /// 預けたものは**どのスレッドも持っていない** (起こすのは監視スレッドで、
         /// 続きを走らせるのはそのとき空いていた別のワーカー) ので、`tid` は `0` に戻す。
@@ -314,7 +314,7 @@ mod linux {
         /// 預かる。断ったら渡されたものをそのまま返す。
         fn park_any(&self, what: Parked, deadline: Instant) -> Result<(), Parked> {
             let (fds, n) = what.fds();
-            // 取り合いを数える (T14.3 (3))。空いていれば `locked` と同じ費用
+            // 取り合いを数える (T14.3)。空いていれば `locked` と同じ費用
             let mut inner = self
                 .inner
                 .locked_counted(&crate::sync::LOCK_CONTENDED[crate::sync::LOCK_PARK]);
@@ -334,7 +334,7 @@ mod linux {
             inner.order.insert(deadline, key, what.is_tunnel());
             // `/connections` に「預かり所にいる」と書く (T13.4)
             what.set_state(ConnState::Parked);
-            // 受け持つスレッドが居なくなった (T15.0 (4))
+            // 受け持つスレッドが居なくなった (T15.0)
             what.clear_tid();
             // 預けられた回数と、預かっていた時間の起点 (`/recent`。T14.4)
             what.on_park();
@@ -518,7 +518,7 @@ mod linux {
             let id = conn.id();
             // ワーカーの空きを待つ (取られたら `run_conn` が `serving` に書き直す)
             conn.set_state(ConnState::Queued);
-            // ここから `run_conn` までが `queue` の段階 (T14.3 (1))
+            // ここから `run_conn` までが `queue` の段階 (T14.3)
             conn.mark_queued();
             // 渡せなかったときは仕事ごと返ってくる。落とせば Conn も落ちて接続が閉じる
             if self

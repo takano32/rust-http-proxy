@@ -17,7 +17,7 @@ HFIELDS = (
     "connects", "connect_ms_sum", "connect_ms_max", "connect_buckets",
     "forwards", "forward_ms_sum", "forward_ms_max", "forward_buckets",
     "errors", "errors_by_cause", "dns_misses", "dns_ms_sum", "evicted_idle",
-    # T15.0 (10) で末尾に足した 8 列 (**名前で引くので古い雪像では `None`**)。
+    # T15.0 で末尾に足した 8 列 (**名前で引くので古い雪像では `None`**)。
     # `waits` は利用者が待つ時間 (`queue + client_read + dns + connect`)、`dns_warm` は
     # その瞬間の warm な名前の件数、`*_delta` は区間の増分、`active_peak` は区間の真の山
     "waits", "wait_ms_sum", "wait_ms_max", "wait_buckets",
@@ -34,7 +34,7 @@ HFIELDS = (
 BURST_PER_HOUR = 300
 # 平常時を「300 本と、その期間の中央値のこの倍の大きい方」で切るときの倍率 (phase22 の `burst_median_k`。T22.1)。
 # T29.13 からサーバーの `/history?summary=1&normal_hours_only=1` も同じ規則で、`collect-deployed.sh` は
-# `--criteria` を付けない差分 (要約の §2) にも `--burst-median-k` でこの値を渡す
+# `--criteria` を付けない差分 (要約の「平常時の前後」) にも `--burst-median-k` でこの値を渡す
 BURST_MEDIAN_K = 3
 # Phase 14 の完了の定義で名指しされている主要ホスト以外を選ぶときの数
 MAJOR_HOSTS = 3

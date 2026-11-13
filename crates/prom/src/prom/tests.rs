@@ -67,7 +67,7 @@ fn renders_the_limits_and_the_thread_counts_as_gauges() {
     );
 }
 
-/// 接続スレッドの数が新旧両方の名前で出ること (T12.4 (4))。旧名は 1 版だけ残す。
+/// 接続スレッドの数が新旧両方の名前で出ること (T12.4)。旧名は 1 版だけ残す。
 #[test]
 fn thread_gauges_are_rendered_under_both_the_old_and_the_new_name() {
     let m = Metrics::new();
@@ -90,7 +90,7 @@ fn thread_gauges_are_rendered_under_both_the_old_and_the_new_name() {
     }
 }
 
-/// CONNECT 確立のヒストグラム・名前解決・エラーの原因が出ること (T12.4 (4))。
+/// CONNECT 確立のヒストグラム・名前解決・エラーの原因が出ること (T12.4)。
 #[test]
 fn renders_the_connect_histogram_the_dns_summary_and_the_error_causes() {
     use std::time::Duration;
@@ -244,7 +244,7 @@ fn renders_the_dns_breakdown_after_the_eight_causes() {
     assert_eq!(m.dns_cause_totals(), [2, 1]);
 }
 
-/// 上限まで埋めても `/status` 64 KiB / `/metrics` 400 KiB に収まること (T12.4 (3))。
+/// 上限まで埋めても `/status` 64 KiB / `/metrics` 400 KiB に収まること (T12.4)。
 #[test]
 fn the_endpoints_stay_within_their_size_budget_when_the_tables_are_full() {
     let m = Metrics::new();
@@ -377,7 +377,7 @@ fn renders_the_stage_histograms_the_warm_gauge_and_the_lock_counters() {
         "sorahost_stage_seconds_bucket{kind=\"forward\",stage=\"ttfb\",le=\"0.05\"} 0\n",
         "sorahost_stage_seconds_bucket{kind=\"forward\",stage=\"ttfb\",le=\"0.1\"} 1\n",
         "sorahost_stage_seconds_sum{kind=\"forward\",stage=\"body\"} 0.007\n",
-        // keep-warm な名前の数 (T14.1) と ロックの取り合い (T14.3 (3))
+        // keep-warm な名前の数 (T14.1) と ロックの取り合い (T14.3)
         "# TYPE sorahost_warm_names gauge\nsorahost_warm_names ",
         "# TYPE sorahost_lock_contention_total counter\n",
         "sorahost_lock_contention_total{lock=\"stats\"} ",

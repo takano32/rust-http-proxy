@@ -1,6 +1,6 @@
 //! 起動ごとに変わる種 (T34.74 で `records::salt` と `via::mark` の 2 か所の作り方を 1 つにした)。
 //!
-//! 外部クレートは足さない方針 (§0) なので、`RandomState` の種 + 時刻 + プロセス番号 + スタックの
+//! 外部クレートは足さない方針 (仕様 S25) なので、`RandomState` の種 + 時刻 + プロセス番号 + スタックの
 //! アドレスを混ぜる (`RandomState` はプロセスごとに無作為な種を持つ)。
 
 use std::collections::hash_map::RandomState;

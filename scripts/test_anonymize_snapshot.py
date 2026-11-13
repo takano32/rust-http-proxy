@@ -85,7 +85,7 @@ def sample():
                 "at": 1789520760,
                 "cgroup_cpu": {
                     "nr_throttled": 41282, "nr_periods": 41905, "quota_cores": 1.0,
-                    # コンテナを 1 つに特定できる道 (T15.0 (6))
+                    # コンテナを 1 つに特定できる道 (T15.0)
                     "path": "/sys/fs/cgroup/system.slice/pterodactyl-6f2c.scope/cpu.stat",
                 },
             },
@@ -334,7 +334,7 @@ class Text(unittest.TestCase):
         self.assertEqual(anonymized()["version"], "0.1.0+abcdef1")
 
     def test_the_cgroup_path_is_flattened(self):
-        """`kernel.cgroup_cpu.path` はコンテナを特定できるので深さだけ残す (T15.0 (6))。"""
+        """`kernel.cgroup_cpu.path` はコンテナを特定できるので深さだけ残す (T15.0)。"""
         cpu = anonymized()["status"]["kernel"]["cgroup_cpu"]
         self.assertEqual(cpu["path"], "/sys/fs/cgroup/…/…/cpu.stat")
         self.assertNotIn("pterodactyl", json.dumps(anonymized(), ensure_ascii=False))
@@ -373,7 +373,7 @@ class Numbers(unittest.TestCase):
         changed = [a for (ka, a), (kb, b) in pairs if a != b]
         kept = [a for (ka, a), (kb, b) in pairs if a == b]
         # 置き換わるのは 25 か所 (宛先 7・接続元 6・答えの IP 3・UA 2・canary 1・文 3 ほか、
-        # それに cgroup の道 1 = T15.0 (6))
+        # それに cgroup の道 1 = T15.0)
         self.assertEqual(len(changed), 25)
         self.assertIn("ok", kept)          # `/status` の `status`
         self.assertIn("connect", kept)     # 種類

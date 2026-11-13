@@ -6,8 +6,8 @@
 `other` は生きた CONNECT の溢れ・forward の溢れ・死んだ宛先への総当たりを 1 行に混ぜた通算
 (版をまたぐ) なので、`status-diff.py` は forward の表に p95 10 秒を並べていた。見るのは:
 (1) `status-diff.py` の表と AAAA 別の中央値に `other` が入らず、「混在・通算」の印つきの 1 行が出る、
-(2) `snapshot-diff.py` の §3 も同じ (`--criteria` の無いとき)、
-(3) `--criteria` のときは出力が変わらない (`hosts` に `folded` を足さず、§3 にも `other` が残る)。
+(2) `snapshot-diff.py` の「ホスト別」も同じ (`--criteria` の無いとき)、
+(3) `--criteria` のときは出力が変わらない (`hosts` に `folded` を足さず、「ホスト別」にも `other` が残る)。
 """
 
 import json
@@ -101,7 +101,7 @@ class SnapshotDiff(unittest.TestCase):
         a, b = (snapshot_diff.load_source(f, False) for f in (A, B))
         d = snapshot_diff.build(a, b, args)
         self.assertEqual([r["key"] for r in d["hosts"]["folded"]], ["other"])
-        # 行そのものは残す (エラーの合計 §7 を変えないため)
+        # 行そのものは残す (「エラーの原因別」の合計を変えないため)
         self.assertIn("other", [r["key"] for r in d["hosts"]["rows"]])
 
     def test_criteria_output_keeps_other_in_section_3(self):

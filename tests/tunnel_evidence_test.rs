@@ -1,6 +1,6 @@
 //! トンネル 1 本ごとの証拠 (`/connections` の `tid` / `spins` / `revents` /
 //! `half_closed` / `idle_secs` と、個票の `spins` / `half_closed` / `half_closed_ms`)
-//! の結合テスト (T15.0 (4))。
+//! の結合テスト (T15.0)。
 //!
 //! 2026-09-18 のデプロイ先では、齢 27 時間・通算 9 kB・0 bps のトンネル 2 本が
 //! 「回っている (CPU を食っている)」のか「待っている」のかを `/connections` の 1 行から

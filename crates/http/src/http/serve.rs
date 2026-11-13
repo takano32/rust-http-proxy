@@ -356,7 +356,7 @@ pub(super) fn write_cached_response(
     }
     extra[n_extra] = content_length_line(&mut cl_buf, len);
     n_extra += 1;
-    // キャッシュから返す応答にも自分の `Via` を足す (T28.10 (b))。保存した先頭には入っていない
+    // キャッシュから返す応答にも自分の `Via` を足す (T28.10)。保存した先頭には入っていない
     extra[n_extra] = crate::via::field();
     n_extra += 1;
     extra[n_extra] = if serve.keep_alive {
@@ -423,7 +423,7 @@ pub(super) fn write_not_modified(
         out.push_str(&line);
         out.push_str("\r\n");
     }
-    // キャッシュが返す 304 にも `Via` (T28.10 (b))
+    // キャッシュが返す 304 にも `Via` (T28.10)
     out.push_str(crate::via::line());
     out.push_str(if keep_alive {
         "Connection: keep-alive\r\n\r\n"

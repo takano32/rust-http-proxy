@@ -47,7 +47,7 @@ fn tcp_keepalive_spec_round_trips_through_parse() {
     assert_eq!(TcpKeepalive::parse("off"), Some(None));
 }
 
-/// CONNECT の締め切りの規則を 1 本で縛る (T15.6 (2)、既定を 5 秒にした T23.3、3 秒にした T28.43)。
+/// CONNECT の締め切りの規則を 1 本で縛る (T15.6、既定を 5 秒にした T23.3、3 秒にした T28.43)。
 ///
 /// `(PROXY_TIMEOUT_SECS, PROXY_CONNECT_TIMEOUT_SECS) → 実効値` の 6 通り。
 /// `Config::new` も同じ関数を通ることを、未設定の 4 通りで一緒に見る。
@@ -109,7 +109,7 @@ fn connect_timeout_uses_the_explicit_value_as_is() {
             "{} 秒",
             explicit
         );
-        // 共通の締め切りが明示より短くても、明示の方が勝つ (T15.6 (2) の規則のまま)
+        // 共通の締め切りが明示より短くても、明示の方が勝つ (T15.6 の規則のまま)
         assert_eq!(
             connect_timeout_for(d(2), Some(want)),
             want,
@@ -156,7 +156,7 @@ fn settings_show_the_connect_timeout() {
             .value
             .clone()
     };
-    // 既定は 3 秒 (T15.6 (2)、T23.3、T28.43)。共通の締め切りは 30 秒のまま
+    // 既定は 3 秒 (T15.6、T23.3、T28.43)。共通の締め切りは 30 秒のまま
     assert_eq!(find(&cfg, "PROXY_CONNECT_TIMEOUT_SECS"), "3");
     assert_eq!(find(&cfg, "PROXY_TIMEOUT_SECS"), "30");
     // 戻し方 (`.env` に `PROXY_CONNECT_TIMEOUT_SECS=30`) も実効値で出る

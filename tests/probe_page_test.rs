@@ -4,7 +4,7 @@
 //! **`--lite` でも 200 で開けること** (接続元を記録していないときに何と出すか)、
 //! `/` の案内に載ること、ページが 64 KiB 以下であること。
 //! 関数 (`median` / `pick` / `render`) が実出力と合っているかは
-//! `scripts/check-dashboard.js` の 11 番目の検査が見る (Node があるときだけ)。
+//! `scripts/check-dashboard.js` の「端末から測る」ページの検査が見る (Node があるときだけ)。
 
 mod common;
 

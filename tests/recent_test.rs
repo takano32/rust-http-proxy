@@ -166,7 +166,7 @@ fn test_integration_recent_shows_the_request_limit() {
     assert!(json.contains("\"kind\":\"http\""), "{}", json);
     assert!(json.contains("\"reqs\":3"), "{}", json);
     assert!(json.contains("\"status\":200"), "{}", json);
-    // 宛先は接続の最初の要求のもの (T14.2 (5))、バイトは上り (要求) / 下り (応答) 別
+    // 宛先は接続の最初の要求のもの (T14.2)、バイトは上り (要求) / 下り (応答) 別
     assert!(
         json.contains(&format!("\"target\":\"{}\"", host)),
         "{}",
@@ -319,7 +319,7 @@ fn test_integration_recent_filters_and_sorts() {
     );
 }
 
-/// `/recent?offset=` と `/hosts?offset=` が**口を通して**効くこと (T15.0 (11))。
+/// `/recent?offset=` と `/hosts?offset=` が**口を通して**効くこと (T15.0)。
 ///
 /// 中の切り方は単体 (`crates/endpoints` の `..._pages_through_...`) で縛ってあるので、
 /// ここで見るのは「問い合わせが handler まで届き、`offset` / `next_offset` が応答に出て、

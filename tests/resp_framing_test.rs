@@ -247,7 +247,7 @@ fn test_integration_good_responses_are_unchanged() {
     let origin_port = start_scripted_origin();
     let proxy_port = start_test_proxy(proxy_config());
 
-    // T28.10 (b) から、どの応答にも自分の `Via` が 1 行付く (それ以外は今までどおり)。
+    // T28.10 から、どの応答にも自分の `Via` が 1 行付く (それ以外は今までどおり)。
     // T29.9 から `Date` の無い応答には `Date` も 1 行付く (`without_date` で外して比べる)
     let via = rust_http_proxy::via::token();
     // CL 1 本の応答: 状態行・ヘッダー・本文まで含めて今までどおりのバイト列

@@ -221,7 +221,7 @@ pub fn write_version_two_rrd(path: &std::path::Path, fx: &Fixture) {
                 ..Sample::default()
             };
             // 版 2 の 1 レコードは 512 B (payload 508 B) で、標本は **62 項目**だった
-            // (`evicted_idle` は T14.2 で 63 項目目に足したもの。T15.0 (10) で今の
+            // (`evicted_idle` は T14.2 で 63 項目目に足したもの。T15.0 で今の
             // `encode` は 83 項目 = 664 B になったので、版 2 のぶんだけ切って書く)
             v2::put(&mut buf, res, i, &s.encode()[..v2::SAMPLE_ITEMS * 8]);
         }

@@ -126,7 +126,7 @@ class Criteria15(unittest.TestCase):
         self.assertEqual(row[3], sd.MET)             # 2 ミス / 200 要求 = 0.01
 
     def test_the_refresh_rate_is_judged_per_name_from_the_dns_part(self):
-        """**閾は 1 名前あたりの上限**なので、`/dns` の名前ごとの最大で判定する (T15.15 (1))。"""
+        """**閾は 1 名前あたりの上限**なので、`/dns` の名前ごとの最大で判定する (T15.15)。"""
         row = self.judge()["rows"][1]
         self.assertEqual(row[3], sd.MET)
         # alpha の 18 回 ÷ 起動から 12 時間
@@ -168,7 +168,7 @@ class Criteria15(unittest.TestCase):
         self.assertIn("`dns_warm`", row[4])
 
     def test_a_low_miss_rate_is_met(self):
-        """**下の閾は外した** (T15.15 (2)。T15.99 の 0.05 が「幅より低い」で届かずになった)。"""
+        """**下の閾は外した** (T15.15。T15.99 の 0.05 が「幅より低い」で届かずになった)。"""
         row = self.judge()["rows"][2]
         self.assertEqual(row[3], sd.MET)
         self.assertEqual(row[1], "≤ 0.09")
@@ -259,7 +259,7 @@ class Criteria15(unittest.TestCase):
             return self.judge(a=paths["a"], b=paths["b"])["rows"][4]
 
     def test_the_closed_shares_come_from_the_minute_counts(self):
-        """**全数の割合**で比べる (T15.15 (3)。`/recent` は 256 KiB で切れて窓が毎回違う)。"""
+        """**全数の割合**で比べる (T15.15。`/recent` は 256 KiB で切れて窓が毎回違う)。"""
         row = self.closed_row([(self.BEFORE, 100, 20, 10)],
                               [(self.AFTER, 300, 60, 30), (self.AFTER + 60, 300, 60, 30)])
         self.assertEqual(row[3], sd.MET)
@@ -590,7 +590,7 @@ def with_probes(snap, probes, runs=700, skipped=20, at=0):
 
 
 class Criteria18(unittest.TestCase):
-    """`--criteria phase18` の 10 行 (T18.2。前の 8 行は phase17 の関数、後ろの 2 行が T18.0 の (g)(h))。
+    """`--criteria phase18` の 10 行 (T18.2。前の 8 行は phase17 の関数、後ろの 2 行が T18.0 の `heap_used + mmap` と IPv6 の探り)。
 
     雪像は `testdata/snapshot-{a,b}.json` に**作り物の欄を足して**使う (T18.1 の欄は名前だけ同じ)。
     """
@@ -735,7 +735,7 @@ class Criteria18(unittest.TestCase):
 
 
 class DailySnapshots(unittest.TestCase):
-    """`--daily-snapshots DIR` (T18.2 (2)): 同じ版の日次の雪像を撮った時刻の順に並べる。"""
+    """`--daily-snapshots DIR` (T18.2): 同じ版の日次の雪像を撮った時刻の順に並べる。"""
 
     @staticmethod
     def daily(uptime, version="0.1.0+bbbbbbb", **memory):
@@ -1498,7 +1498,7 @@ class Criteria22(unittest.TestCase):
 
 
 class PastOutputs22(unittest.TestCase):
-    """phase22 を足しても phase14〜phase21 の出力 (§2 の平常時の表と §9 の判定表、json の `history` と
+    """phase22 を足しても phase14〜phase21 の出力 (「平常時の前後」の表と判定表、json の `history` と
     `criteria`) が 1 文字も変わらないこと (T22.1)。値は phase22 を足す前の main (`1c19f9a`) で取った sha256 の頭 16 桁。
     **ここが落ちたら過去の判定を変えている** (過去の判定を同じ命令で出し直せなくなる)。"""
 
@@ -2581,7 +2581,7 @@ class Criteria24(unittest.TestCase):
 
 
 class PastOutputs24(unittest.TestCase):
-    """T24.2: phase24 を足しても **phase22 と phase23 の出力** (§2 の平常時の表と §9 の判定表、json の
+    """T24.2: phase24 を足しても **phase22 と phase23 の出力** (「平常時の前後」の表と判定表、json の
     `history` と `criteria`) が 1 文字も変わらないこと。値は phase24 を足す前の main (`081de1c`) で取った
     sha256 の頭 16 桁 (`PastOutputs22` が見ている phase14〜phase21 と同じ形)。
     **ここが落ちたら過去の判定を変えている** (過去の判定を同じ命令で出し直せなくなる)。"""

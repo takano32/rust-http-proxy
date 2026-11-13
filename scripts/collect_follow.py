@@ -299,7 +299,7 @@ def profile_join(argv):
 
 
 def full_plan(argv):
-    """`--full` で続きを引く部を 1 部 1 行で出す (T15.0 (11))。"""
+    """`--full` で続きを引く部を 1 部 1 行で出す (T15.0)。"""
     # 続きを引ける部と、その URL の形 (雪像がその部を組むときの引数 + `offset=`)
     URL = {
         "recent": "/recent?n=2000&offset=",

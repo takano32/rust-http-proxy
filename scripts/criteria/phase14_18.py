@@ -58,7 +58,7 @@ def minute_parts(a, b, name):
 
 
 def tunnel_closes(a, b, boundary, burst):
-    """`/history?res=60` から、**平常時に閉じたトンネル**の `idle_timeout` と半閉じの割合 (T15.15 (3))。
+    """`/history?res=60` から、**平常時に閉じたトンネル**の `idle_timeout` と半閉じの割合 (T15.15)。
 
     前の版は `/recent` (雪像では 256 KiB で切れ、窓の長さが毎回違う) から割合を取っていた。
     こちらは 1 分ごとの**全数**: 母数は `transfer.tunnels` (終わったトンネルの数)、
@@ -103,7 +103,7 @@ def tunnel_closes(a, b, boundary, burst):
 
 
 def dns_name_refreshes(snap):
-    """`/dns` の名前ごとの引き直しを 1 時間あたりに直した最大 (T15.15 (1))。
+    """`/dns` の名前ごとの引き直しを 1 時間あたりに直した最大 (T15.15)。
 
     閾 80 回/時は **1 名前あたりの上限** (TTL 60 秒の 3/4 おき) なので、物差しは名前ごとの値。
     `refreshes` はその名前の起動からの通算なので、`uptime_secs` で割る (T15.99 の 78.2 と同じ読み方)。
@@ -118,7 +118,7 @@ def dns_name_refreshes(snap):
 
 
 def daily_band(snap):
-    """`/daily` の 1 日ごとの `dns_per_connect` の幅 (**その版の日だけ**。T15.15 (2))。"""
+    """`/daily` の 1 日ごとの `dns_per_connect` の幅 (**その版の日だけ**。T15.15)。"""
     days = part(snap, "daily").get("days")
     if not isinstance(days, list):
         return None
@@ -209,7 +209,7 @@ def _p15_watch_host(c, th):
 def _p15_refresh_rate(c, th):
     """T15.4: 裏の引き直しが 1 名前あたり何回/時か。
 
-    **判定は `/dns` の名前ごとの最大** (T15.15 (1)。閾は 1 名前あたりの上限なので)。
+    **判定は `/dns` の名前ごとの最大** (T15.15。閾は 1 名前あたりの上限なので)。
     参考に「通算 ÷ 時間 ÷ warm の平均」も並べる。warm の平均は**全時間** (`after_all`) から取り、
     分子の `dns.refreshes` (起動からの通算、バーストの時間も含む) と窓を揃える。
     """
@@ -239,7 +239,7 @@ def _p15_refresh_rate(c, th):
 
 
 def _p15_miss_band(c, th):
-    """T15.4: 平常時のミス率が見込んだ上限以下か (T15.15 (2) で下の閾を外した)。"""
+    """T15.4: 平常時のミス率が見込んだ上限以下か (T15.15 で下の閾を外した)。"""
     hi = th["miss_max"]
     label = f"平常時の名前解決のミスが {hi} 回/接続 以下"
     limit = f"≤ {hi}"
@@ -267,7 +267,7 @@ def _p15_conn_cores(c, th):
 
 
 def _p15_closed_shape(c, th):
-    """T15.5: 直しの前後でトンネルの閉じ方が変わっていないか (T15.15 (3))。
+    """T15.5: 直しの前後でトンネルの閉じ方が変わっていないか (T15.15)。
 
     材料は `/history?res=60` の `closed` と `transfer` の**全数** (平常時だけ)。
     `idle_timeout` と半閉じは**同じ信号の裏表** (半閉じのまま相手が黙ると `idle_timeout` で
@@ -364,7 +364,7 @@ def profile_cost(p, role):
 
 
 def _p17_conn_per_request(c, th):
-    """T17.99 (c): conn 役の CPU/要求 が前の 1.3 倍以下 (T16.99 の (i) を自動で)。
+    """T17.99: conn 役の CPU/要求 が前の 1.3 倍以下 (T16.99 で手で見た行を自動で)。
 
     材料は `--profile` (`/profile?res=60`)。無ければ雪像の `/profile` の部で「参考」と書く。
     **プロセス全体のコア数も並べる** (要求の中身で conn 役の値が振れるので、桁はこちらで見る)。
@@ -456,7 +456,7 @@ def anomaly_rates(snap):
 
 
 def _p17_events(c, th):
-    """T17.99 (a): `/events` の種類別 件/時。閾があるのは `dns_slow` (0.1 件/時) だけ。"""
+    """T17.99: `/events` の種類別 件/時。閾があるのは `dns_slow` (0.1 件/時) だけ。"""
     limits = th["events_per_hour"]
     label = "`/events` の anomaly の種類別 件/時 (" + "、".join(
         f"`{k}` {v} 以下" for k, v in limits.items()) + "。ほかは表示だけ)"
@@ -507,7 +507,7 @@ def cgroup_since_start(snap):
 
 
 def _p17_cgroup(c, th):
-    """T17.99 (c): cgroup の起動からの user / sys が前後で同じ桁 (T16.0 で足した欄)。"""
+    """T17.99: cgroup の起動からの user / sys が前後で同じ桁 (T16.0 で足した欄)。"""
     k = th["cgroup_factor"]
     label = "cgroup の起動からの CPU (user / sys) が前と同じ桁"
     limit = f"user・sys とも ≤ 前 ×{k:.0f}"
@@ -558,10 +558,10 @@ def uptime_text(secs):
 
 
 def _p18_heap(c, th):
-    """T18.0 (g): `heap_used + mmap` が 0 時間の雪像から 5 MB 以上増えていないか。
+    """T18.0: `heap_used + mmap` が 0 時間の雪像から 5 MB 以上増えていないか。
 
     材料は `--zero FILE` (0 時間の雪像。`build` が `zero_snapshot` に入れる) と後の雪像の
-    `$.status.memory`。**`heap_free` と `rss` は並べるだけ** (閾を置かない。T17.99 (d) で伸びたのは
+    `$.status.memory`。**`heap_free` と `rss` は並べるだけ** (閾を置かない。T17.99 で伸びたのは
     `heap_free` で、バーストの大きさで決まる)。`--zero` が無いか、後の雪像と同じ起動でなければ
     「判定できず」。
     """
@@ -592,7 +592,7 @@ def _p18_heap(c, th):
 
 
 def _p18_request_probes(c, th):
-    """T18.0 (h): `v4_first` の間に利用者の経路で IPv6 を探っていないか (T18.1 の計器)。
+    """T18.0: `v4_first` の間に利用者の経路で IPv6 を探っていないか (T18.1 の計器)。
 
     材料は後の雪像の `$.status.ipv6.request_probes` (起動からの通算)。欄が無い版は「判定できず」。
     0 でなければ「届かず」で、理由を読むための `canary.ipv6_runs` / `ipv6_skipped` を並べる。

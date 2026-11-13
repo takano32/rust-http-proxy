@@ -1,10 +1,10 @@
-//! スレッド 1 本ごとの標本 (`/proc/<pid>/task/<tid>/` の `stat`・`syscall`・`schedstat`。T14.3 (2)) と、
+//! スレッド 1 本ごとの標本 (`/proc/<pid>/task/<tid>/` の `stat`・`syscall`・`schedstat`。T14.3) と、
 //! その読み取り。T34.61 で `proc.rs` から移した (本体は変えていない)。
 
 use super::kept::pread_all;
 use super::read_small_into;
 
-/// スレッド 1 本の標本 (`/proc/<pid>/task/<tid>/`。T14.3 (2))。
+/// スレッド 1 本の標本 (`/proc/<pid>/task/<tid>/`。T14.3)。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskSample {
     pub tid: u32,

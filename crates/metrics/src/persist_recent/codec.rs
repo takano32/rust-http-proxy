@@ -68,7 +68,7 @@ pub(super) fn encode_closed(seq: u64, e: &RecentEntry) -> Vec<u8> {
     for v in e.stall_ms {
         enc.u64(v as u64);
     }
-    // 空回りの回数と半閉じ (T15.0 (4))。同じ理由で**さらにいちばん後ろ**へ 3 本
+    // 空回りの回数と半閉じ (T15.0)。同じ理由で**さらにいちばん後ろ**へ 3 本
     // (`spins`、**側 + 1** = `0` は「半閉じしていない」、半閉じから閉じるまでの ms)。
     // 版は上げない (`SHPREC03` のまま) — 前の版のレコードは 3 本とも 0 で読み戻る
     enc.u64(e.spins);
@@ -115,7 +115,7 @@ pub(super) fn decode_closed(p: &[u8]) -> Option<RecentEntry> {
     for slot in stall_ms.iter_mut() {
         *slot = d.u64() as u32;
     }
-    // 空回りと半閉じ (T15.0 (4))。前の版のレコードはここが無いので 0 = 「空回り無し・
+    // 空回りと半閉じ (T15.0)。前の版のレコードはここが無いので 0 = 「空回り無し・
     // 半閉じ無し」で戻る (`Dec` は足りなければ 0 を返す)
     let spins = d.u64();
     let half_side = d.u64();

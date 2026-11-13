@@ -445,7 +445,7 @@ fn spawn_connection(
         local_port,
     } = *parts;
     let conn_id = CONN_COUNTER.fetch_add(1, Ordering::Relaxed);
-    // 待ち行列の段階 (`queue`) の起点 (T14.3 (1))。`--lite` では時計を読まない
+    // 待ち行列の段階 (`queue`) の起点 (T14.3)。`--lite` では時計を読まない
     let queued_at = profile::mark();
     // 同時接続数の持ち分は番人として取って仕事へ運ぶ。`Conn::new` が途中で失敗しても、
     // 仕事がワーカーへ渡らずに落ちても、番人の `Drop` が必ず 1 回だけ返す (T9.6)

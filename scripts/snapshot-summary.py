@@ -5,7 +5,7 @@
 # **`--prev` を渡すと通算の指標は差分**になる (`/status` の数はどれも起動からの通算なので、
 # そのまま読むと「いつからの値か」が混ざる)。
 #
-# **T15.0 (15) で足した欄** (どれも「無ければ出さない」ので、古い雪像もそのまま読める):
+# **T15.0 で足した欄** (どれも「無ければ出さない」ので、古い雪像もそのまま読める):
 #   - CPU の表 … `/profile` の CPU (割り当てに対する使用率)・`/status` の `kernel.cgroup_cpu`
 #     (絞られた周期の割合)・`threads_top` (上位スレッド)・`run_delay_us` (走れずに待った時間)
 #   - 名前解決 … `misses_by_kind` (ミスの種類別) と引き直しの失敗・遅れ・最大 ms
@@ -60,7 +60,7 @@ from snapshot_criteria import started_at  # noqa: E402
 CAUSE_NAMES = ["dns", "refused", "unreachable", "timeout", "reset", "tls", "loop", "other"]
 # 名前解決のミスの種類 (`crates/net-dns/src/dns.rs` の `misses_by_kind_json`。この順で和が `misses`)
 MISS_KINDS = ["cold", "expired", "warm_stale", "negative"]
-# 「動かないトンネル」と見なす秒 (T15.0 (14) の画面と同じ固定の閾。見出しに書く)
+# 「動かないトンネル」と見なす秒 (T15.0 の画面と同じ固定の閾。見出しに書く)
 IDLE_TUNNEL_SECS = 300
 # 雪像の大きさの警告の割合 (T29.16)。上限は雪像の `limit_bytes` (無い古い版は 4 MiB)
 SIZE_WARN = 0.90
@@ -120,7 +120,7 @@ def quantile(buckets, count, top, p, bounds):
     return top
 
 
-# 分布の列に対する「件数」の列 (`wait` は T15.0 (10) で足した `waits`)
+# 分布の列に対する「件数」の列 (`wait` は T15.0 で足した `waits`)
 COUNT_KEY = {"connect": "connects", "forward": "forwards", "wait": "waits"}
 
 
@@ -158,7 +158,7 @@ def latency_line(label, history, prefix, last=None):
         # `wait` は T15.0 より前の雪像に無く、0 本と書くと「誰も待っていない」と
         # 読まれる。`history.5` は `/snapshot` が大きいときに落とす 3 つのうちの 1 つ
         # (`crates/endpoints/src/endpoints/recent/snapshot.rs` の `DROP_ORDER`) なので、
-        # 落ちたときに「その列は無い」と書くと「この版は測っていない」と読まれる (T15.0 (15))
+        # 落ちたときに「その列は無い」と書くと「この版は測っていない」と読まれる (T15.0)
         keys = history.get("keys") or []
         if not keys:
             return f"| {label} | (この部は雪像に入っていない) | — | — | — |"
@@ -348,7 +348,7 @@ def cores(cpu_us, secs):
 
 
 def idle_tunnels(conns, edge=IDLE_TUNNEL_SECS):
-    """**1 バイトも動いていないトンネル** (`idle_secs` ≥ `edge`) を長い順に (T15.0 (4))。
+    """**1 バイトも動いていないトンネル** (`idle_secs` ≥ `edge`) を長い順に (T15.0)。
 
     `idle_secs` は CONNECT の行にしか出ず、既定値 (0) の行では**欄ごと出ない**ので
     「無ければ 0」と読む (`crates/metrics-recent/src/recent.rs` の `Slot::to_json`)。
@@ -358,7 +358,7 @@ def idle_tunnels(conns, edge=IDLE_TUNNEL_SECS):
 
 
 def conn_evidence(c):
-    """`/connections` の 1 行のうち T15.0 (4) が足した証拠だけを 1 行に (無い欄は飛ばす)。"""
+    """`/connections` の 1 行のうち T15.0 が足した証拠だけを 1 行に (無い欄は飛ばす)。"""
     out = [f"idle {num(c.get('idle_secs'))} 秒", f"齢 {num(c.get('age_secs'))} 秒",
            fmt_bytes(c.get("bytes")), f"{num(c.get('rate_bps'))} bps"]
     if c.get("tid"):
@@ -659,7 +659,7 @@ def status_delta(st, pst, prev, restarted):
         **再起動をまたいだら引き算しない**。`/status` の通算は再起動で 0 に戻るので、
         前の雪像 (別のプロセス) の値を引くとその分だけ足りなくなる
         (2026-09-16 の 2 枚では要求 3,312 − 11 = 3,301 と、前の版の 11 件を引いていた)。
-        `snapshot-diff.py` の §1 と同じく「起動から」の値として読む。
+        `snapshot-diff.py` の「再起動」と同じく「起動から」の値として読む。
         """
         cur, old = st, pst
         for k in path[:-1]:
@@ -732,7 +732,7 @@ def cpu_lines(d, st):
     """「CPU」の表 (`/profile` と cgroup のどちらも無い版では空)。"""
     out = []
     # CPU (割り当てに対する使用率・絞られた周期の割合・上位スレッド・走れずに待った時間)。
-    # **どちらの源も無い版では表ごと出さない** (T15.0 (15))
+    # **どちらの源も無い版では表ごと出さない** (T15.0)
     prof = profile_totals(d)
     cg = (st.get("kernel") or {}).get("cgroup_cpu") or {}
     if prof or cg:
@@ -793,7 +793,7 @@ def dns_lines(st, pst, prev, restarted, reqs):
                f" / {num(dns.get('refreshes', 0) - pdns.get('refreshes', 0))} |")
     out.append(f"| 負のキャッシュ命中 / 古い答えで代用 | {num(dns.get('negative_hits'))}"
                f" / {num(dns.get('stale_served'))} |")
-    # ミスの種類別と引き直しの様子 (T15.0 (7))。**どちらも起動からの通算**なので
+    # ミスの種類別と引き直しの様子 (T15.0)。**どちらも起動からの通算**なので
     # `--prev` でも引き算しない (`expired` が主なら窓、`warm_stale` なら引き直しの詰まり)
     kinds = dns.get("misses_by_kind")
     if kinds:
@@ -813,7 +813,7 @@ def wait_lines(d):
     hist = (d.get("history") or {})
     out.append("| 待ち (履歴の全標本) | 本数 | 平均 | p50 / p95 | 最大 |")
     out.append("|---|---|---|---|---|")
-    # `wait` は**利用者が待つ時間** (`queue + client_read + dns + connect`。T15.0 (2))。
+    # `wait` は**利用者が待つ時間** (`queue + client_read + dns + connect`。T15.0)。
     # `connect` は要求行を読んだ後からしか測らないので、次の完了の定義の基準線はこちら
     for label, prefix, res, last in (("CONNECT 確立 (直近 1 時間)", "connect", "5", None),
                                      ("CONNECT 確立 (直近 1 日)", "connect", "60", None),
@@ -836,7 +836,7 @@ def error_lines(d, prev):
     where = "`/hosts` をホストの鍵で突き合わせた差分" if ed["windowed"] else "`/hosts` の合計"
     if ed["back"]:
         out.append(f"- エラー: **引き算できない** ({ed['back']} ホストで `/hosts` の通算が減っている"
-                   f" — `.rrd` が作り直された疑い。`scripts/snapshot-diff.py` の §7 を見ること)"
+                   f" — `.rrd` が作り直された疑い。`scripts/snapshot-diff.py` の「エラーの原因別」を見ること)"
                    f" / 個票 {records_count(errors)}")
     else:
         shown = " ".join(f"{CAUSE_NAMES[i]} {n}" for i, n in enumerate(ed["causes"]) if n) or "—"
@@ -901,7 +901,7 @@ def connection_lines(d):
     conns = part(d, "connections").get("connections") or []
     out.append(f"- いまの接続 (`/connections`): {len(conns)} 本"
                + ((" / " + ", ".join(f"{k} {v}" for k, v in tally(conns, "state").items())) if conns else ""))
-    # 動かないトンネル (T15.0 (4) の証拠つき)。**閾は固定の 300 秒**なので見出しに書く
+    # 動かないトンネル (T15.0 の証拠つき)。**閾は固定の 300 秒**なので見出しに書く
     stuck = idle_tunnels(conns)
     if stuck:
         spins = sum(c.get("spins") or 0 for c in stuck)
@@ -929,7 +929,7 @@ def main(argv=None):
                    help="雪像の大きさと上限に対する割合・部の truncated だけを 1 枚 1 行で並べる (T29.16)")
     p.add_argument("--prev", metavar="PREV.json", help="前回の雪像 (通算の指標を差分にする)")
     # 雪像を配ること自体が RSS を約 1.0 MB 押し上げるので、RSS だけは雪像の**前**に
-    # 取った `/status` を使う (T15.0 (15)。ほかの通算は 1 秒差で意味が変わらない)
+    # 取った `/status` を使う (T15.0。ほかの通算は 1 秒差で意味が変わらない)
     p.add_argument("--status-before", metavar="STATUS.json",
                    help="雪像の前に取った /status (**RSS だけ**こちらの値を使う)")
     args = p.parse_args(argv)

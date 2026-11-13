@@ -81,7 +81,7 @@ pub(super) fn warm_promote(
 /// `refresher` スレッドの次の仕事。
 enum Next {
     /// この名前を裏で引き直す (`refreshing` は立てたあと)。2 つ目は**予定の時刻からの
-    /// 遅れ** (T15.0 (7))。予定は待ち行列の鍵そのものなので、ここでしか測れない
+    /// 遅れ** (T15.0)。予定は待ち行列の鍵そのものなので、ここでしか測れない
     Refresh(String, Duration),
     /// 次の期限までこれだけ待つ
     Wait(Duration),
@@ -128,7 +128,7 @@ fn warm_next(now: Instant) -> Next {
         }
         e.refreshing = true;
         // 予定 (`due`) からどれだけ遅れて取り出せたか。前の引き直しが詰まっていれば
-        // ここに出る (T15.0 (7))
+        // ここに出る (T15.0)
         return Next::Refresh(key, now.saturating_duration_since(due));
     }
 }
@@ -175,7 +175,7 @@ fn refresher_loop(rx: mpsc::Receiver<Msg>) {
         let got = match next {
             Next::Refresh(key, late) => {
                 // 予定より大きく遅れて始まった = 前の引き直し (1 回 約 2 秒のことがある)
-                // が詰まっていた。**引き直しの前に数える** (T15.0 (7))
+                // が詰まっていた。**引き直しの前に数える** (T15.0)
                 if late >= REFRESH_LATE_AFTER {
                     REFRESH_LATE.fetch_add(1, Ordering::Relaxed);
                 }
@@ -233,19 +233,19 @@ pub(super) fn wake_refresher() {
 /// 新しい項目ができていても、前の頼みで引き直して数えない (T28.39。旗は新しい項目が自分で頼む
 /// ときにしか立たない)。keep-warm の待ち行列から来る分 (`false`) は旗を使わないので今までどおり。
 pub(super) fn refresh_one(key: &str, requested: bool) {
-    // 引き直しにかかった時間 (T15.0 (7))。下の `now` と引き算するので時計は 1 回増えるだけ
+    // 引き直しにかかった時間 (T15.0)。下の `now` と引き算するので時計は 1 回増えるだけ
     let t0 = Instant::now();
     // `getaddrinfo` にポート (サービス) は渡らない。std は service を NULL で引いて、
     // 返ってきたアドレスにあとからポートを詰めるので、ここは 0 でよい
     let result = system_resolve(key, 0);
     let now = Instant::now();
-    // `result` は下の `if let Ok(addrs)` で move されるので、先に控える (T15.0 (7))
+    // `result` は下の `if let Ok(addrs)` で move されるので、先に控える (T15.0)
     let failed = result.is_err();
     let us = now
         .saturating_duration_since(t0)
         .as_micros()
         .min(u64::MAX as u128) as u64;
-    // 答えが変わったか。**数える (原子操作) のは鍵を放してから** (T12.4 (2))
+    // 答えが変わったか。**数える (原子操作) のは鍵を放してから** (T12.4)
     let mut changed = false;
     {
         let mut guard = TABLE.locked();

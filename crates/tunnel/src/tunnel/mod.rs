@@ -62,7 +62,7 @@ pub struct TunnelRequest<'a> {
     pub resolved: Option<&'a dns::Resolved<'a>>,
     /// `/connections` の枠 (T13.4)
     pub slot: Option<Arc<ConnSlot>>,
-    /// 本体クレートが測った段階 (`queue` など。T14.3 (1))
+    /// 本体クレートが測った段階 (`queue` など。T14.3)
     pub stages: StageMs,
     /// 要求行が届いた時刻 (`client_read` の起点)
     pub read_started: Option<Instant>,

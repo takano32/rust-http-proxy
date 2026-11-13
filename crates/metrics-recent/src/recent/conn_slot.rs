@@ -78,7 +78,7 @@ pub struct ConnSlot {
     state: AtomicU8,
     /// 宛先。**書くのは 1 本につき 1 回だけ**: CONNECT はトンネルを開いたとき
     /// ([`ConnSlot::begin_tunnel`])、keep-alive の HTTP 接続は**最初の要求**のとき
-    /// ([`ConnSlot::set_first_target`]。T14.2 (5))。要求ごとには触らない
+    /// ([`ConnSlot::set_first_target`]。T14.2)。要求ごとには触らない
     pub(super) target: Mutex<String>,
     /// CONNECT トンネルか (`false` = keep-alive の HTTP)
     connect: AtomicBool,
@@ -127,30 +127,30 @@ pub struct ConnSlot {
     /// オリジンか利用者の上りが詰まっている。**書くのは接続の終わりの 1 回だけ**
     /// ([`ConnSlot::finish`]) で、中継のループ (splice の往復) は 1 度も触らない
     stall_ms: [AtomicU32; SIDES],
-    /// いまこの接続を受け持っているスレッドの番号 (`gettid`。T15.0 (4))。
+    /// いまこの接続を受け持っているスレッドの番号 (`gettid`。T15.0)。
     /// **`0` = 預かり所にいる / 分からない**。書くのは「ワーカーが取ったとき」と
     /// 「預けるとき (0 に戻す)」だけで、要求ごとにも中継のバイトごとにも触らない。
     /// `/profile` の `threads_top` の `tid` と同じ番号なので、**CPU を食っている
     /// スレッドと、そのスレッドが抱えている接続**を突き合わせられる
     tid: AtomicU32,
     /// 中継の輪が「`poll` に起こされたのに 1 バイトも進まなかった」回数の通算
-    /// (T15.0 (4))。T15.5 の空回りはこれが秒あたり数万で増え続ける形だった。
+    /// (T15.0)。T15.5 の空回りはこれが秒あたり数万で増え続ける形だった。
     /// **書くのは待ちに入るたびの 1 回** ([`ConnSlot::set_relaying`]) で、数え上げ
     /// そのものは中継の輪が持つ欄 (`Idle::spins`)
     spins: AtomicU64,
-    /// **前の周の** `poll` が返した旗 (`i16` 2 つを詰めた。T15.0 (4))。
+    /// **前の周の** `poll` が返した旗 (`i16` 2 つを詰めた。T15.0)。
     /// 下位 16 bit がクライアント側、上位 16 bit がオリジン側。`0` は
     /// 「まだ待ちに入っていない / 何も立っていない」。`POLLHUP` や `POLLERR` が
     /// 立ったまま進まない = 空回りの型。
     /// **預かり所から戻った直後の 1 回は旗を持たない** (`0` を書く): 旗は中継の輪の
     /// 局所変数で、`run_until_idle` に入り直すたびに 0 から始まるため
     revents: AtomicU32,
-    /// 半閉じの向きと、それが起きた時刻 (T15.0 (4))。**上位 8 bit = 側 + 1**
+    /// 半閉じの向きと、それが起きた時刻 (T15.0)。**上位 8 bit = 側 + 1**
     /// (`0` = まだ半閉じしていない)、**下位 56 bit = 接続を受けてからの ms**。
     /// [`ConnSlot::parked_at`] と同じ流儀で **1 本につき 1 回だけ**書き、
     /// `/connections` は `age − それ` で秒を、`/recent` は同じ引き算で ms を出す
     half_closed: AtomicU64,
-    /// 同じ `bytes` のまま経った ms (T15.0 (4))。**書くのは history スレッドだけ**
+    /// 同じ `bytes` のまま経った ms (T15.0)。**書くのは history スレッドだけ**
     /// ([`ConnSlot::sweep_rate`]) で、接続の経路は 1 命令も触らない。
     /// `bytes` を置くのはトンネル (待ちに入る回) と keep-alive の HTTP (要求を
     /// 書き終えた回。T24.5) なので、http の行では**要求と要求のあいだ**だけ伸びる。
@@ -158,7 +158,7 @@ pub struct ConnSlot {
     /// 続ける飽和したトンネルは、全速で流れていてもここが伸びる (`rate_bps` も同じ
     /// 性質。`spins` と併せて読む)
     idle_ms: AtomicU64,
-    /// **前の周期で控えた** [`ConnSlot::spins`] と、その差分 (T15.0 (6))。
+    /// **前の周期で控えた** [`ConnSlot::spins`] と、その差分 (T15.0)。
     /// [`ConnSlot::bytes_prev`] / [`ConnSlot::rate_bps`] と同じ流儀で、
     /// **書くのは history スレッドだけ** ([`ConnSlot::sweep_rate`])。
     /// 通算の `spins` は「今までに何回空回りしたか」しか言わないので、
@@ -175,7 +175,7 @@ const HALF_CLOSED_SHIFT: u32 = 56;
 /// [`ConnSlot::half_closed`] の ms の部分の覆い (56 bit = 228 万年ぶん)。
 const HALF_CLOSED_MS_MASK: u64 = (1u64 << HALF_CLOSED_SHIFT) - 1;
 
-/// 半閉じの (側, 接続を受けてからの ms) を原子 1 本に詰める (T15.0 (4))。
+/// 半閉じの (側, 接続を受けてからの ms) を原子 1 本に詰める (T15.0)。
 /// **上位 8 bit = 側 + 1** (`0` = まだ半閉じしていない)、**下位 56 bit = ms**。
 #[inline]
 fn pack_half_closed(side: usize, ms: u64) -> u64 {
@@ -200,7 +200,7 @@ const POLL_FLAGS: [(i16, &str); 5] = [
     (0x020, "NVAL"),
 ];
 
-/// `poll` が返した 2 つの旗を原子 1 本に詰める (T15.0 (4))。
+/// `poll` が返した 2 つの旗を原子 1 本に詰める (T15.0)。
 /// **下位 16 bit がクライアント側、上位 16 bit がオリジン側**。
 pub fn pack_revents(client: i16, origin: i16) -> u32 {
     (client as u16 as u32) | ((origin as u16 as u32) << 16)
@@ -292,7 +292,7 @@ impl ConnSlot {
         ConnState::from_u8(self.state.load(Ordering::Relaxed))
     }
 
-    /// keep-alive の HTTP 接続の**最初の要求の宛先**を書く (T14.2 (5))。
+    /// keep-alive の HTTP 接続の**最初の要求の宛先**を書く (T14.2)。
     ///
     /// T13.4 では「要求ごとに宛先が変わるので空のまま」にしていたが、`/connections` で
     /// 占有の内訳を読むとき **`http` の行だけ宛先が空** だと何に使われている接続か分からない。
@@ -331,7 +331,7 @@ impl ConnSlot {
         self.bytes.store(bytes, Ordering::Relaxed);
     }
 
-    /// 中継が**待ちに入る直前**に、その 1 本の証拠をまとめて置く (原子 3 回。T15.0 (4))。
+    /// 中継が**待ちに入る直前**に、その 1 本の証拠をまとめて置く (原子 3 回。T15.0)。
     ///
     /// 呼ぶのは [`ConnSlot::set_bytes`] と同じ「待ちに入る所」1 か所だけで、バイトごとにも
     /// `splice` ごとにも書かない。`spins` は「起こされたのに 1 バイトも進まなかった」回数の
@@ -344,7 +344,7 @@ impl ConnSlot {
         self.revents.store(revents, Ordering::Relaxed);
     }
 
-    /// いま受け持っているスレッドの番号を書く (原子 1 回。T15.0 (4))。
+    /// いま受け持っているスレッドの番号を書く (原子 1 回。T15.0)。
     ///
     /// 書くのは**ワーカーがこの接続を取ったとき**と、**預けるとき (`0`)** だけ。
     /// 預かり所から戻ると別のスレッドが受け持つので、戻った側が書き直す。
@@ -352,7 +352,7 @@ impl ConnSlot {
         self.tid.store(tid, Ordering::Relaxed);
     }
 
-    /// 半閉じの向きを書く (**1 本につき多くて 1 回**。原子 1 回と時計 1 回。T15.0 (4))。
+    /// 半閉じの向きを書く (**1 本につき多くて 1 回**。原子 1 回と時計 1 回。T15.0)。
     ///
     /// `side` は `0` = クライアント、`1` = オリジンで、中継の `Idle::first_eof` と同じ値。
     /// 時刻は枠が自分の [`ConnSlot::started`] から出す ([`ConnSlot::on_park`] と同じ流儀) —
@@ -515,7 +515,7 @@ impl ConnSlot {
                 self.stall_ms[CLIENT_SIDE].load(Ordering::Relaxed),
                 self.stall_ms[ORIGIN_SIDE].load(Ordering::Relaxed),
             ],
-            // 空回りの証拠 (T15.0 (4))。トンネルでなければ 0
+            // 空回りの証拠 (T15.0)。トンネルでなければ 0
             spins: self.spins.load(Ordering::Relaxed),
             // 半閉じの向きと、そこから閉じる (= いま) までの ms。半閉じしていなければ `None`
             // (`Idle::first_eof` と同じ値になるので、T14.25 の分布と突き合わせられる)
@@ -543,13 +543,13 @@ impl ConnSlot {
         self.rate_bps.load(Ordering::Relaxed)
     }
 
-    /// 直近の周期に空回りした回数 (T15.0 (6))。[`ConnSlot::rate_bps`] と同じで、
+    /// 直近の周期に空回りした回数 (T15.0)。[`ConnSlot::rate_bps`] と同じで、
     /// **history スレッドが書いた最後の値**を読むだけ。
     pub fn spins_delta(&self) -> u64 {
         self.spins_delta.load(Ordering::Relaxed)
     }
 
-    /// 半閉じの向きの名前 (まだなら `None`。T15.0 (6))。
+    /// 半閉じの向きの名前 (まだなら `None`。T15.0)。
     pub(super) fn half_closed_side(&self) -> Option<&'static str> {
         self.half_closed_at().map(|(side, _)| SIDE_NAMES[side])
     }
@@ -562,14 +562,14 @@ impl ConnSlot {
     /// `ms == 0` (起動直後の 1 回目) は控えるだけで速さを出さない — 割る幅が無いので、
     /// 「起動より前から居る接続の累計 ÷ 0」という嘘の値を出さないため。
     pub fn sweep_rate(&self, ms: u64) -> u64 {
-        // 空回りの**この周期ぶん** (T15.0 (6))。同じ原子 1 対で `bytes` と同じ流儀
+        // 空回りの**この周期ぶん** (T15.0)。同じ原子 1 対で `bytes` と同じ流儀
         let spins_now = self.spins.load(Ordering::Relaxed);
         let spins_prev = self.spins_prev.swap(spins_now, Ordering::Relaxed);
         self.spins_delta
             .store(spins_now.saturating_sub(spins_prev), Ordering::Relaxed);
         let now = self.bytes.load(Ordering::Relaxed);
         let prev = self.bytes_prev.swap(now, Ordering::Relaxed);
-        // 1 バイトも動かなかった周期を足す (T15.0 (4))。動いたら 0 に戻す。
+        // 1 バイトも動かなかった周期を足す (T15.0)。動いたら 0 に戻す。
         // **数えるのは history スレッドだけ**で、接続の経路には 1 命令も増えない
         if now == prev {
             self.idle_ms.fetch_add(ms, Ordering::Relaxed);
@@ -588,7 +588,7 @@ impl ConnSlot {
 
     /// `/connections` の 1 要素。
     ///
-    /// **T15.0 (4) で足した 5 つ (`tid` / `spins` / `revents` / `half_closed` +
+    /// **T15.0 で足した 5 つ (`tid` / `spins` / `revents` / `half_closed` +
     /// `half_closed_secs` / `idle_secs`) は、既定のままの行では 1 バイトも出さない。**
     /// `/connections` は「256 KiB に 1,000 本入る」を守る口で、実測の余りは
     /// **1 行あたり 4.7 B しか無い** (1,000 本で 256,918 B / 予算 261,632 B) —
@@ -615,17 +615,17 @@ impl ConnSlot {
             // 直近の周期の転送速度 (T14.39)。`bytes` が累計なのに対しこちらは「いま」
             self.rate_bps(),
         );
-        // 受け持っているスレッド (T15.0 (4))。`/profile` の `threads_top` と同じ番号
+        // 受け持っているスレッド (T15.0)。`/profile` の `threads_top` と同じ番号
         let tid = self.tid.load(Ordering::Relaxed);
         if tid != 0 {
             let _ = write!(out, ",\"tid\":{}", tid);
         }
-        // 起こされたのに進まなかった回数 (T15.0 (4))
+        // 起こされたのに進まなかった回数 (T15.0)
         let spins = self.spins.load(Ordering::Relaxed);
         if spins != 0 {
             let _ = write!(out, ",\"spins\":{}", spins);
         }
-        // 前の周の `poll` が返した旗 (T15.0 (4))
+        // 前の周の `poll` が返した旗 (T15.0)
         let revents = self.revents.load(Ordering::Relaxed);
         if revents != 0 {
             let _ = write!(
@@ -635,7 +635,7 @@ impl ConnSlot {
                 revents_names(revents, ORIGIN_SIDE),
             );
         }
-        // 半閉じの向きと、そこから経った秒 (T15.0 (4))
+        // 半閉じの向きと、そこから経った秒 (T15.0)
         if let Some((side, at)) = self.half_closed_at() {
             let _ = write!(
                 out,
@@ -644,7 +644,7 @@ impl ConnSlot {
                 age.as_secs().saturating_sub(at / 1000),
             );
         }
-        // 1 バイトも動いていない秒 (T15.0 (4))。keep-alive の HTTP の `bytes` も
+        // 1 バイトも動いていない秒 (T15.0)。keep-alive の HTTP の `bytes` も
         // 要求を書き終えた回にしか動かない (T24.5) が、**この欄は CONNECT の行だけ**に
         // 出す — トンネルの「止まっている」とは意味が違う (要求が来ないだけの
         // keep-alive を「止まっている」と読ませたくない) ので、出さない = `null` と読む

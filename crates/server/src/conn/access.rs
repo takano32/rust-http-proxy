@@ -29,7 +29,7 @@ pub(super) fn access_decision<'h>(
         // クラウドのメタデータ (169.254.169.254) 経由の SSRF を止める。
         // **判定に使った答えはそのまま接続へ渡す** (名前解決は 1 要求 1 回。T12.7)。
         // 名前解決の費用はここで払うので、前の要求がこのスレッドに残した分は
-        // 解決の前に捨てる (次の `take` でこの要求のぶんだけが取れるように。T12.4 (2))
+        // 解決の前に捨てる (次の `take` でこの要求のぶんだけが取れるように。T12.4)
         let _ = dns::take_resolve_cost();
         let _ = dns::take_family();
         let _ = dns::take_syn_retrans();
@@ -93,7 +93,7 @@ pub(super) fn refuse_blocked(
         Some(target_host),
         now,
     );
-    // 個票にも 1 件残す (`/errors`。T14.2 (4))。403 は集計では `blocked` に数えてあり、
+    // 個票にも 1 件残す (`/errors`。T14.2)。403 は集計では `blocked` に数えてあり、
     // `errors_by_cause` には乗らないので、**誰が何を拒否されたか**はここでしか読めない
     metrics.record_blocked(is_connect, target_host, peer_ip, why);
     (&*client).write_all(FORBIDDEN_RESPONSE)?;
@@ -106,7 +106,7 @@ pub(super) fn refuse_blocked(
 ///
 /// 印は起動ごとの乱数なので、rust-http-proxy を 2 段に並べた正当な構成 (別プロセス) は
 /// 誤検出しない。同じプロセスの別の待ち受けへ回した形はここで 1 段目で止まる。
-/// `proxied` は `clients[]` の母数に入れる旗 (T15.0 (12))。
+/// `proxied` は `clients[]` の母数に入れる旗 (T15.0)。
 #[cold]
 pub(super) fn loop_detected(
     peer: Peer<'_>,
@@ -132,7 +132,7 @@ pub(super) fn loop_detected(
         );
     }
     reject(client, 508, "Loop Detected")?;
-    // 原因つきで 1 件数える (T12.4 (2))。ここは要求ターゲットをまだ解いていないので、
+    // 原因つきで 1 件数える (T12.4)。ここは要求ターゲットをまだ解いていないので、
     // 鍵は `Host` (無ければ要求ターゲット) から作る。この経路は 1 要求に 1 回しか
     // 通らないので `format!` の確保は熱い経路に乗らない
     let detail = metrics::Detail {
@@ -151,7 +151,7 @@ pub(super) fn loop_detected(
     metrics.record_error(false, host_header.unwrap_or(target), peer_ip, 508, &detail);
     // この枝は `endpoints::handle` より**手前**で return するので、その後の
     // `*proxied = true` を通らない。ここも `record_client` で `clients[]` の行を
-    // 作る側なので、母数 (T15.0 (12)) にはこの枝も入れる。自分宛ての要求は
+    // 作る側なので、母数 (T15.0) にはこの枝も入れる。自分宛ての要求は
     // 自分の `Via` を持たないので、ここへ来るのはプロキシとして受けた要求だけ
     *proxied = true;
     metrics.record_client_at(

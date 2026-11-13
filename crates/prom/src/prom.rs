@@ -17,7 +17,7 @@ mod caching;
 // カーネルと cgroup
 mod kernel_stats;
 
-/// 段階ごとの待ち時間 (CONNECT 7 段 / forward 6 段。T14.3 (1)) を**起動からの累計**で
+/// 段階ごとの待ち時間 (CONNECT 7 段 / forward 6 段。T14.3) を**起動からの累計**で
 /// 出す (T14.19)。Prometheus のヒストグラムは単調増加が前提なので、`/profile` の窓
 /// (1 時間 / 1 日で古い標本が落ちる) の和ではなく
 /// [`crate::profile::Profile::stage_totals`] を読む。
@@ -26,7 +26,7 @@ mod kernel_stats;
 /// ずっとここを通らない (`kernel` と同じ判断: 源が無いときに 0 を出すと「一瞬で済んだ」と
 /// 読めてしまう)。窓へ渡るのは 5 秒ごとなので、**最後の 5 秒ぶんは次の収集で入る**。
 ///
-/// **ホスト別には出さない** (系列が増えすぎる。T12.4 (4) と同じ判断)。
+/// **ホスト別には出さない** (系列が増えすぎる。T12.4 と同じ判断)。
 fn stage_metrics(out: &mut String, m: &Metrics) {
     let stages = m.profile.stage_totals();
     if stages.is_empty() {
@@ -126,7 +126,7 @@ pub fn render(m: &Metrics, cache: Option<&Cache>, conc: Concurrency) -> String {
     let totals = m.totals();
     process::connect_metrics(&mut out, m, &totals);
     process::canary_metrics(&mut out);
-    // 段階ごとの待ち時間 (T14.3 (1) → T14.19)
+    // 段階ごとの待ち時間 (T14.3 → T14.19)
     stage_metrics(&mut out, m);
     process::lock_metrics(&mut out);
     process::error_metrics(&mut out, m, &totals);

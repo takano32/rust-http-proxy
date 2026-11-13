@@ -10,7 +10,7 @@ impl Metrics {
     /// `memory.rings_used` が要る 2 つの件数 (分位点の標本と、追っているホストの枠)。
     ///
     /// どちらも**ホスト表と同じ鍵の中**に居る (T14.22 / T14.31) ので、1 回で両方読む。
-    /// 鍵の内側でするのは長さを 2 つ読むことだけ (T15.0 (13))。
+    /// 鍵の内側でするのは長さを 2 つ読むことだけ (T15.0)。
     fn rings_used_counts(&self) -> (usize, usize) {
         let h = self.hosts.locked();
         (h.quantiles.used_slots(), h.series.tracked())
@@ -20,7 +20,7 @@ impl Metrics {
 /// 記録のリングの 11 項目の名前 (`memory.rings` と `memory.rings_used` の鍵の順)。
 ///
 /// **`profile` は `total` の手前に足した** (`readers` までの並びは 1 つも動かさず、
-/// `total` は今までどおり最後)。T15.0 (13)
+/// `total` は今までどおり最後)。T15.0
 pub(super) const RING_NAMES: [&str; 11] = [
     "recent",
     "errors",
@@ -35,7 +35,7 @@ pub(super) const RING_NAMES: [&str; 11] = [
     "profile",
 ];
 
-/// 1 件あたりの見積もり (T15.0 (13))。**これを控えてから**「満杯 = 上限 × 1 件」「いま = 件数 × 1 件」を
+/// 1 件あたりの見積もり (T15.0)。**これを控えてから**「満杯 = 上限 × 1 件」「いま = 件数 × 1 件」を
 /// 出すので、同じ数から作った `rings_used <= rings` が必ず成り立つ。
 struct PerItem {
     recent: usize,
@@ -78,7 +78,7 @@ impl PerItem {
             // 内部エンドポイントを引いた接続元の表 (T14.53)。環状ではないが、同じ「満杯のとき」の
             // 見積もり (最大 256 行 × (鍵 + パス))。**1 行も引かれていなければ 1 バイトも確保しない**
             reader: size_of::<(String, Reader)>() + MAX_CLIENT + MAX_READER_PATH,
-            // 直近の標本の環状は固定長 (3 系統 × 1,024 本 × 8 B = 24 KiB。T14.31、T15.0 (2))。
+            // 直近の標本の環状は固定長 (3 系統 × 1,024 本 × 8 B = 24 KiB。T14.31、T15.0)。
             // 1 本目を書くまで確保しないので、これも「満杯のとき」の見積もり
             quantile_slot: crate::quantiles::BYTES / (3 * crate::quantiles::SAMPLES),
             closed: size_of::<(u64, ClosedCounts)>(),
@@ -117,7 +117,7 @@ impl RingBytes {
         let history =
             (samples * size_of::<Sample>() + windows * p.closed + windows * p.transfer) as u64;
         // 段階とスレッドの窓 (`/profile`。T14.3)。**T14.21 はこれを落としていた**ので、
-        // `rings.total` が `/status` の見出しの RSS と説明が合わなかった (T15.0 (13))
+        // `rings.total` が `/status` の見出しの RSS と説明が合わなかった (T15.0)
         let profile = crate::profile::capacity_bytes() as u64;
         RingBytes([
             recent, errors, bursts, log, events, trace, history, hostseries, quantiles, readers,
@@ -125,7 +125,7 @@ impl RingBytes {
         ])
     }
 
-    /// **いま埋まっているぶんの実バイト** (T15.0 (13))。[`RingBytes::full`] と同じ 1 件あたりの
+    /// **いま埋まっているぶんの実バイト** (T15.0)。[`RingBytes::full`] と同じ 1 件あたりの
     /// 見積もりに、いま入っている件数を掛けたもの。読むのは `/status` に来たときだけで、
     /// 数えるのはどれも `len()` (鍵の内側で長さを 1 つ読むだけ)。
     pub(super) fn used(me: &Metrics) -> Self {
@@ -261,7 +261,7 @@ pub(super) fn memory_json(
         ",\"arenas\":{},\"rings_used\":",
         crate::sysinfo::arena_max()
     );
-    // いま埋まっているぶん (T15.0 (13))。**`memory` の鍵の末尾に足した**ので、
+    // いま埋まっているぶん (T15.0)。**`memory` の鍵の末尾に足した**ので、
     // `arenas` までの並びは 1 つも動いていない
     used.push_json(&mut out);
     let _ = write!(

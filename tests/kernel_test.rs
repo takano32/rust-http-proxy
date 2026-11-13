@@ -54,7 +54,7 @@ fn test_integration_healthz_is_a_small_health_report() {
         "state_file",
         "listen_overflows",
         "resolver",
-        // T15.0 (6)。履歴スレッドの動いていないこの配線では `null`
+        // T15.0。履歴スレッドの動いていないこの配線では `null`
         "cpu",
     ] {
         assert!(
@@ -169,7 +169,7 @@ fn test_integration_kernel_window_shows_up_in_history_status_and_metrics() {
         "time_wait",
         "psi_cpu_some_avg10",
         "listen_overflows",
-        // T15.0 (6) で `keys` の末尾に足した列 (絞られた割合の分母)
+        // T15.0 で `keys` の末尾に足した列 (絞られた割合の分母)
         "cpu_nr_periods",
         // T16.0 で末尾に足した列 (cgroup のユーザー空間とカーネル側の増分)
         "cpu_user_usec",
@@ -216,7 +216,7 @@ fn test_integration_kernel_window_shows_up_in_history_status_and_metrics() {
     assert!(k.contains("\"psi\":"), "{}", k);
     assert!(k.contains("\"last_5m\":"), "{}", k);
     // cgroup が読める機械なら、絞りの割合の分母と読んでいる道と起動からの増分が出る
-    // (T15.0 (6))。cgroup v1 / cgroup 無しの機械では節ごと `null`
+    // (T15.0)。cgroup v1 / cgroup 無しの機械では節ごと `null`
     let cg = k
         .split_once("\"cgroup_cpu\":")
         .map(|(_, r)| r)
@@ -293,7 +293,7 @@ fn test_integration_kernel_window_shows_up_in_history_status_and_metrics() {
         "{}",
         health
     );
-    // CPU の検査 (T15.0 (6))。cgroup が読める機械なら数が出て、**`fatal` ではない**。
+    // CPU の検査 (T15.0)。cgroup が読める機械なら数が出て、**`fatal` ではない**。
     // 読めない機械 (cgroup v1・上限なし) では `null` のまま `ok` は落ちない
     let cpu = health
         .split_once("\"cpu\":")

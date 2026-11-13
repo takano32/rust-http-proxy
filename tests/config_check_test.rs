@@ -36,7 +36,7 @@ fn check_missing(text: &str) -> Vec<String> {
 /// **辻褄が合っていること**を見る。
 ///
 /// Linux では `proc_schedstat` **だけ**は読めなくてよい (`CONFIG_SCHEDSTATS` の無い
-/// カーネルには `/proc/<tid>/schedstat` がファイルごと無い。T15.0 (5))。ほかが 1 つでも
+/// カーネルには `/proc/<tid>/schedstat` がファイルごと無い。T15.0)。ほかが 1 つでも
 /// 読めなければ、それはこの機械の設定がおかしいので落とす。
 #[test]
 fn test_integration_check_prints_capabilities_and_settings() {
@@ -102,7 +102,7 @@ fn test_integration_check_prints_capabilities_and_settings() {
     assert!(text.contains("env       PROXY_KEEPALIVE_SECS"), "{}", text);
     assert!(text.contains("cli       SERVER_PORT"), "{}", text);
     assert!(text.contains("default   PROXY_TIMEOUT_SECS"), "{}", text);
-    // CONNECT 専用の締め切りも `--check` に出る (書いていないので既定の 3 秒。T15.6 (2)、T23.3、T28.43)
+    // CONNECT 専用の締め切りも `--check` に出る (書いていないので既定の 3 秒。T15.6、T23.3、T28.43)
     assert!(
         text.contains("default   PROXY_CONNECT_TIMEOUT_SECS"),
         "{}",
@@ -277,7 +277,7 @@ fn test_integration_check_is_quiet_when_the_reader_closes_early() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// `capabilities` の 8 項目が `/status` に出ること (T14.15、T15.0 (5) で 1 つ増えた)。
+/// `capabilities` の 8 項目が `/status` に出ること (T14.15、T15.0 で 1 つ増えた)。
 ///
 /// 測るのは `.env` の監視スレッドなので、起動直後の一瞬は `null` のことがある
 /// (名前解決の測定に最大 2 秒かかる)。出そろうまで待って形を見る。

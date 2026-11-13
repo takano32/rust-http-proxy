@@ -1,4 +1,4 @@
-//! `/profile?res=5|60` — 待ちの段階・スレッドの CPU と状態・ロックの取り合い (T14.3 (4))。
+//! `/profile?res=5|60` — 待ちの段階・スレッドの CPU と状態・ロックの取り合い (T14.3)。
 //!
 //! `/history` と同じく**標本は配列の配列**で返す (キーは 1 回だけ)。1 標本の中身は
 //!
@@ -10,7 +10,7 @@
 //!
 //! で、段階 1 つは `[count, ms_sum, ms_max, [12 段 + 上限なし]]`、役割 1 つは
 //! `[cpu_us, samples, [状態 22 枠]]`、上位スレッド 1 本は
-//! `[tid, "comm", roles の添字, cpu_us, running]` (T15.0 (5))。
+//! `[tid, "comm", roles の添字, cpu_us, running]` (T15.0)。
 //! **件数 0 の段階と標本 0 の役割と上位スレッドの無い窓は `0` 1 文字**で書くので、
 //! 静かな窓は 1 標本 60 バイト程度にしかならない。`run_delay_us` は
 //! `/proc/<tid>/schedstat` が読めない環境では `null`。`user_us` (役割ごと) と `cpu_user_us`
@@ -18,7 +18,7 @@
 //!
 //! 応答は [`super::recent::MAX_BODY`] (256 KiB) 以下。入り切らないときは**新しい方を残して**
 //! 古い標本から落とし、`"truncated":true` を出す (`/errors` などと同じ方針)。
-//! 落ちたぶんは **`?offset=`** で続きが引ける (`?n=` は 1 枚に返す標本の数。T15.0 (11))。
+//! 落ちたぶんは **`?offset=`** で続きが引ける (`?n=` は 1 枚に返す標本の数。T15.0)。
 //! **`?summary=1` は標本を返さず**、5 分 / 1 時間 / 全部の 3 段に畳んだ CPU/要求 だけを返す
 //! (**重い口の扱いから外してある**ので、雪像を組んでいる最中でも 503 にならない)。
 //!
@@ -74,7 +74,7 @@ pub fn profile(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, St
     let num = |key: &str| param(&params, key).and_then(|v| v.parse::<u64>().ok());
     let res = num("res").map(Profile::index_for).unwrap_or(0);
     let p = &ep.metrics.profile;
-    // 標本を返さない要約 (**重い口ではない**。T15.0 (11))
+    // 標本を返さない要約 (**重い口ではない**。T15.0)
     if has_flag(query, "summary") {
         return (200, "application/json", summary(ep, res));
     }
@@ -144,7 +144,7 @@ fn write_tail(out: &mut String, p: &Profile, res: usize, page: &Page) {
     join(out, p.unknown_syscalls().iter(), |o, (nr, n)| {
         let _ = write!(o, "[\"sys_{}\",{}]", nr, n);
     });
-    // 直近 5 分の要約 (**プロセスの CPU/要求**。§2 の loopback の 41 us/要求 と同じ物差し)
+    // 直近 5 分の要約 (**プロセスの CPU/要求**。`docs/status.md` の loopback の 41 us/要求 と同じ物差し)
     let recent = p.recent_totals(res, 300 / profile::RESOLUTIONS[res].0 as usize);
     let _ = write!(
         out,
@@ -172,7 +172,7 @@ fn write_tail(out: &mut String, p: &Profile, res: usize, page: &Page) {
     );
 }
 
-/// `?summary=1` — 標本を返さず、5 分 / 1 時間 / 全部の 3 段に畳んだ CPU/要求 だけ (T15.0 (11))。
+/// `?summary=1` — 標本を返さず、5 分 / 1 時間 / 全部の 3 段に畳んだ CPU/要求 だけ (T15.0)。
 ///
 /// 雪像 1 枚に入り切らないほど標本があるときでも、**どの解像度が何本残っていて、
 /// この機械が 1 要求に何 us 使っているか**はこれ 1 本で読める。標本を組まないので

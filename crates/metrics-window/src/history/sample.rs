@@ -18,7 +18,7 @@ pub struct Sample {
     pub disk_used: u64,
     pub disk_limit: u64,
     pub rss: u64,
-    /// その区間に確立した CONNECT トンネルの確立時間 (T12.4 (3)。Phase 13 の主指標)
+    /// その区間に確立した CONNECT トンネルの確立時間 (T12.4。Phase 13 の主指標)
     pub connect: Window,
     /// その区間に転送した要求の初バイトまでの時間
     pub forward: Window,
@@ -45,20 +45,20 @@ pub struct Sample {
     /// 版 2 で書かれた古いレコードはこの位置がゼロ埋めなので 0 として読み戻る
     pub evicted_idle: u64,
     /// その区間の**利用者が待つ時間** (`queue + client_read + dns + connect` の ms。
-    /// CONNECT だけ。T15.0 (2) が `proxy_metrics_core::metrics::Interval::wait` を埋め、
-    /// T15.0 (10) がここに列として出した)。
+    /// CONNECT だけ。T15.0 が `proxy_metrics_core::metrics::Interval::wait` を埋め、
+    /// T15.0 がここに列として出した)。
     ///
     /// [`Self::connect`] は `open()` の入口 (要求行を読んだ後) からしか測らないので、
     /// accept してワーカーが動き出すまでの待ちも名前解決も入っていない。
     /// **見出しの「利用者が待った時間」はこちらを読むこと**
     pub wait: Window,
-    /// その標本の瞬間の **warm な名前の件数** (`/status` の `dns.warm`。T15.0 (8))。
+    /// その標本の瞬間の **warm な名前の件数** (`/status` の `dns.warm`。T15.0)。
     ///
     /// **件数のゲージ**で、`config.dns_warm` (窓の**秒数**) とは意味が違う。
     /// 裏の引き直しの速さ (`refreshes/h`) をこの数で割ると 1 名前あたりになる
     /// (通算の平均で割ると実勢を 35〜60% 過小に見せる)
     pub dns_warm: u64,
-    /// **その区間に増えた**要求数とバイト数 (T15.0 (10))。
+    /// **その区間に増えた**要求数とバイト数 (T15.0)。
     ///
     /// [`Self::requests`] / [`Self::bytes`] は**通算を標本化した値**なので、
     /// 同じ表の中で [`Self::connect`] や [`Self::errors`] などの区間の値と混ざっていた。
@@ -66,7 +66,7 @@ pub struct Sample {
     /// 欠けた標本で狂う)。既存の 2 列は消していない
     pub requests_delta: u64,
     pub bytes_delta: u64,
-    /// その区間の同時接続の**真の山** (T15.0 (10))。
+    /// その区間の同時接続の**真の山** (T15.0)。
     ///
     /// [`Self::active_max`] は 5 秒ごとの瞬間値の最大なので、5 秒より短い山を
     /// 取りこぼす。こちらは接続を数え上げるたびに更新した値
@@ -130,7 +130,7 @@ pub struct Sample {
 }
 
 /// `/history` の 1 標本の列名 (この順で [`Sample::push_row`] が値を並べる)。
-/// **キーを標本ごとに繰り返さない**ため、JSON は配列の配列にしてある (T12.4 (3))。
+/// **キーを標本ごとに繰り返さない**ため、JSON は配列の配列にしてある (T12.4)。
 pub const KEYS: [&str; 57] = [
     "t",
     "requests",
@@ -197,9 +197,9 @@ pub const KEYS: [&str; 57] = [
     "web_dns_ms_sum",
 ];
 
-/// [`KEYS`] と**同じ長さ・同じ並び**の「その列の読み方」(`/history` の `key_kinds`。T15.0 (10))。
+/// [`KEYS`] と**同じ長さ・同じ並び**の「その列の読み方」(`/history` の `key_kinds`。T15.0)。
 ///
-/// 累計と区間が同じ表に混ざっている (T12.4 (3) で意図してそうした) ので、読む側が
+/// 累計と区間が同じ表に混ざっている (T12.4 で意図してそうした) ので、読む側が
 /// 取り違える — T14.99 では分析役が 2 か所で間違えた。**列の名前からは読み方が分からない**
 /// (`requests` は通算、`connects` は区間) ので、綴りを変えずに読み方を隣に出す:
 ///
@@ -315,7 +315,7 @@ impl Sample {
             self.max_fds,
             self.evicted_idle
         );
-        // **末尾に足すこと** (T15.0 (10))。`connect` / `forward` と同じ 4 列の形
+        // **末尾に足すこと** (T15.0)。`connect` / `forward` と同じ 4 列の形
         self.wait.push_json(out);
         let _ = write!(
             out,
@@ -465,7 +465,7 @@ impl Folded {
     fn of(window: &[Sample]) -> Folded {
         let mut connect = Window::default();
         let mut forward = Window::default();
-        // 利用者が待つ時間も区間の値なので `connect` と同じ畳み方 (T15.0 (10))
+        // 利用者が待つ時間も区間の値なので `connect` と同じ畳み方 (T15.0)
         let mut wait = Window::default();
         // 「確立 − RTT」も区間の値 (T28.45)
         let mut excess = Window::default();

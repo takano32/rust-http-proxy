@@ -66,7 +66,7 @@ pub fn write_request_headers(out: &mut Vec<u8>, headers: &[String], client_ip: O
             out.extend_from_slice(b"\r\n");
             continue;
         }
-        // 行末は CRLF にそろえる (T32.15 (1))。行はクライアントの行末 (LF だけのこともある) を付けたまま
+        // 行末は CRLF にそろえる (T32.15)。行はクライアントの行末 (LF だけのこともある) を付けたまま
         // 来るので、そのまま書くと LF だけの行とこちらが足す CRLF の行が混ざり、CRLF でしか区切らない
         // オリジンと読み方が食い違いうる。ふつうの行 (CRLF で終わる) は今までどおり 1 回で写す
         match line.as_bytes() {

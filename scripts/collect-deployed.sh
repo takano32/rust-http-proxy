@@ -45,7 +45,7 @@
 #
 #   scripts/collect-deployed.sh --full HOST:PORT [DIR]
 #     雪像で `truncated` が立った部 (`recent` / `hosts` / `profile`) の**続き**を `offset=` で
-#     追って `<UTC 時刻>-page<何枚目>-<部>.json` に落とす (T15.0 (11))。雪像 1 枚には `/recent` は
+#     追って `<UTC 時刻>-page<何枚目>-<部>.json` に落とす (T15.0)。雪像 1 枚には `/recent` は
 #     2,000 件中 615 件、`/hosts` は 1,000 件中 639 件、`/profile?res=5` は 720 標本中 456 (T15.0 の実測) しか
 #     入らないので、全部を残したい日だけ付ける。`recent` と `hosts` は T22.5 から、`profile` は T27.1 から
 #     既定で雪像に繋ぐので、別ファイルに落ちるのはそのあとも切れている部だけ (上限で止めた残り)。
@@ -216,7 +216,7 @@ now_ms() {
   fi
 }
 
-# --- 0. 保存済みの日次 snapshot を取り寄せる (--from-server。T14.34) ----------
+# --- 保存済みの日次 snapshot を取り寄せる (--from-server。T14.34) ----------
 # プロキシが `$HOME/.rust-http-proxy/snapshots/` に 1 日 1 ファイル書いているので、
 # 手元に無い日付だけを取って `$DIR` に置く (`/snapshots` の一覧 → `/snapshots/<date>`)。
 # --- 締めを 1 コマンドで (--closeout。T29.26) ----------------------------------
@@ -352,8 +352,8 @@ OUT="$DIR/$STAMP-snapshot.json"
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
-# --- 1. 取る -----------------------------------------------------------------
-# **雪像の前に `/status` を 1 本** (T15.0 (15))。要約が使うのは **RSS だけ**で、
+# --- 取る --------------------------------------------------------------------
+# **雪像の前に `/status` を 1 本** (T15.0)。要約が使うのは **RSS だけ**で、
 # `/snapshot` は 17 部・最大 4 MiB を 1 つの文字列に組むので、**雪像を配ること自体が
 # RSS を約 1.0 MB 押し上げる**。ほかの通算は 1 秒差で意味が変わらないのでそのまま雪像を使う。
 # 取れなくても続ける (そのときは雪像の中の `/status` の RSS になる)。
@@ -382,7 +382,7 @@ fetch_snapshot() {
 }
 fetch_snapshot
 
-# --- 1-follow. 切れた `recent`・`hosts`・`dns`・`profile` の続きを既定で追って雪像に繋ぐ (T22.5・T27.1) ---
+# --- 続きを追う: 切れた `recent`・`hosts`・`dns`・`profile` の続きを既定で追って雪像に繋ぐ (T22.5・T27.1) ---
 # 量が 12 倍になった tokyo (T21.99) では、雪像の `recent` は 2,000 件中 576 件 (33 分ぶん)、
 # `hosts` は 1,001 件中 574 件で 256 KiB に切れる。**`--full` を付けなくても**、この 2 つの部 (T27.1 からは
 # `dns` (T25.99 で 811 件中 678 件) と `profile` (720 標本中 348) も) は
@@ -454,7 +454,7 @@ follow_parts() {
 }
 follow_parts
 
-# --- 1a. 雪像に入らない口 ---------------------------------------------------------
+# --- 雪像に入らない口 ------------------------------------------------------------
 # `/daily` `/healthz` `/slo` `/config` `/profile?res=60` は `/snapshot` の部に無いので、
 # T15.99 までは親が手で取っていた。同じ時刻の名前 (`<時刻>-<口>.json`) で隣に置く。
 # `/profile` は重い口 (同時 1 本) なので、JSON が返らなければ 1 秒おいて 3 回まで試す。
@@ -528,7 +528,7 @@ fetch_extras() {
 }
 fetch_extras
 
-# --- 1c. 匿名化した写しを隣に置く (T17.16) ---------------------------------------
+# --- 匿名化した写しを隣に置く (T17.16) ---------------------------------------
 # 雪像は `status/` にしか置けない (閲覧先と接続元が並ぶ) ので、テストへ持ち込めるように
 # `anonymize-snapshot.py` で名前・IP・UA だけを置き換えた写しを `<時刻>-snapshot.anon.json` に置く。
 # `/daily` と (繋いだあとの) `/profile?res=60` も `--side` で**同じ表**に通して `<時刻>-<口>.anon.json` に。
@@ -593,10 +593,10 @@ print_head() {
 }
 print_head
 
-# --- 1b. 切れた部の続きを取る (--full。T15.0 (11)) -----------------------------
+# --- 切れた部の続きを取る (--full。T15.0) -----------------------------
 # 雪像 1 枚は部ごとに 256 KiB で切れる (`truncated`)。`offset=` を持つ 3 つの部だけ、
 # `next_offset` が `null` になるまで**追加の URL で**引いて別ファイルに落とす。
-# `recent` と `hosts` は上の 1-follow (T22.5) で繋いだあとなので、ここに来るのはまだ切れている
+# `recent` と `hosts` は上の「続きを追う」(T22.5) で繋いだあとなので、ここに来るのはまだ切れている
 # ときだけ (続きは繋いだ部の `next_offset` から引く)
 # 続きはどれも重い口 (同時 1 本) なので順に引き、断られたら `Retry-After: 1` に従う。
 fetch_full_pages() {
@@ -651,17 +651,17 @@ fetch_full_pages() {
 }
 fetch_full_pages
 
-# --- 2. 要点 ------------------------------------------------------------------
+# --- 要点 ---------------------------------------------------------------------
 section_summary() {
-  printf '## 1. 要点\n\n'
+  printf '## 要点\n\n'
   python3 scripts/snapshot-summary.py "$OUT" ${PREV:+--prev "$PREV"} \
     ${STATUS_BEFORE:+--status-before "$STATUS_BEFORE"} || echo '(要点を組めなかった)'
   printf '\n'
 }
 section_summary
 
-# --- 3. 前回との差分 (snapshot-diff.py) ---------------------------------------
-# 判定表 (`## 9.`) だけは要約のいちばん最後に回すので、ここではその手前までを出す
+# --- 前回との差分 (snapshot-diff.py) ---------------------------------------
+# 判定表 (snapshot-diff.py の「完了の定義に対する判定」の節) だけは要約のいちばん最後に回すので、ここではその手前までを出す
 section_diff() {
   DIFFMD=
   CRIT=
@@ -700,7 +700,7 @@ section_diff() {
     MEDIAN_K=()
     [ -n "$DIFF_CRIT" ] || MEDIAN_K=(--burst-median-k 3)
     # shellcheck disable=SC2086  # $DIFF_CRIT は 2 語に分けたい
-    # `/daily` は雪像に無いので、取れていれば判定表のミスの行に日ごとの幅を並べる (T15.15 (2))
+    # `/daily` は雪像に無いので、取れていれば判定表のミスの行に日ごとの幅を並べる (T15.15)
     # `/profile?res=60` (上で繋いだ 24 時間ぶん) は phase17 の conn 役の CPU/要求 の材料 (T17.0a)。
     # 前回の雪像の隣に同じ時刻の `-profile_res_60.json` があれば `--profile-before` で前にも渡す
     # (`--from-server` で取り寄せた日の雪像には無いので、そのときは雪像の `/profile` の部で参考になる)
@@ -711,9 +711,9 @@ section_diff() {
       "${DIFF_P18[@]}" \
       >"$DIFFMD" 2>&1 || echo '(snapshot-diff.py が失敗した)' >>"$DIFFMD"
   fi
-  # 判定表の相手が `BEFORE` のとき (T18.2。T17.99 (f) で手で回していた 1 回)。前の `/profile?res=60` は
-  # `BEFORE` の隣の同じ時刻のもの。ここで要るのは `## 9.` より後ろだけで、AAAA の有無はホスト別の表
-  # (`## 3.`) にしか出ないので、`AAAA` の表が無ければ名前は引かない (`--no-dns`)
+  # 判定表の相手が `BEFORE` のとき (T18.2。T17.99 で手で回していた 1 回)。前の `/profile?res=60` は
+  # `BEFORE` の隣の同じ時刻のもの。ここで要るのは判定表より後ろだけで、AAAA の有無はホスト別の表
+  # (snapshot-diff.py の「ホスト別」) にしか出ないので、`AAAA` の表が無ければ名前は引かない (`--no-dns`)
   CRITMD=$DIFFMD
   if [ "$DIFF" = 1 ] && [ -n "$JUDGE_BEFORE" ] && [ -n "$CRIT" ]; then
     CRITMD=$work/snapshot-criteria.md
@@ -741,9 +741,9 @@ section_diff() {
       "${P18[@]}" \
       >"$CRITMD" 2>&1 || echo '(snapshot-diff.py が失敗した)' >>"$CRITMD"
   fi
-  printf '## 2. 前回との差分 (snapshot-diff.py)\n\n'
+  printf '## 前回との差分 (snapshot-diff.py)\n\n'
   if [ -n "$DIFFMD" ]; then
-    # 見出しは 1 段下げる (この文書の `## 1.` 〜と番号がぶつからないように)
+    # 見出しは 1 段下げる (この文書の `##` の見出しと同じ段にならないように)
     sed -e '/^## 9\. /,$d' -e 's/^#\{1,2\} /### /' "$DIFFMD"
   else
     echo '(前回の雪像が無いか DIFF=0)'
@@ -752,9 +752,9 @@ section_diff() {
 }
 section_diff
 
-# --- 4. ホスト別 (status-diff.py) ---------------------------------------------
+# --- ホスト別 (status-diff.py) ------------------------------------------------
 section_hosts() {
-  printf '## 3. ホスト別 (status-diff.py)\n\n```\n'
+  printf '## ホスト別 (status-diff.py)\n\n```\n'
   if [ "$DIFF" = 1 ] && [ -n "$PREV" ]; then
     scripts/status-diff.py "$PREV" "$OUT" ${AAAA:+--aaaa "$AAAA"} --min-timed 1 --top 40 2>&1 ||
       echo '(status-diff.py が失敗した)'
@@ -766,9 +766,9 @@ section_hosts() {
 }
 section_hosts
 
-# --- 5. ダッシュボードの読み方 (check-dashboard.js) ---------------------------
+# --- ダッシュボードの読み方 (check-dashboard.js) ------------------------------
 section_dashboard() {
-  printf '## 4. ダッシュボード (check-dashboard.js)\n\n```\n'
+  printf '## ダッシュボード (check-dashboard.js)\n\n```\n'
   if [ "$DASHBOARD" = 1 ] && command -v node >/dev/null 2>&1; then
     python3 scripts/collect_follow.py dashboard-inputs "$OUT" "$work/history.json" "$work/status.json"
     node scripts/check-dashboard.js "$work/history.json" "$work/status.json" 2>&1 ||
@@ -780,9 +780,9 @@ section_dashboard() {
 }
 section_dashboard
 
-# --- 6. 手元から見た待ち (probe-deployed.sh) ----------------------------------
+# --- 手元から見た待ち (probe-deployed.sh) -------------------------------------
 section_probe() {
-  printf '## 5. 手元から見た待ち (probe-deployed.sh)\n\n```\n'
+  printf '## 手元から見た待ち (probe-deployed.sh)\n\n```\n'
   if [ "$PROBE" = 1 ]; then
     scripts/probe-deployed.sh "$PROXY" 2>&1 || echo '(probe-deployed.sh が失敗した)'
   else
@@ -792,9 +792,9 @@ section_probe() {
 }
 section_probe
 
-# --- 7. 完了の定義に対する判定 (要約の末尾) --------------------------------
+# --- 完了の定義に対する判定 (要約の末尾) -----------------------------------
 section_criteria() {
-  printf '## 6. 完了の定義に対する判定'
+  printf '## 完了の定義に対する判定'
   [ "$CRITERIA" = off ] || printf ' (snapshot-diff.py --criteria %s)' "$CRITERIA"
   printf '\n'
   if [ -n "$CRITMD" ] && grep -q '^## 9\. ' "$CRITMD"; then

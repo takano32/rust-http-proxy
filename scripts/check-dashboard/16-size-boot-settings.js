@@ -1,7 +1,7 @@
 // `scripts/check-dashboard.js` の節: 17. dashboard.html の大きさ・18. 起動のカード・19. 設定の帯 (T34.140 で割った。単体では動かさない。
 // 前の節の `const` を使うので、`check-dashboard.js` が名前の順につないで 1 つの本文として回す)
 // 17. `dashboard.html` の大きさ。inspect は Rust 側で 64 KiB を見張っているのに
-// dashboard には上限が無かった (T15.0 (14) で足した)。外部ライブラリを読み込まない
+// dashboard には上限が無かった (T15.0 で足した)。外部ライブラリを読み込まない
 // 1 ページという方針を守るための歯止めで、超えたら**中身を削るか上限を上げるか**を先に決める
 // T28.25 (2026-10-25) で 80 → 96 KiB に上げた (余白が 1,405 B しか無く、起動のカードを足すと越えた)。
 // inspect.html と同じ上限。コメントを削って入れる案は、読み手のための注をなくすので採らなかった
@@ -67,7 +67,7 @@ if (dashBytes > DASH_MAX) {
 }
 
 console.log(
-  'OK: T15.0 (14) の 5 枚のカードも通った: (a) CPU の絞り ' +
+  'OK: T15.0 の 5 枚のカードも通った: (a) CPU の絞り ' +
     cpu.pct.toFixed(2) + '% (窓 ' + cpu.window.periods + ' 周期、割り当て ' + cpu.quota + ' コア)、' +
     '(b) 動かないトンネル ' + idle.count + ' / ' + idle.tunnels + ' 本 (空回り ' + idle.spins + ')、' +
     '(c) ミスの種類 ' + missKinds.rows.map((r) => r.name + ' ' + r.avg).join(' · ') + '、' +

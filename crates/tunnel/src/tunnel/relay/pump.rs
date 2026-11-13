@@ -34,7 +34,7 @@ pub(super) struct EofNote(pub(super) Option<(usize, Instant)>);
 impl EofNote {
     /// 先に EOF を出した側を 1 回だけ控える (T14.4 の閉じた理由 / T14.25 の
     /// 半閉じの秒) のと同じ場所で、`/connections` の枠にも向きを置く
-    /// (T15.0 (4))。**トンネル 1 本につき多くて 1 回**で、2 回目からは
+    /// (T15.0)。**トンネル 1 本につき多くて 1 回**で、2 回目からは
     /// `is_none()` の比較だけ
     #[inline]
     pub(super) fn note(&mut self, side: usize, slot: Option<&Arc<ConnSlot>>) {
@@ -51,7 +51,7 @@ impl EofNote {
 pub(super) struct Flow {
     /// 双方向に運んだ合計バイト数
     pub(super) transferred: u64,
-    /// `200` を書いてから最初の中継バイトまで (ms。T14.3 (1))
+    /// `200` を書いてから最初の中継バイトまで (ms。T14.3)
     pub(super) first_relay_ms: u32,
     /// 中継の中で決まった閉じた理由 (アイドル打ち切り / `poll` の失敗。T14.4)。
     /// 外から閉じられたとき (追い出し・監視の停止) は枠に直接書いてあるので
@@ -144,7 +144,7 @@ impl Dir {
             match self.drain(socks) {
                 Ok(0) => break,
                 Ok(n) => {
-                    // 最初の中継バイト (T14.3 (1))。比較 1 回で、時計を読むのは
+                    // 最初の中継バイト (T14.3)。比較 1 回で、時計を読むのは
                     // 1 本につき 1 回だけ (`--lite` では `established` が `None`)
                     if flow.transferred == 0
                         && let Some(t) = info.established

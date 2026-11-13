@@ -128,7 +128,7 @@ fn counts_threads_and_fds_of_this_process() {
     assert!(max >= fds, "上限 {} < いま {}", max, fds);
 }
 
-/// **`ls /proc/<pid>/fd | wc -l` と ±2 で一致すること** (T12.4 (3) の受け入れ基準)。
+/// **`ls /proc/<pid>/fd | wc -l` と ±2 で一致すること** (T12.4 の受け入れ基準)。
 /// どちらも数える側が `/proc/<pid>/fd` を 1 つ開くので、その 1 本のぶんが誤差に入る。
 ///
 /// 同じテストプロセスの他のテストが同時に fd を開け閉めする (ソケットや `/proc` の読み) ので、
@@ -159,7 +159,7 @@ fn the_fd_count_agrees_with_ls_proc_pid_fd() {
     );
 }
 
-/// `stat` の comm に空白と括弧が入っていても名前・状態・CPU が取れること (T14.3 (2))。
+/// `stat` の comm に空白と括弧が入っていても名前・状態・CPU が取れること (T14.3)。
 #[test]
 fn parses_a_task_stat_line() {
     let line = "1234 (we (ir)d name) S 1 1 0 0 -1 4194368 0 0 0 0 111 222 0 0 20 0 8 0 100 0";
@@ -211,7 +211,7 @@ fn parses_the_syscall_file() {
     assert_eq!(parse_syscall(""), None);
 }
 
-/// `schedstat` の **2 番目** (走れるのに待たされた ns) を取ること (T15.0 (5))。
+/// `schedstat` の **2 番目** (走れるのに待たされた ns) を取ること (T15.0)。
 #[test]
 fn parses_the_schedstat_file() {
     assert_eq!(parse_schedstat("123456 7890 42\n"), Some(7890));
@@ -248,7 +248,7 @@ fn a_task_directory_without_syscall_is_partial() {
     assert_eq!(scan.tasks[0].utime, 5, "utime は項目 14 だけ (T16.0)");
     assert_eq!(scan.tasks[0].syscall, None, "syscall が無ければ None");
     assert!(!scan.syscalls_readable, "partial に落ちること");
-    // `schedstat` も無いので `run_delay_us` は `null` になる側 (T15.0 (5))
+    // `schedstat` も無いので `run_delay_us` は `null` になる側 (T15.0)
     assert_eq!(scan.tasks[0].run_delay_ns, None);
     assert!(!scan.schedstat_readable);
     // 置いてやれば読める

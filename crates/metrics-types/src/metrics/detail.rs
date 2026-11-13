@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use super::{DnsCause, ErrCause, Failure};
 
-/// 1 要求ぶんの内訳 (T12.4 (2))。**`Metrics::record` が既に取っている鍵の内側で書く**ので、
+/// 1 要求ぶんの内訳 (T12.4)。**`Metrics::record` が既に取っている鍵の内側で書く**ので、
 /// 原子操作は 1 つも増えない。統計を持たない経路は [`Detail::default`] を渡す (全部 0)。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Detail {
@@ -25,7 +25,7 @@ pub struct Detail {
     /// 履歴の窓に入れる値 (ms)。forward は「初バイトまで」で、応答全体の時間
     /// (`took`) とは別。`None` なら `took` をそのまま使う (CONNECT の確立時間)
     pub first_byte_ms: Option<u64>,
-    /// 段階ごとの待ち時間 (T14.3 (1))。`--lite` では時計を読まないので全部 0
+    /// 段階ごとの待ち時間 (T14.3)。`--lite` では時計を読まないので全部 0
     pub stages: StageMs,
     /// 向き別のバイト (T14.26)。`bytes_in` = クライアント → オリジン (上り)、
     /// `bytes_out` = オリジン → クライアント (下り)。
@@ -58,7 +58,7 @@ pub struct Detail {
 }
 
 impl Detail {
-    /// オリジン (forward) / 宛先 (CONNECT) を掴むまでの内訳を組み立てる (T12.4 (2))。
+    /// オリジン (forward) / 宛先 (CONNECT) を掴むまでの内訳を組み立てる (T12.4)。
     /// **接続を試した直後の 1 回だけ**呼ぶ (thread-local を読んで 0 に戻すので、2 回呼ぶと
     /// 2 回目が空になる)。T34.21 で `tunnel::detail_of` と `http::upstream::origin_detail`
     /// (同じ計算が 2 つあった) をここへ寄せた。
@@ -67,7 +67,7 @@ impl Detail {
     /// forward の `connect_ms` から TLS の握手が抜けて、別の読み違いを生むため)。
     ///
     /// **`dns_before` は `total` の時計を始める前に既に払われていた名前解決 (ms)**
-    /// (T15.0 (1))。`PROXY_ALLOW_LOCAL=false` (既定) では入口の ACL がここより前に
+    /// (T15.0)。`PROXY_ALLOW_LOCAL=false` (既定) では入口の ACL がここより前に
     /// 名前を引くので、`take_resolve_cost` の値には `total` に入っていないぶんが混ざる。
     /// それを引かずに「全体 − 名前解決」をすると**接続の段が 0 に潰れる**
     /// (デプロイ先の実測: ミスした個票 54 本のうち 40 本が `connect` 0 ms で、その 40 本の
@@ -104,8 +104,8 @@ impl Detail {
             // CONNECT は「確立まで」がそのまま窓に入る値なので指定しない
             // (forward はあとで初バイトを測った側が入れる)
             first_byte_ms: None,
-            // ここまでに測った段階 (`queue` / `client_read`) は引き継ぐ (T14.3 (1))。
-            // `client_read` には時計より前の名前解決が丸ごと入っているので除く (T15.0 (1))
+            // ここまでに測った段階 (`queue` / `client_read`) は引き継ぐ (T14.3)。
+            // `client_read` には時計より前の名前解決が丸ごと入っているので除く (T15.0)
             stages: StageMs {
                 client_read: stages
                     .client_read
@@ -119,7 +119,7 @@ impl Detail {
     }
 }
 
-/// 1 要求 (1 本) の段階ごとの待ち時間 (ms。T14.3 (1))。
+/// 1 要求 (1 本) の段階ごとの待ち時間 (ms。T14.3)。
 ///
 /// [`Detail`] の中に置いてあるので、書くのは `Metrics::record` が既に取っている
 /// 鍵の内側だけ = **原子操作は 1 つも増えない**。熱い経路で増えるのは境目の
@@ -160,7 +160,7 @@ mod tests {
         crate::dns::peek_resolve_cost().0
     }
 
-    /// 窓の**外**で払った名前解決を引くと接続の段が 0 に潰れる (T15.0 (1))。
+    /// 窓の**外**で払った名前解決を引くと接続の段が 0 に潰れる (T15.0)。
     ///
     /// `PROXY_ALLOW_LOCAL=false` (既定) では入口の ACL が `open()` の時計より前に
     /// 名前を引く。デプロイ先の実測では、ミスした個票 54 本のうち 40 本 (74%) が
@@ -187,7 +187,7 @@ mod tests {
         assert_eq!(d.stages.queue, 2, "ほかの段は触らない");
     }
 
-    /// 窓の**内側**で引いたぶんは今までどおり引く (T12.4 (2) の引き算は変えない)。
+    /// 窓の**内側**で引いたぶんは今までどおり引く (T12.4 の引き算は変えない)。
     #[test]
     fn a_resolve_paid_inside_the_window_is_still_subtracted() {
         let _ = crate::dns::take_resolve_cost();

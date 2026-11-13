@@ -54,7 +54,7 @@ pub(super) fn next_in_ms(host: &str) -> Option<u128> {
         .map(|at| at.saturating_duration_since(now).as_millis())
 }
 
-/// [`warm_due_now`] の、予定を `ago` だけ過去に置く版 (T15.0 (7))。
+/// [`warm_due_now`] の、予定を `ago` だけ過去に置く版 (T15.0)。
 /// **予定に遅れて取り出される引き直し**を秒を待たずに作れる。
 pub(super) fn warm_due_ago(host: &str, ago: Duration) {
     let due = Instant::now() - ago;
@@ -95,7 +95,7 @@ pub(super) fn changes_of(host: &str) -> u64 {
         .map_or(0, |e| e.changes)
 }
 
-/// この名前が warm の間に引かれた回数 (T15.0 (7))。
+/// この名前が warm の間に引かれた回数 (T15.0)。
 pub(super) fn warm_requests_of(host: &str) -> u64 {
     TABLE
         .locked()
@@ -104,7 +104,7 @@ pub(super) fn warm_requests_of(host: &str) -> u64 {
         .map_or(0, |e| e.warm_requests)
 }
 
-/// この名前のミスの内訳 (T15.0 (7))。
+/// この名前のミスの内訳 (T15.0)。
 pub(super) fn misses_by_kind_of(host: &str) -> [u64; 4] {
     TABLE
         .locked()
@@ -113,7 +113,7 @@ pub(super) fn misses_by_kind_of(host: &str) -> [u64; 4] {
         .map_or([0; 4], |e| e.misses_by_kind)
 }
 
-/// ミスの種類別の合計 (cold / expired / warm_stale / negative。T15.0 (7))。
+/// ミスの種類別の合計 (cold / expired / warm_stale / negative。T15.0)。
 pub(super) fn miss_kinds() -> [u64; 4] {
     [
         MISS_COLD.load(Ordering::Relaxed),
@@ -129,7 +129,7 @@ pub(super) fn kinds_delta(before: [u64; 4], after: [u64; 4]) -> [u64; 4] {
 }
 
 /// 「前に引けなかった」状態を直接作る (`getaddrinfo` の失敗を待たずに
-/// 負のキャッシュを置く。T15.0 (7))。
+/// 負のキャッシュを置く。T15.0)。
 pub(super) fn put_failed(host: &str) {
     let now = Instant::now();
     let mut guard = TABLE.locked();
@@ -228,7 +228,7 @@ fn failure_is_remembered_briefly() {
     assert!(status_json().contains("\"negative_hits\":"));
 }
 
-/// T13.1 (b): 解決してから使われていない名前は、今までどおり期限切れでミスになる
+/// T13.1: 解決してから使われていない名前は、今までどおり期限切れでミスになる
 /// (熱くないので裏では引き直さない = 誰も見ない名前に `getaddrinfo` を払わない)。
 #[test]
 fn an_idle_name_still_expires() {
@@ -248,7 +248,7 @@ fn an_idle_name_still_expires() {
     assert_eq!(r1, r0, "裏の引き直しは走らない");
 }
 
-/// T13.1 (d): 失敗した名前は `PROXY_DNS_NEGATIVE_SECS` (既定 60 秒) の間 OS に
+/// T13.1: 失敗した名前は `PROXY_DNS_NEGATIVE_SECS` (既定 60 秒) の間 OS に
 /// 問い合わせず、過ぎたら問い合わせる。
 #[test]
 fn a_failure_is_remembered_for_the_negative_ttl() {
@@ -276,7 +276,7 @@ fn a_failure_is_remembered_for_the_negative_ttl() {
     assert_eq!(tally().1 - m2, 1, "61 秒後は OS に問い合わせる");
 }
 
-/// T13.1 (e): `PROXY_DNS_NEGATIVE_SECS=0` なら失敗を覚えない。
+/// T13.1: `PROXY_DNS_NEGATIVE_SECS=0` なら失敗を覚えない。
 #[test]
 fn zero_negative_ttl_does_not_remember_failures() {
     let _guard = RESOLVE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -371,7 +371,7 @@ fn a_relookup_counts_only_a_real_change_of_the_answer() {
         .expect("表に載っている");
     assert_eq!(row.changes, 1);
     let json = row.to_json();
-    // T15.0 (7) で `changes` の後ろに 2 欄 (`warm_requests` / `misses_by_kind`) が
+    // T15.0 で `changes` の後ろに 2 欄 (`warm_requests` / `misses_by_kind`) が
     // 付いたので、末尾の `}` ではなく次の鍵で突き合わせる
     assert!(
         json.contains("\"refreshes\":0,\"changes\":1,\"warm_requests\":"),
@@ -387,7 +387,7 @@ fn a_relookup_counts_only_a_real_change_of_the_answer() {
     clear();
 }
 
-/// T15.0 (7): ミス 1 件ごとに「そのとき何だったか」を 4 種で残す。
+/// T15.0: ミス 1 件ごとに「そのとき何だったか」を 4 種で残す。
 /// **4 種の和は `dns.misses` と一致する** (受け入れ基準)。
 #[test]
 fn misses_are_counted_by_kind() {
@@ -477,7 +477,7 @@ fn misses_are_counted_by_kind() {
     );
     let json = row.to_json();
     // **末尾の `}` は突き合わせない** (`misses_by_kind` の入れ子の閉じまで)。
-    // 行の末尾に欄を足す次の担当がここで落ちないため (T15.0 (7))
+    // 行の末尾に欄を足す次の担当がここで落ちないため (T15.0)
     assert!(
         json.contains(
             "\"warm_requests\":0,\"misses_by_kind\":{\"cold\":0,\"expired\":0,\"warm_stale\":0,\"negative\":1}"
@@ -493,7 +493,7 @@ fn misses_are_counted_by_kind() {
     clear();
 }
 
-/// `peek` は読むだけ、`take` は読んで 0 に戻す (T15.0 (1))。
+/// `peek` は読むだけ、`take` は読んで 0 に戻す (T15.0)。
 ///
 /// 入口の ACL (`crates/server/src/conn/serve_one.rs`) が時計より前に払ったぶんを、トンネルと forward が
 /// **消さずに**控えるための口なので、2 回読んでも同じ値が出ることが要点。

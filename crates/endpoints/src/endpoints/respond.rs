@@ -50,7 +50,7 @@ fn reason_phrase(status: u16) -> &'static str {
         400 => "Bad Request",
         404 => "Not Found",
         405 => "Method Not Allowed",
-        // `/healthz` の **`fatal` な**検査が 1 つでも偽 (T14.12 / T15.0 (6))、
+        // `/healthz` の **`fatal` な**検査が 1 つでも偽 (T14.12 / T15.0)、
         // または重い口が 1 本走っている (T14.51)
         503 => "Service Unavailable",
         _ => "OK",

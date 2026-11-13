@@ -71,7 +71,7 @@ pub(super) fn endpoint_list(lite: bool) -> String {
 mod tests {
     use super::endpoint_list;
 
-    /// ダッシュボードに Phase 13 が見る図と KPI が載っていること (T12.4 (5)、T13.3)。
+    /// ダッシュボードに Phase 13 が見る図と KPI が載っていること (T12.4、T13.3)。
     ///
     /// ブラウザが無いので絵は確かめられない。**`/history` と `/status` の読み方が
     /// 合っているか**は `scripts/check-dashboard.js` (Node があるときだけ) が
@@ -106,7 +106,7 @@ mod tests {
             "roles",
             "locks",
             "profhint",
-            // T15.0 (14) の 5 枚: (a) CPU の絞り / (b) 動かないトンネル /
+            // T15.0 の 5 枚: (a) CPU の絞り / (b) 動かないトンネル /
             // (c) 名前解決の内訳 / (d) 受付待ち / (e) 利用者が待つ時間
             "cputag",
             "cpukpi",
@@ -151,7 +151,7 @@ mod tests {
             "function roleRows(",
             "function lockRows(",
             "function drawStack(",
-            // T15.0 (14) の 5 枚が読む側 (`scripts/check-dashboard.js` が名前で切り出す)
+            // T15.0 の 5 枚が読む側 (`scripts/check-dashboard.js` が名前で切り出す)
             "function toKernel(",
             "function cpuThrottle(",
             "function topThreads(",

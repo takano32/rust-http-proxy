@@ -115,7 +115,7 @@ impl Report {
 
     /// 時間ごとの行。返すのは打ち切ったか。
     fn push_hourly(&self, out: &mut String) -> bool {
-        // 時間ごとは**キーを 1 回だけ**出して配列の配列にする (`/history` と同じ作法。T12.4 (3))。
+        // 時間ごとは**キーを 1 回だけ**出して配列の配列にする (`/history` と同じ作法。T12.4)。
         // 末尾の `rate_sums` は比の 2 つの `[分子, 分母]` (T29.33。`error_rate` は宛先を外したあと)、
         // そのうしろの `excluded` は外した宛先 (T30.4。外していない時間は `null`)
         out.push_str(

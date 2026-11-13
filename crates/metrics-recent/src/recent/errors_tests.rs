@@ -334,7 +334,7 @@ fn errors_closing_a_connection_carry_the_dns_split() {
     }
 }
 
-/// 403 の個票は `/errors` に `acl` / `blocklist` の名前で出る (T14.2 (4))。
+/// 403 の個票は `/errors` に `acl` / `blocklist` の名前で出る (T14.2)。
 ///
 /// 集計 (`errors_by_cause`) には乗らないので、[`ErrCause`] とは別の型で持つ。
 #[test]

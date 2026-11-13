@@ -83,7 +83,7 @@ pub(super) fn serve_one(conn: &mut Conn) -> io::Result<Step> {
     ) {
         return step;
     }
-    // ここから `Host` を読み終えるまでが `client_read` の段階 (T14.3 (1))。
+    // ここから `Host` を読み終えるまでが `client_read` の段階 (T14.3)。
     // **起点は要求行が届いたところ**で、接続を開けたまま黙っている時間は含めない
     let read_started = profile::mark();
     // 要求の前の空行は読み飛ばす (RFC 9112 §2.2)
@@ -154,7 +154,7 @@ pub(super) fn serve_one(conn: &mut Conn) -> io::Result<Step> {
     t.up = t.up.saturating_add(header_bytes as u64);
     tally.set(t);
     let host_header: Option<&str> = req.host.as_deref();
-    // この 1 要求ぶんの `queue` は使ったら 0 に戻す (T14.3 (1))。`client_read` の
+    // この 1 要求ぶんの `queue` は使ったら 0 に戻す (T14.3)。`client_read` の
     // **終わりの時計は読まない**: 下の層 (`http::handle_http_with_headers` と
     // `tunnel::open`) が入口で既に `Instant::now()` を読んでいるので、起点だけ渡して
     // 向こうで引き算させる (要求ごとの時計が 1 回減る)
@@ -183,7 +183,7 @@ pub(super) fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         return Ok(Step::Close(recent::CloseReason::Shutdown));
     }
     // ここから下は「自分宛てではない = プロキシとして扱う要求」なので、この接続を
-    // `clients[]` の母数に入れる (T15.0 (12))。**代入 1 回だけ**で、原子も鍵も取らない。
+    // `clients[]` の母数に入れる (T15.0)。**代入 1 回だけ**で、原子も鍵も取らない。
     // 立てる場所がここなのは、断る枝 (503 / 403) も CONNECT も `record_client` で
     // 行を作るのに、どれも `*served += 1` を通らないため (508 だけはここより手前で
     // return するので、あちらの枝で立てている)
@@ -212,7 +212,7 @@ pub(super) fn serve_one(conn: &mut Conn) -> io::Result<Step> {
     }
 
     // ACL / Host Check
-    // メソッドは大小を区別する (RFC 9110 §9.1。T32.15 (6)。T32.8 と同じ)。`connect` は未知のメソッド
+    // メソッドは大小を区別する (RFC 9110 §9.1。T32.15。T32.8 と同じ)。`connect` は未知のメソッド
     let is_connect = method == "CONNECT";
     // CONNECT の枠組みの検査 (T27.0)。断れば宛先へは接続もしない
     if is_connect && let Some(reason) = connect_header_reason(&req, has_body) {
@@ -281,7 +281,7 @@ pub(super) fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         ));
     }
 
-    // keep-alive の HTTP 接続の宛先を `/connections` に出す (接続の最初の要求だけ。T14.2 (5))
+    // keep-alive の HTTP 接続の宛先を `/connections` に出す (接続の最初の要求だけ。T14.2)
     if *served == 0
         && let Some(slot) = slot.as_ref()
     {

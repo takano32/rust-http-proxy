@@ -34,7 +34,7 @@ impl HostOutcome {
     }
 }
 
-/// エラーの原因 (T12.4 (2))。デプロイ先で「エラー 12 件、原因は不明」だったのを
+/// エラーの原因 (T12.4)。デプロイ先で「エラー 12 件、原因は不明」だったのを
 /// **8 つに畳んで**数える。細かく分けても読む人が増やせないので、対処が変わる粒度で切る。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(usize)]
@@ -167,7 +167,7 @@ impl Failure {
     }
 }
 
-/// 403 で拒否した理由 (T14.2 (4))。**個票 (`/errors`) にだけ出す。**
+/// 403 で拒否した理由 (T14.2)。**個票 (`/errors`) にだけ出す。**
 ///
 /// [`ErrCause`] に足さないのは、`errors_by_cause` の配列が伸びると履歴の標本 1 本が
 /// `.rrd` の領域 (508 B) に収まらなくなり、**版を上げて統計を全部捨てる**ことになるため
@@ -282,7 +282,7 @@ mod tests {
         assert_eq!(HostOutcome::from_access("", 200), HostOutcome::Bypass);
     }
 
-    /// `io::Error` から 8 つの原因へ畳めること (T12.4 (2))。
+    /// `io::Error` から 8 つの原因へ畳めること (T12.4)。
     #[test]
     fn io_errors_fold_into_eight_causes() {
         use std::io::{Error, ErrorKind};

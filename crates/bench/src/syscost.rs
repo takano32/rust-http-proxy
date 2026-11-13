@@ -23,7 +23,7 @@ mod linux {
     use std::thread;
     use std::time::{Duration, Instant};
 
-    // 外部クレートは使わない (TODO.md §0)。crates/sys/src/sys.rs と同じ形で宣言する。
+    // 外部クレートは使わない (仕様 S25)。crates/sys/src/sys.rs と同じ形で宣言する。
     unsafe extern "C" {
         fn getppid() -> c_int;
         fn gettid() -> c_int;

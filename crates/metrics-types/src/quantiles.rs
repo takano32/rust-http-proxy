@@ -1,7 +1,7 @@
 //! 直近の窓の正確な分位点 (T14.31)。標本を **1,024 本そのまま**持つ。
 //!
 //! `/history` と `/status` の p50 / p95 は **12 段 (ホスト別は 24 段) の区間の内側を
-//! 線形補間した値**で (T12.4 (3))、5〜10 ms の区間に入る限り 5.0〜10.0 のどこかを
+//! 線形補間した値**で (T12.4)、5〜10 ms の区間に入る限り 5.0〜10.0 のどこかを
 //! 「それらしく」返す。T14.99 の判定「平常時の CONNECT 確立 p50 8.3 → 6 ms 以下」の
 //! ように **1 ms 単位で読む**には、区間では足りない。
 //!
@@ -9,7 +9,7 @@
 //! 1,024 本の環状に持つ。直近 1,024 本ぶんの p50 / p90 / p99 / 最大が**正確に**出る。
 //!
 //! 3 本目の `wait` は**利用者が待つ時間** (`queue + client_read + dns + connect`。
-//! T15.0 (2))。`connect` の環が `open()` の入口 (要求行を読んだ後) から測るのに対し、
+//! T15.0)。`connect` の環が `open()` の入口 (要求行を読んだ後) から測るのに対し、
 //! こちらは accept してワーカーが動き出すまでの待ちと名前解決も入る。**CONNECT だけ**で、
 //! `--lite` では書かない (`queue` と `client_read` が 0 なので「4 段の和」を名乗れない)。
 //! `connect` の環は 1 バイトも変えていないので、Phase 12〜14 の p50 と比べる値は残る。
@@ -44,7 +44,7 @@ struct Slot {
 }
 
 /// 満杯のときに使うメモリ (`/status` の `memory.rings.quantiles`)。**3 系統ぶん**
-/// (T15.0 (2) で `wait` を足して 16 → 24 KiB)。
+/// (T15.0 で `wait` を足して 16 → 24 KiB)。
 pub const BYTES: usize = 3 * SAMPLES * size_of::<Slot>();
 
 /// 1 系統 (CONNECT の確立 / forward の初バイト / 利用者の待ち) の環状バッファ。
@@ -198,7 +198,7 @@ pub struct Quantiles {
     /// forward の初バイト
     pub forward: Ring,
     /// 利用者が待つ時間 (`queue + client_read + dns + connect`。**CONNECT だけ**。
-    /// T15.0 (2))。書くのは `proxy_metrics_core::metrics::Metrics` の `record` の中の 1 か所
+    /// T15.0)。書くのは `proxy_metrics_core::metrics::Metrics` の `record` の中の 1 か所
     pub wait: Ring,
 }
 
@@ -219,7 +219,7 @@ impl Quantiles {
     }
 
     /// **いま環に入っている**標本の数 (3 系統の合計。`/status` の
-    /// `memory.rings_used.quantiles` がバイトに直す。T15.0 (13))。
+    /// `memory.rings_used.quantiles` がバイトに直す。T15.0)。
     ///
     /// 満杯なら `3 × SAMPLES` で、そのときのバイトが [`BYTES`]。
     /// 鍵の内側で数えるのは 3 つの `len()` だけ (写しは取らない)。
@@ -229,7 +229,7 @@ impl Quantiles {
 }
 
 /// `{"connect":{..},"forward":{..},"wait":{..}}` (`/status` の `recent_quantiles`)。
-/// **`wait` は末尾に足した** (既存の鍵の順は変えない。T15.0 (2))。
+/// **`wait` は末尾に足した** (既存の鍵の順は変えない。T15.0)。
 pub fn to_json(connect: &Stats, forward: &Stats, wait: &Stats) -> String {
     let mut out = String::with_capacity(336);
     out.push_str("{\"connect\":");
@@ -264,7 +264,7 @@ mod tests {
     }
 
     /// 3 本目の環 `wait` は独立していて、`connect` とも `forward` とも混ざらない
-    /// (T15.0 (2))。標本ごとに `wait ≥ connect` なら**分位点も必ず** `wait ≥ connect`
+    /// (T15.0)。標本ごとに `wait ≥ connect` なら**分位点も必ず** `wait ≥ connect`
     /// になる (同じ本数の順序統計量なので。結合テストの受け入れ基準はこの関係)。
     #[test]
     fn the_wait_ring_is_separate_and_never_below_the_connect_ring() {
@@ -361,7 +361,7 @@ mod tests {
         assert_eq!(q.connect.buf.capacity(), 0);
         assert_eq!(q.forward.buf.capacity(), 0);
         assert_eq!(q.wait.buf.capacity(), 0);
-        // 3 系統 × 1,024 本 × 8 B (T15.0 (2) で 16 → 24 KiB)
+        // 3 系統 × 1,024 本 × 8 B (T15.0 で 16 → 24 KiB)
         assert_eq!(BYTES, 24_576);
     }
 

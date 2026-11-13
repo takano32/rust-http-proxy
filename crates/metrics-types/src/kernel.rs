@@ -6,15 +6,15 @@
 //! - 受け入れ待ち行列の溢れ (`ListenOverflows` / `ListenDrops`)。溢れるとクライアントは
 //!   SYN を 1〜3 秒後に再送するので、**プロキシの統計には「遅い接続」としてすら残らない**
 //! - 再送 (`RetransSegs` / `TCPSynRetrans` / `TCPTimeouts` / `TCPAbortOnTimeout`)
-//! - TIME_WAIT の本数 (loopback の CONNECT のベンチを律速していたもの。TODO.md §1)
+//! - TIME_WAIT の本数 (loopback の CONNECT のベンチを律速していたもの。`docs/measuring.md`)
 //! - cgroup の CPU の絞り (`cpu.stat` の `nr_periods` / `nr_throttled` / `throttled_usec`。
-//!   **割合で読む**ので分母の `nr_periods` も要る。T15.0 (6))
+//!   **割合で読む**ので分母の `nr_periods` も要る。T15.0)
 //! - PSI (`cpu.pressure` / `memory.pressure` / `io.pressure` の `some` / `full` の avg10)
 //! - 一緒に取ると読みやすいもの: 名前解決のミス (`/healthz` のリゾルバの検査) と
 //!   状態ファイルの書込エラー
 //!
 //! **`.rrd` (状態ファイル) には書かない**: 標本のレコードの余白は 4 B しか残っていない
-//! (T14.2 (3))。窓はメモリだけで、5 秒 × 720 (1 時間) と 60 秒 × 1,440 (1 日)。
+//! (T14.2)。窓はメモリだけで、5 秒 × 720 (1 時間) と 60 秒 × 1,440 (1 日)。
 //! 1 標本 200 B なので合わせて約 420 KiB (環状バッファの伸び方しだいで最大 600 KiB)。
 //! 再起動で消えてよい (残したいものは `.rrd` の版を上げる T14.14 で)。
 //!
@@ -89,7 +89,7 @@ pub const KEYS: [&str; 26] = [
     "dns_miss_ms",
     "state_file_errors",
     // **末尾に足したもの** (古い読み手は位置で開くので、途中に入れない)。
-    // `cpu_nr_throttled` の分母 (T15.0 (6))
+    // `cpu_nr_throttled` の分母 (T15.0)
     "cpu_nr_periods",
     // cgroup の CPU のユーザー空間とカーネル側 (増分 us。T16.0)
     "cpu_user_usec",
@@ -125,7 +125,7 @@ pub struct Sample {
     pub dns_miss_ms: u64,
     /// この窓に増えた状態ファイルの書込エラー
     pub state_file_errors: u64,
-    /// この窓に過ぎた CPU の期間の数 (`cpu.stat` の `nr_periods` の増分。T15.0 (6))。
+    /// この窓に過ぎた CPU の期間の数 (`cpu.stat` の `nr_periods` の増分。T15.0)。
     /// [`Sample::cpu_nr_throttled`] の**分母**
     pub cpu_nr_periods: u64,
     /// この窓に cgroup が使った CPU のユーザー空間とカーネル側 (`cpu.stat` の
@@ -159,7 +159,7 @@ pub struct Latest {
     pub sockets_mem: u64,
     pub cpu_nr_throttled: u64,
     pub cpu_throttled_usec: u64,
-    /// `cpu.stat` の `nr_periods` の累計 (T15.0 (6))。絞られた**割合**の分母
+    /// `cpu.stat` の `nr_periods` の累計 (T15.0)。絞られた**割合**の分母
     pub cpu_nr_periods: u64,
     /// `cpu.stat` の `usage_usec` / `user_usec` / `system_usec` の累計 (T16.0。
     /// [`SRC_CGROUP_USAGE`] が立っているときだけ意味がある)
@@ -197,9 +197,9 @@ pub struct Health {
     /// 直近 5 分でいちばん新しい標本の「名前解決のミス 1 回の ms」
     pub dns_miss_ms: Option<u64>,
     /// 直近 5 分の cgroup の CPU の絞り `(nr_throttled の増分, nr_periods の増分)`
-    /// (T15.0 (6))。**割合は呼ぶ側が割る** (分母が 0 の窓を型で持たないため)
+    /// (T15.0)。**割合は呼ぶ側が割る** (分母が 0 の窓を型で持たないため)
     pub cpu_throttled_5m: Option<(u64, u64)>,
-    /// **いちばん最初に読んだ標本からの秒** (T15.0 (6))。まだ 1 本も無ければ `None`。
+    /// **いちばん最初に読んだ標本からの秒** (T15.0)。まだ 1 本も無ければ `None`。
     ///
     /// 上の 5 分の値は「いちばん新しい標本から 300 秒ぶん」を足しただけなので、
     /// 起動 10 秒後 (標本 2 本) でもその 5 秒ぶんの割合が出てしまう。**5 分に
@@ -248,7 +248,7 @@ pub fn latest() -> Option<Latest> {
     STATE.locked().last
 }
 
-/// **起動して最初に**読んだ生の値 (T15.0 (6))。まだ 1 回も読んでいなければ `None`。
+/// **起動して最初に**読んだ生の値 (T15.0)。まだ 1 回も読んでいなければ `None`。
 ///
 /// cgroup の累計はプロセスより長生き (親の階層の値) なので、`nr_throttled` の
 /// 生の値だけでは「自分が絞られたか」が分からない。引き算の相手がこれ。

@@ -48,7 +48,7 @@ fn the_errors_response_stays_under_256_kib() {
 /// 240 本 (デプロイ先の上限) でも、1,000 本でも 256 KiB に収まること。
 ///
 /// **余りは 1 行あたり 5 B しか無い** (欄を足す前の実測 1,000 本で 256,918 B、
-/// [`array_within`] の予算は 261,632 B)。T15.0 (4) で足した 5 つの欄が
+/// [`array_within`] の予算は 261,632 B)。T15.0 で足した 5 つの欄が
 /// 「既定のままなら 1 バイトも出さない」形なのはこのためで、ここでは**最悪の値が
 /// 全部入った行を 10 本混ぜて**、それでも 1,000 本入ることを見る。
 ///
@@ -75,7 +75,7 @@ fn the_connections_response_stays_under_256_kib() {
         slot.set_bytes(u64::MAX);
         slot.set_state(ConnState::Parked);
         if (i as usize) < WORST {
-            // T15.0 (4) の 5 つが全部、起こりえない桁で入っている行。
+            // T15.0 の 5 つが全部、起こりえない桁で入っている行。
             // `0x03d` = `IN|OUT|ERR|HUP|NVAL` (旗の名前が最長になる組み合わせ)
             slot.set_tid(u32::MAX);
             slot.set_relaying(u64::MAX, u64::MAX, pack_revents(0x03d, 0x03d));
@@ -113,7 +113,7 @@ fn the_connections_response_stays_under_256_kib() {
 }
 
 /// **全部の行が証拠つきだと 1,000 本は入らない** (単位 7 の `offset=` が入るまでの
-/// 既知の穴。T15.0 (4))。
+/// 既知の穴。T15.0)。
 ///
 /// 上の [`the_connections_response_stays_under_256_kib`] は「1,000 本のうち証拠つきは
 /// 少数」を前提にしていて、そこだけ読むと「1,000 本はいつでも担保されている」と

@@ -130,7 +130,7 @@ fn test_integration_errors_keeps_the_newest_first_and_honours_n() {
     );
 }
 
-/// ACL で拒否した CONNECT が `/errors` に `acl` として見えること (T14.2 (4))。
+/// ACL で拒否した CONNECT が `/errors` に `acl` として見えること (T14.2)。
 ///
 /// 403 は 5xx ではないので集計 (`errors_by_cause`) には乗らない。**誰が何を拒否されたか**を
 /// 読めるのは個票だけなので、そこに出ることを見る。

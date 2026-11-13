@@ -47,7 +47,7 @@ pub(super) const MAX_SECS: u64 = 99_999_999;
 /// 個票 1 件の原因。
 ///
 /// 5xx を返したエラーは [`ErrCause`] (`/status` の `errors_by_cause` と同じ 8 つ)、
-/// 403 で拒否したものは [`BlockCause`] (T14.2 (4))、読めずに断った要求は
+/// 403 で拒否したものは [`BlockCause`] (T14.2)、読めずに断った要求は
 /// [`BadRequestReason`] (T14.28)。**403 と 400 は集計の配列には乗らない**
 /// (乗せると `.rrd` の標本が領域に収まらず、版を上げて統計を捨てることになる)。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

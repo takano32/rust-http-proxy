@@ -63,7 +63,7 @@ fn downsampling_sums_the_deltas_and_keeps_the_peaks() {
     assert_eq!(agg.dns_miss_ms, 25, "回数で重みを付けた平均 (10+90)/4");
 }
 
-/// CPU の絞りは**割合**で読む: 期間の数が分母、絞られた期間が分子 (T15.0 (6))。
+/// CPU の絞りは**割合**で読む: 期間の数が分母、絞られた期間が分子 (T15.0)。
 ///
 /// 累計はこのプロセスより前から動いている (親の階層の値) ので、生の値ではなく
 /// 増分どうしを割る。1 分へ畳むときは分子も分母も足し合わせる。
@@ -139,7 +139,7 @@ fn the_cgroup_user_and_system_time_are_deltas_at_the_end() {
     assert!(out.ends_with(",0,null,null]"), "{}", out);
 }
 
-/// 直近 5 分の絞りは `/healthz` と異常の規則が読む割合になる (T15.0 (6))。
+/// 直近 5 分の絞りは `/healthz` と異常の規則が読む割合になる (T15.0)。
 #[test]
 fn the_five_minute_throttling_is_a_ratio() {
     assert_eq!(Health::default().cpu_throttled_ratio(), None, "読めない");

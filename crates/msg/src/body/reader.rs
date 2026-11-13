@@ -117,7 +117,7 @@ impl<'a, R: BufRead> BodyReader<'a, R> {
                         return Err(self.truncate());
                     };
                     // データの後ろは空行 (CRLF。LF だけも受ける) でなければならない (RFC 9112 §7.1。
-                    // T32.15 (3))。今までは `2\r\nokXX\r\n` の `XX` を黙って読み捨てていた
+                    // T32.15)。今までは `2\r\nokXX\r\n` の `XX` を黙って読み捨てていた
                     if !matches!(line.as_slice(), b"\r\n" | b"\n") {
                         return Err(io::Error::new(
                             io::ErrorKind::InvalidData,
@@ -152,7 +152,7 @@ impl<'a, R: BufRead> BodyReader<'a, R> {
 
 /// chunk の大きさの行 (`<16 進>[;拡張]\r\n`) を読む。
 ///
-/// 大きさは 16 進の数字だけ (RFC 9112 §7.1 の `1*HEXDIG`。T32.15 (3))。`from_str_radix` は
+/// 大きさは 16 進の数字だけ (RFC 9112 §7.1 の `1*HEXDIG`。T32.15)。`from_str_radix` は
 /// 先頭の `+` を受けるので (`+2`)、先に字を見る。読めない行は `InvalidData`。
 fn chunk_size(line: &[u8]) -> io::Result<u64> {
     let bad = || io::Error::new(io::ErrorKind::InvalidData, "bad chunk size");

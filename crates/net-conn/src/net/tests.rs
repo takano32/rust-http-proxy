@@ -96,7 +96,7 @@ fn binds_with_an_explicit_backlog() {
 #[cfg(target_os = "linux")]
 fn blackhole_v4() -> Option<(TcpListener, TcpStream, SocketAddr)> {
     use std::os::fd::AsRawFd;
-    // `libc` は使わない (§0)。`listen(2)` だけ直接宣言する
+    // `libc` は使わない (仕様 S25)。`listen(2)` だけ直接宣言する
     unsafe extern "C" {
         fn listen(fd: i32, backlog: i32) -> i32;
     }
@@ -110,7 +110,7 @@ fn blackhole_v4() -> Option<(TcpListener, TcpStream, SocketAddr)> {
     Some((hole, filler, hole_addr))
 }
 
-/// 締め切りで抜けたときの札は `TimedOut` (T15.0 (3))。
+/// 締め切りで抜けたときの札は `TimedOut` (T15.0)。
 ///
 /// 候補 2 つ = 「閉じたポート (即 `ECONNREFUSED`)」+「黒穴 (SYN を黙って捨てる)」。
 /// 直す前は先に返った `ECONNREFUSED` が `last_err` に残り、**締め切りまで待った

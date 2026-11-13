@@ -5,7 +5,7 @@ use super::*;
 
 use super::first_line::Peer;
 
-/// keep-alive の HTTP 接続の宛先を `/connections` に出す (T14.2 (5))。
+/// keep-alive の HTTP 接続の宛先を `/connections` に出す (T14.2)。
 ///
 /// **書くのは接続の最初の要求のときだけ** (2 本目以降は宛先が変わりうるが、
 /// 要求ごとに表を触らない方針は T13.4 のまま)。CONNECT はトンネルを開くときに書く。

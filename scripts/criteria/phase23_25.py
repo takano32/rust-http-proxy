@@ -21,7 +21,7 @@ DNS_FAILURES = ("dns", "nxdomain", "dns_temp")
 
 
 def recent_attempts(snap, causes):
-    """`/recent` の connect の 1 行を 1 試行として、試行・`dns` の失敗・接続の失敗を数える (T23.0 の (2))。
+    """`/recent` の connect の 1 行を 1 試行として、試行・`dns` の失敗・接続の失敗を数える (T23.0)。
 
     phase22 の「接続 1 本あたり」の分母は `/history` の `connects` で、宛先の生きた割合 (使われ方) が
     変わると振れる (T22.99 の 7.80 倍は 1 本の接続元が死んだメールサーバーを総当たりしただけ)。
@@ -57,7 +57,7 @@ def recent_attempts(snap, causes):
 
 
 def _p23_connect_errors(c, th):
-    """T23.1 (T23.0 の (2)): 接続のエラー (`refused`・`unreachable`・`timeout`) の
+    """T23.1 (T23.0): 接続のエラー (`refused`・`unreachable`・`timeout`) の
     **名前解決に成功した試行あたり**が前の期間の 1.5 倍未満 (T22.4 の戻す条件)。
 
     phase22 の行 (`_p22_connect_errors`) は分母が `connects` なので、死んだ名前の総当たりのような
@@ -172,7 +172,7 @@ def two_starts(x, y):
 
 
 def _p23_heap(c, th):
-    """T23.1: phase20 の (g) に、**0 時間の雪像と起動が違う理由** (`/events` の `start` の時刻) を足す。
+    """T23.1: phase20 の `heap_used + mmap − cache_memory` の行に、**0 時間の雪像と起動が違う理由** (`/events` の `start` の時刻) を足す。
 
     T22.99 は 2026-10-17T22:14:52Z の無言の再起動 (T23.2) で 0 時間の雪像と起動が食い違い、
     heap の行が黙って「判定できず」になった。同じ「判定できず」でも、**2 つの起動がいつ始まったか**が
@@ -383,7 +383,7 @@ def recent_connect_rtt(snap):
     **同じ行の `ms.connect` と対にする**と母集団を混ぜずに「確立 − RTT」が出せる。
 
     外す行: `reason` が `error:` で始まる行 (確立していない。`error:dns` は
-    `connect_ms = total_ms − dns_ms` なので 0 に落ちる。T15.0 (1)) と、`rtt_ms.origin` が
+    `connect_ms = total_ms − dns_ms` なので 0 に落ちる。T15.0) と、`rtt_ms.origin` が
     `null` の行 (Linux 以外・`--lite`・閉じるのが早すぎた)。外した数も返す。
 
     返すのは `{"pairs", "rows", "connect", "failed", "no_rtt", "no_ms", "from", "until", "ats"}`。
@@ -502,7 +502,7 @@ def restarts_since(r, since):
 
 
 def _p25_silent_restarts(c, th):
-    """T27.0 (a): **前の雪像より後の**起動で、こちらが原因の無言の再起動 (同じ `boot` のまま) が 0 回。
+    """T27.0: **前の雪像より後の**起動で、こちらが原因の無言の再起動 (同じ `boot` のまま) が 0 回。
 
     読み方は phase24 の行 (`_p24_silent_restarts`) と同じで、数える `start` を前の雪像の取得より後に
     切るところだけが違う。その間に起動が 1 つも無い (同じプロセスの 2 枚) なら、後の雪像の起動時刻が
@@ -558,7 +558,7 @@ def _p25_silent_restarts(c, th):
 
 
 def _p25_connect_errors(c, th):
-    """T27.0 (b): phase23 の接続のエラーの行 (`_p23_connect_errors`) に、**試行の本数の下限**を足したもの。
+    """T27.0: phase23 の接続のエラーの行 (`_p23_connect_errors`) に、**試行の本数の下限**を足したもの。
 
     前か後の `/recent` の connect の試行が `min_recent_attempts` に満たなければ「判定できず」。
     T25.99 の前はサーバーの日次の雪像 (00:00 UTC に撮る) で、`/recent` は 1 時間 581 本・接続のエラー 0 件
@@ -580,7 +580,7 @@ def _p25_connect_errors(c, th):
 
 
 def _p25_refresh_per_name(c, th):
-    """T27.0 (c): 1 名前あたりの裏の引き直し (回/時) が前の期間の 1.5 倍未満。
+    """T27.0: 1 名前あたりの裏の引き直し (回/時) が前の期間の 1.5 倍未満。
 
     phase22 の T22.4 の目安 (`_p22_refresh_and_stale_misses`) は「keep-warm を止めたら引き直しが半分以下」で、
     止めた版どうし (0.22.6 以降) を比べると意味が無い (T25.99 は 1.06 倍で「届かず」)。通算の回/時は

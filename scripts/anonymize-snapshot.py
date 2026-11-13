@@ -31,7 +31,7 @@
 | `User-Agent` (`agents` と、いまの版の `agent`) | `ua-01` | 同じ UA は同じ番号 |
 | `/log` の行・`/events` の説明の中のホストと IP | 上と同じ表 | 行の他の語はそのまま |
 | `/events` の `new_client:` の `agent "…"` | `ua-01` | 上の UA と同じ表 (T17.16。切られた UA は別の番号) |
-| cgroup の道 (`kernel.cgroup_cpu.path`) | `/sys/fs/cgroup/…/…/cpu.stat` | 深さと最後の名前だけ残す (T15.0 (6)) |
+| cgroup の道 (`kernel.cgroup_cpu.path`) | `/sys/fs/cgroup/…/…/cpu.stat` | 深さと最後の名前だけ残す (T15.0) |
 
 置き換えないもの: **数字** (件数・ms・区間・閉じた理由・時刻)、`version`、部の名前、
 この機械の設定 (`settings.path` のような個人の閲覧先ではないもの)。
@@ -74,7 +74,7 @@ ADDR_KEYS = frozenset(("addrs",))
 AGENT_KEYS = frozenset(("agents", "agent"))
 # 値が文 (中にホストや IP が混ざる。行の他の語は変えない)
 TEXT_KEYS = frozenset(("msg", "text", "error", "url", "file"))
-# この鍵の下の `path` だけは潰す (`/status` の `kernel.cgroup_cpu.path` = T15.0 (6))。
+# この鍵の下の `path` だけは潰す (`/status` の `kernel.cgroup_cpu.path` = T15.0)。
 # 道は `/sys/fs/cgroup/system.slice/pterodactyl-<uuid>.scope/cpu.stat` のような形で、
 # **コンテナを 1 つに特定できる**。この機械の設定の `path` (`~/.rust-http-proxy.state` の
 # ような、個人の閲覧先ではないもの) は今までどおりそのまま通す
@@ -283,7 +283,7 @@ class Anonymizer:
             return self.ip(head, "client") + ":" + port
         return self.ip(value, "client")
 
-    # ------------------------------------------------- cgroup の道 (T15.0 (6))
+    # ------------------------------------------------- cgroup の道 (T15.0)
 
     def cgroup_path(self, s):
         """`kernel.cgroup_cpu.path` を `/sys/fs/cgroup/…/…/cpu.stat` に潰す。

@@ -5,7 +5,7 @@
 
 このリポジトリを一時のディレクトリへ `git clone --depth 1` し (HEAD の中身。`check-all.sh` だけは作業ツリーのものを
 置く)、**2 つを同時に壊して**どちらの名前も出ることを見る: 本体の `src/main.rs` の書式 (fmt) と、
-クレートの版を本体より大きくする (versions。決まり b)。`&&` でつないでいれば fmt で止まって versions は
+クレートの版を本体より大きくする (versions。決まり [本体が最大])。`&&` でつないでいれば fmt で止まって versions は
 見えなかった。間に挟んだ docs (壊していない) も回ることで「止まらずに続けた」を確かめる。
 clippy・unittest は回さない (遅いのと、unittest の中から unittest を回すことになるため)。
 `cargo` (rustfmt) か `git` が無い機械では飛ばす。
