@@ -1,6 +1,6 @@
 [package]
 name = "proxy-sysinfo"
-version = "0.36.33"
+version = "0.36.36"
 edition = "2024"
 
 [lib]

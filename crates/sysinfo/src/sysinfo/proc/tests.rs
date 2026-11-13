@@ -297,7 +297,18 @@ fn kept_task_files_follow_threads_that_come_and_go() {
     assert_eq!(f.comm, "kept-probe");
     tx.send(()).unwrap();
     h.join().unwrap();
-    let after = scan_tasks_reusing(root, &mut buf, &mut files, none).unwrap();
+    // `join` が返るのはスレッドが tid を消した (clear_child_tid) とき。カーネルが `/proc/self/task` から
+    // 外し終えるのはその少しあとなので、消えるまでも少し待つ (T36.36。CI で 1 回だけ残って見えた)
+    let after = (0..200)
+        .find_map(|_| {
+            let after = scan_tasks_reusing(root, &mut buf, &mut files, none).unwrap();
+            if after.tasks.iter().any(|t| t.tid == probe_tid) {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+                return None;
+            }
+            Some(after)
+        })
+        .expect("終わったスレッドが消える");
     assert!(after.tasks.iter().all(|t| t.tid != probe_tid));
     assert!(
         !files.map.contains_key(&probe_tid),
