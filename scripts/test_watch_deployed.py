@@ -58,7 +58,7 @@ class Judge(unittest.TestCase):
 
 
 class Since(unittest.TestCase):
-    """T32.25: 窓は前回の成功した見張りから (GitHub の schedule は実際には 2〜7.5 時間おき)。"""
+    """T32.25・T36.99: 窓は前回の済んだ見張りから (GitHub の schedule は実際には 2〜7.5 時間おき)。"""
 
     def test_a_silent_restart_between_runs_7_5_hours_apart_is_caught(self):
         last = NOW - int(7.5 * 3600)

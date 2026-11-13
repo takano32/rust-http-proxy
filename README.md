@@ -2210,12 +2210,13 @@ forward が `queue` / `client_read` / `origin` / `send` / `ttfb` / `body` で、
 ### 3.5 ふだんの見張り (`watch.yml`)
 
 `.github/workflows/watch.yml` が `scripts/watch-deployed.py tokyo.sorahost.net:60357` を回し、
-`/healthz` が ok でない・**前回の成功した見張りから** (15 分さかのぼって) **無言の再起動** (直前に `shutdown` の無い
+`/healthz` が ok でない・**前回の済んだ見張りから** (15 分さかのぼって) **無言の再起動** (直前に `shutdown` の無い
 `start`) がある・口が読めない、のどれかで job を落とします (GitHub が失敗を知らせます。T28.26)。
 **cron は毎時 17 分ですが、GitHub の schedule は実際には 2〜7.5 時間おきにしか回りません** (2026-10-26〜31 の
 121.2 時間で 23 回、間隔の中央値 5.5 時間・最大 7.5 時間)。前は直近 75 分しか見ていなかったので約 8 割の期間の
-再起動が見えず、いまは前回の成功した実行の時刻 (`gh run list --status success`) を `--since` に渡します
-(取れなければ直近 480 分。T32.25)。読むのは `/healthz`・`/events?n=200`・`/status?hosts=0` の 3 つだけで、
+再起動が見えず、いまは前回の済んだ (成功か失敗の) 実行の時刻を `--since` に渡します
+(取れなければ直近 480 分。T32.25)。前回の**成功した**実行から取っていたころは、一度再起動を見つけると同じ再起動で落ち続けた (2026-11-03〜13 に 36 回。T36.99) ので、
+いまは 1 回の再起動で落ちるのは 1 回 (15 分の重なりに入れば 2 回) だけです。読むのは `/healthz`・`/events?n=200`・`/status?hosts=0` の 3 つだけで、
 **実行ログには結論・版・起動からの時間・落ちた検査の名前しか出しません** (リポジトリは public で、Actions のログは誰でも読めるため)。
 別の置き先を見るときは Actions の画面から `workflow_dispatch` の `target` に `host:port` を渡します。手元からは
 `scripts/watch-deployed.py HOST:PORT` (CONNECT しか通さないプロキシの内側からは届きません)。
