@@ -1,6 +1,6 @@
 # 判定表 (`scripts/snapshot_criteria.py`) の**閾と並び** (T34.129 で割った)。
 #
-# Phase ごとの閾の辞書 (`PHASE14`〜`T36_TH`)・`--criteria` の名前から閾を引く `CRITERIA`・出力を
+# Phase ごとの閾の辞書 (`PHASE14`〜`T37_TH`)・`--criteria` の名前から閾を引く `CRITERIA`・出力を
 # 変えない定義 `FROZEN`・名前から判定の関数の並びを引く `RULES` を、Phase の順に組む。判定の関数は
 # `criteria/phase*.py` にある。`RULES` の並びは `test_snapshot_criteria.py` の `RulesOrder` が固定している。
 
@@ -29,6 +29,7 @@ from .phase29_30 import (
     _p29_idle_cost, _p29_miss_band, _p30_dns_slow, _p30_refresh_per_name,
 )
 from .t35 import _t35_events, _t35_heap
+from .t37 import _t37_dns_slow
 from .t36 import (
     _t36_conn_per_resolved_request, _t36_connect_errors, _t36_dns_slow, _t36_heap, _t36_idle_cost,
     _t36_machine_speed,
@@ -304,6 +305,12 @@ RULES["T36"] = replaced(RULES["T35"], {5: _t36_conn_per_resolved_request, 9: _t3
                                        13: _t36_connect_errors, 25: _t36_idle_cost}) + (_t36_machine_speed,)
 T36_TH = dict(T35_TH)
 CRITERIA["T36"] = T36_TH
+
+# T37 = T36 の 27 行のうち 11 番目 (`dns_slow` が立った窓の成功したミスの平均) を、前の版との比ではなく、いつも
+# 後の平均の絶対値 (500 ms 未満) で読む行に差し替えたもの (T37.1)。並びは同じ。**T36 以前の並びと文面は 1 つも動かない**
+RULES["T37"] = replaced(RULES["T36"], {11: _t37_dns_slow})
+T37_TH = dict(T36_TH)
+CRITERIA["T37"] = T37_TH
 
 # 判定表の名前は「足したタスクの番号」(2026-11-07、利用者の指示。T35.14)。phase14〜phase30 は過去の締めを
 # 同じ命令で出し直せるように名前を残し、タスクの番号の名前を**別名**として足す (中身と出力は同じもの)。

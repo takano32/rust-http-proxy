@@ -66,7 +66,7 @@
 #                         15 本送るので、何度も回すときは 0 にする)
 #   DASHBOARD (既定 1)  … 0 で `check-dashboard.js` を飛ばす (Node が無ければ自動で飛ばす)
 #   DIFF (既定 1)       … 0 で前回との差分を飛ばす
-#   CRITERIA (既定 T36) … 判定表に使う完了の定義 (`T35` `phase30` `phase29` `phase28` `phase27` `phase26` `phase25` `phase24` `phase23` `phase22` `phase21` `phase20` `phase18` `phase17`
+#   CRITERIA (既定 T37) … 判定表に使う完了の定義 (`T36` `T35` `phase30` `phase29` `phase28` `phase27` `phase26` `phase25` `phase24` `phase23` `phase22` `phase21` `phase20` `phase18` `phase17`
 #                         `phase15` `phase14` も残してある)。phase20 は phase18 の物差しを直したもの (T20.1)、
 #                         phase21 は phase20 のミス・conn 役・IPv6 の探りの 3 行の読み方を直したもの (T21.2)、
 #                         phase22 は phase21 の 10 行 + 22a の 4 行で、平常時を「300 本と期間の中央値の
@@ -97,7 +97,9 @@
 #                         (`dns.entries` × 1 名前あたりの大きさ) も引いた残りで読み (T36.1)、接続のエラーの行に
 #                         下限 0.001、`dns_slow` の行に前が 0 件のときの絶対値の閾 500 ms を置き (T36.3)、
 #                         CPU の 2 行を機械の速さの物差し (`history` 役の us/秒) で割ってから比べ、物差しの
-#                         前後の比を表示だけの 27 行目に出したもの (T36.2)。
+#                         前後の比を表示だけの 27 行目に出したもの (T36.2)、
+#                         T37 は T36 の 27 行のうち `dns_slow` の行を、前の版との比ではなくいつも絶対値の
+#                         500 ms 未満で読むもの (T37.1)。
 #                         `off` で判定表を出さない
 #   BEFORE (無指定)     … **判定表の相手**にする雪像 (再デプロイの直前に撮った「前」。T18.2)。
 #                         無ければ今までどおり直前の 1 枚 (再デプロイのあとは 0 時間の雪像になるので、
@@ -180,7 +182,7 @@ else
 fi
 DASHBOARD=${DASHBOARD:-1}
 DIFF=${DIFF:-1}
-CRITERIA=${CRITERIA:-T36}
+CRITERIA=${CRITERIA:-T37}
 # 判定表の相手 (「前」の雪像) と 0 時間の雪像 (T18.2)。どちらも無指定なら今までどおり
 JUDGE_BEFORE=${BEFORE:-}
 ZERO=${ZERO:-}
@@ -671,7 +673,7 @@ section_diff() {
   [ "$CRITERIA" = off ] || CRIT="--criteria $CRITERIA"
   # phase18 の 2 行の材料 (T18.2): `ZERO` があれば `--zero` で、日次の雪像の表は保存先 (`--from-server`
   # が `<日付>T000000Z-snapshot.json` を置く所) を `--daily-snapshots` で渡す。**phase18 と、同じ材料を
-  # 使う phase20 (T20.1)・phase21 (T21.2)・phase22 (T22.1)・phase23 (T23.1)・phase24 (T24.2)・phase25 (T27.0)・phase26 (T29.10)・phase27 (T30.0)・phase28 (T31.0)・phase29 (T32.29)・phase30 (T33.1・T33.2)・T35 (T35.9・T35.11)・T36 (T36.1・T36.3) のときだけ**
+  # 使う phase20 (T20.1)・phase21 (T21.2)・phase22 (T22.1)・phase23 (T23.1)・phase24 (T24.2)・phase25 (T27.0)・phase26 (T29.10)・phase27 (T30.0)・phase28 (T31.0)・phase29 (T32.29)・phase30 (T33.1・T33.2)・T35 (T35.9・T35.11)・T36 (T36.1・T36.3)・T37 (T37.1) のときだけ**
   # (phase24 と phase25 は `memory.baseline` が無い雪像のときだけ 0 時間の雪像で読むので、渡しておく)
   # (古い定義の判定表は今までと同じ命令で出す)
   P18=()
@@ -679,7 +681,8 @@ section_diff() {
     [ "$CRITERIA" = phase22 ] || [ "$CRITERIA" = phase23 ] || [ "$CRITERIA" = phase24 ] ||
     [ "$CRITERIA" = phase25 ] || [ "$CRITERIA" = phase26 ] || [ "$CRITERIA" = phase27 ] ||
     [ "$CRITERIA" = phase28 ] || [ "$CRITERIA" = phase29 ] || [ "$CRITERIA" = phase30 ] ||
-    [ "$CRITERIA" = T35 ] || [ "$CRITERIA" = T36 ]; then
+    [ "$CRITERIA" = T35 ] || [ "$CRITERIA" = T36 ] ||
+    [ "$CRITERIA" = T37 ]; then
     [ -n "$ZERO" ] && P18+=(--zero "$ZERO")
     P18+=(--daily-snapshots "$DIR")
   fi

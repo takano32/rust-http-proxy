@@ -12,7 +12,8 @@
 #   `phase29_30.py`  Phase 29〜30 の行とその材料を読む小物
 #   `t35.py`     Phase 31 の行 (T35.9・T35.11)
 #   `t36.py`         T36 の行 (T36.1・T36.2・T36.3)
-#   `rules.py`       閾の辞書 (`PHASE14`〜`T36_TH`)・`CRITERIA`・`FROZEN`・`RULES` (Phase の順に組む)
+#   `t37.py`         T37 の行 (T37.1)
+#   `rules.py`       閾の辞書 (`PHASE14`〜`T37_TH`)・`CRITERIA`・`FROZEN`・`RULES` (Phase の順に組む)
 # ここに残っているのは、`RULES` の行を順に呼ぶ `judge()` と、判定表の印字 (`render_criteria()`) だけ。
 #
 # 小物までこちら側にあるのは、`snapshot-diff.py` は名前に `-` があって `import` できないため
@@ -81,9 +82,10 @@ from criteria.t36 import (  # noqa: E402,F401
     _t36_conn_per_resolved_request, _t36_connect_errors, _t36_dns_slow, _t36_heap, _t36_idle_cost,
     _t36_machine_speed, dns_owned_range, machine_cost, resolved_error_rate,
 )
+from criteria.t37 import _t37_dns_slow  # noqa: E402,F401
 from criteria.rules import (  # noqa: E402,F401
     CRITERIA, FROZEN, PHASE14, PHASE15, PHASE17, PHASE18, PHASE20, PHASE21, PHASE22, PHASE23, PHASE24,
-    PHASE25, PHASE26, PHASE27, PHASE28, PHASE29, PHASE30, T35_TH, T36_TH, RULES, CRITERIA_ALIASES,
+    PHASE25, PHASE26, PHASE27, PHASE28, PHASE29, PHASE30, T35_TH, T36_TH, T37_TH, RULES, CRITERIA_ALIASES,
     criteria_name,
 )
 
@@ -299,6 +301,12 @@ INTRO = {
             "まま 1.36 倍になっていた)。物差しそのものの前後の比は 27 行目に表示だけで出し、参考に `profile-sample` 役の "
             "CPU ÷ 読んだスレッドの標本も並べます (暇な秒は全スレッドを読まないので、要求の量で動く)。"
             "**その部がスナップショットに無い行は「判定できず」**で、0 とは書きません。"),
+    # T37.1。T36 の 27 行のうち、`dns_slow` の行を前の版との比ではなく絶対値で読む
+    "T37": ("1〜27 行の並びと材料は T36 と同じです。直したのは 1 行 (T37.1): 11 行目の `dns_slow` が立った窓の、"
+            "名前解決に成功したミスの平均を、前の版の 1.5 倍未満ではなく、**いつも 500 ms 未満**かで読みます "
+            "(前の版の値と倍率は表示だけ)。立った窓は 443・80 宛ての成功したミスが数回しかない小さい窓で、"
+            "窓ごとの平均は 100〜900 ms とぶれるので、小さい母数どうしの比は閾を越えやすかった (0.36.34 の締めで "
+            "139 → 225 ms の 1.62 倍)。名前解決の遅さは上流のリゾルバが決めます。ほかの 26 行は T36 と同じです。"),
 }
 
 

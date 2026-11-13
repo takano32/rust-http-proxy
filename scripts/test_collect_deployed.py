@@ -214,7 +214,7 @@ class CollectProfileTest(unittest.TestCase):
 class CollectBeforeZeroTest(unittest.TestCase):
     """判定表の相手を `BEFORE`、0 時間の雪像を `ZERO` で渡す (T18.2)。
 
-    既定の `CRITERIA` は T36 (T36.1)。下のテストは `criteria="phase18"` を名指しして回す
+    既定の `CRITERIA` は T37 (T37.1)。下のテストは `criteria="phase18"` を名指しして回す
     (`BEFORE` / `ZERO` の受け渡しは定義に依らない)。
 
     偽のサーバーが返す「いまの雪像」は `testdata/snapshot-b.json` (版 `0.1.0+bbbbbbb`、起動から 12 時間、
@@ -268,17 +268,18 @@ class CollectBeforeZeroTest(unittest.TestCase):
         """要約の末尾の判定の節。"""
         return out[out.index("## 6. 完了の定義に対する判定"):]
 
-    def test_the_default_criteria_is_T36_against_the_previous_snapshot(self):
+    def test_the_default_criteria_is_T37_against_the_previous_snapshot(self):
         d, out, _ = self.run_collect(criteria=None)
         tail = self.judged(out)
-        self.assertIn("## 6. 完了の定義に対する判定 (snapshot-diff.py --criteria T36)", tail)
-        self.assertIn("1〜26 行の並びと材料は T35 と同じで、27 行目に表示だけの行を 1 つ足しました", tail)
+        self.assertIn("## 6. 完了の定義に対する判定 (snapshot-diff.py --criteria T37)", tail)
+        self.assertIn("1〜27 行の並びと材料は T36 と同じです。直したのは 1 行 (T37.1)", tail)
         # T36.2: CPU の 2 行は機械の速さの物差しで割ってから比べ、物差しの前後の比は表示だけの 27 行目
         self.assertIn("機械の速さの物差し: `history` 役の CPU ÷ その役の標本の数 (us/秒) の前後の比", tail)
         # T36.1: heap の行はキャッシュと名前解決の表の持ち物を引いた残りで読む (このスナップショットは
         # `memory.baseline` が無いので、行そのものは phase24 と同じ読み方に戻る。下)
-        self.assertIn("T35 と同じキャッシュの持ち物に加えて**名前解決の表の持ち物**", tail)
-        self.assertIn("立った窓の、名前解決に**成功した**ミスの平均が前の版の 1.5 倍未満", tail)
+        # (T36 の説明は T37 の説明に入らない)
+        # T37.1: `dns_slow` の行はいつも絶対値の 500 ms 未満で読む
+        self.assertIn("立った窓の、名前解決に**成功した**ミスの平均が 500 ms 未満", tail)
         # T35.9: `/events` の行は要約と同じ数え方 (T36 も同じ行)
         self.assertIn("`/events` の anomaly の種類別 件/時 (`dns_slow` を含めて表示だけ。要約と同じ数え方)", tail)
         # 前回の雪像に `/profile` も `/recent` も無いので conn 役と接続のエラーの行は「判定できず」で、
@@ -344,9 +345,9 @@ class CollectBeforeZeroTest(unittest.TestCase):
         self.assertNotIn("前: `--profile`", tail)
 
     def test_zero_and_the_daily_snapshots_are_passed_under_phase20_too(self):
-        """phase20・phase21・phase24〜T36 と既定 (T36) でも `ZERO` は (g) の行に届き、日次の雪像の表が付く。"""
+        """phase20・phase21・phase24〜T37 と既定 (T37) でも `ZERO` は (g) の行に届き、日次の雪像の表が付く。"""
         for criteria in ("phase20", "phase21", "phase24", "phase25", "phase26", "phase27", "phase28", "phase29", "phase30",
-                         "T35", "T36", None):
+                         "T35", "T36", "T37", None):
             with self.subTest(criteria=criteria):
                 self.zero_and_daily(criteria)
 
@@ -359,7 +360,7 @@ class CollectBeforeZeroTest(unittest.TestCase):
                                             "2025-12-30T000000Z-snapshot.json": daily},
                                      criteria=criteria, ZERO="{dir}/2025-12-31T060000Z-snapshot.json")
         tail = self.judged(out)
-        self.assertIn("(snapshot-diff.py --criteria %s)" % (criteria or "T36"), tail)
+        self.assertIn("(snapshot-diff.py --criteria %s)" % (criteria or "T37"), tail)
         self.assertIn("`heap_used + mmap − cache_memory` の 0 時間の雪像からの増えが 5 MB 未満", tail)
         self.assertIn("**+1.5** MB (12.5 → 14.0 MB)", tail)
         self.assertIn("`cache_memory` 0.0 → 0.0", tail)
