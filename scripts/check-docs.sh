@@ -9,18 +9,18 @@
 #
 #   (a) エンドポイント … `crates/endpoints/src/endpoints/dispatch.rs` の経路表 (match の腕)
 #                        vs README の「動作確認 (curl)」の一覧 vs `/` の案内 (`endpoint_list`)
-#   (b) 環境変数     … コードの `"PROXY_…"` / `"SERVER_…"` vs README の「環境変数」の表の鍵の欄
+#   (b) 環境変数     … コードの `"PROXY_…"` / `"SERVER_…"` vs 仕様 S7 (`specs/S7.md`) の環境変数の表の鍵の欄 (T37.4 で README から移した)
 #   (c) `/snapshot`  … `recent::snapshot` の `parts` vs 個票のエンドポイント
 #   (d) 画面の関数   … `check-dashboard.js` が `pick()` で切り出す名前 vs HTML の `function` と、呼び出し
 #   (e) クレート     … README の「クレート構成」の表 vs `crates/*/Cargo.toml` の `[package] name`
-#   (f) 道具の置き方 … README が `scripts/<名前>.py` と書いている道具 vs 実ファイルの実行ビット
+#   (f) 道具の置き方 … README・`docs/*.md`・仕様 (`SPECS.md`・`specs/*.md`) が `scripts/<名前>.py` と書いている道具 vs 実ファイルの実行ビット
 #                        (直接叩かないもの = 共通部品・割った部・unittest が読むものは除外表)
 #   (g) 台帳        … `TASKS.md` (未着手)・`TODO.md` の §5 (索引)・`tasks/TNN.md` の 1 対 1 (移し忘れ・リンク・番号・1 行目)、
 #                     3 つの相対リンクがその置き場所から辿れること (T32.38)。
 #                     中身は `scripts/check-ledger.py` (試験は `scripts/test_check_ledger.py`)
-#   (h) 判定表の既定 … `collect-deployed.sh` の `CRITERIA` の既定 vs README の「既定は phaseNN」(T28.23)
-#   (i) `-h` の既定 … `crates/base/src/cli.rs` の `-h` の括弧の数 vs README の環境変数の表の既定 (T28.23)
-#   (j) 上の/下の   … README と `docs/*.md` の「上の「X」」「下の「X」」 vs 同じファイルの見出し・太字・段落の頭と向き (T32.28)
+#   (h) 判定表の既定 … `collect-deployed.sh` の `CRITERIA` の既定 vs README・`docs/*.md`・仕様の「既定は phaseNN」(T28.23)
+#   (i) `-h` の既定 … `crates/base/src/cli.rs` の `-h` の括弧の数 vs 仕様 S7 (`specs/S7.md`) の環境変数の表の既定 (T28.23)
+#   (j) 上の/下の   … README・`docs/*.md`・仕様 (`SPECS.md`・`specs/*.md`) の「上の「X」」「下の「X」」 vs 同じファイルの見出し・太字・段落の頭と向き (T32.28)
 #   (k) いまの数字 … `docs/perf.md` の「いまの数字」の版 vs `TODO.md` §2 の「デプロイ先の現在地」の版 (T32.28)
 #
 # **意図的に外してあるものは下の除外表に理由つきで持つ** (黙って無視しない)。
@@ -101,13 +101,15 @@ grep -rhoE '"(PROXY|SERVER)_[A-Z0-9]+[A-Z0-9_]*"' --include='*.rs' crates/ src/ 
 cut -f1 "$W/env-skip" | LC_ALL=C sort -u >"$W/env-skip-names"
 comm -23 "$W/env-all" "$W/env-skip-names" >"$W/env-code"
 
-sed -n '/^## 環境変数/,/^## /p' README.md |
+# 表は T37.4 で README の「環境変数」から仕様 S7 (`specs/S7.md`) へ移した。表は「変数ごとの説明」の前まで
+ENVSPEC=specs/S7.md
+sed -n '1,/^### 変数ごとの説明/p' "$ENVSPEC" |
   sed -n 's/^| \(`[^|]*`[^|]*\) |.*/\1/p' |
   grep -oE '`(PROXY|SERVER)_[A-Z0-9_]+`' | tr -d '`' | LC_ALL=C sort -u >"$W/env-readme"
 
-printf '(b) 環境変数: コードの文字列 %s 件 (除外 %s) / README の表の鍵 %s 件\n' \
-  "$(wc -l <"$W/env-code")" "$(wc -l <"$W/env-skip-names")" "$(wc -l <"$W/env-readme")"
-diffset "(b)" "コード" "$W/env-code" "README の表" "$W/env-readme"
+printf '(b) 環境変数: コードの文字列 %s 件 (除外 %s) / %s の表の鍵 %s 件\n' \
+  "$(wc -l <"$W/env-code")" "$(wc -l <"$W/env-skip-names")" "$ENVSPEC" "$(wc -l <"$W/env-readme")"
+diffset "(b)" "コード" "$W/env-code" "$ENVSPEC の表" "$W/env-readme"
 sed 's/^/    除外: /;s/\t/ — /' "$W/env-skip"
 
 # --- (c) `/snapshot` の parts -------------------------------------------------
@@ -229,8 +231,8 @@ snapshot_criteria.py	判定の部。入口は `snapshot-diff.py` (単体では�
 test_*.py	unittest が名前で読む (`python3 -m unittest discover -s scripts`)
 EOF
 # 同じ名前は説明の節と例の節の両方に出るので 1 つに畳む。
-# README から分けた本文 (`docs/*.md`。T29.32) も同じ文書として読む
-grep -ohE 'scripts/[A-Za-z0-9_.-]+\.py' README.md docs/*.md | sed 's|^scripts/||' | LC_ALL=C sort -u >"$W/py-readme"
+# README から分けた本文 (`docs/*.md`。T29.32) と仕様 (`SPECS.md`・`specs/*.md`。T37.4) も同じ文書として読む
+grep -ohE 'scripts/[A-Za-z0-9_.-]+\.py' README.md docs/*.md SPECS.md specs/*.md | sed 's|^scripts/||' | LC_ALL=C sort -u >"$W/py-readme"
 WANT=0
 : >"$W/py-want"
 while read -r name; do
@@ -274,8 +276,9 @@ if not m:
     print("  NG (h): scripts/collect-deployed.sh に CRITERIA の既定が見つからない")
     sys.exit(1)
 want = m.group(1)
-# README から分けた本文 (`docs/*.md`。T29.32) も同じ文書として読む
-readme = ''.join(open(f, encoding='utf-8').read() for f in ['README.md'] + sorted(glob.glob('docs/*.md')))
+# README から分けた本文 (`docs/*.md`。T29.32) と仕様 (`SPECS.md`・`specs/*.md`。T37.4) も同じ文書として読む
+readme = ''.join(open(f, encoding='utf-8').read()
+                 for f in ['README.md', 'SPECS.md'] + sorted(glob.glob('docs/*.md')) + sorted(glob.glob('specs/*.md')))
 bad = sorted(set(x for x in re.findall(r'(?:collect-deployed\.sh`? の既定は\s*|判定表の既定は \*\*`CRITERIA=)(phase\d+|T\d+)', readme)
                  if x != want))
 print("(h) 判定表の既定: collect-deployed.sh は %s / README の「既定は」の書き方 %d か所"
@@ -286,26 +289,26 @@ sys.exit(1 if bad else 0)
 CRITPY
 
 # --- (i) `-h` の既定 (T28.23) ----------------------------------------------------
-# `crates/base/src/cli.rs` の `-h` が括弧で書く既定 (`(5, 0 = unlimited)` の 5) と、README の環境変数の表の
+# `crates/base/src/cli.rs` の `-h` が括弧で書く既定 (`(5, 0 = unlimited)` の 5) と、仕様 S7 (`specs/S7.md`。T37.4 で README から移した) の環境変数の表の
 # 既定の欄がそろっているか。T23.3 で CONNECT の締め切りを 5 秒にしたのに `-h` は 10 のままだった
 python3 - <<'HELPPY' || NG=1
 import re, sys
 cli = open('crates/base/src/cli.rs', encoding='utf-8').read()
-readme = open('README.md', encoding='utf-8').read()
+readme = open('specs/S7.md', encoding='utf-8').read()
 table = dict(re.findall(r'^\| `((?:PROXY|SERVER)_[A-Z0-9_]+)` \| `([^`]*)` \|', readme, re.M))
 pairs = re.findall(r'^\s+((?:PROXY|SERVER)_[A-Z0-9_]+)\s*\n?\s+[^\n(]*\((\d+)[,)]', cli, re.M)
 ng = 0
 for name, num in pairs:
     have = table.get(name)
     if have is not None and have.isdigit() and have != num:
-        print("  NG (i): `-h` の %s の既定が %s、README の表は %s" % (name, num, have))
+        print("  NG (i): `-h` の %s の既定が %s、specs/S7.md の表は %s" % (name, num, have))
         ng = 1
-print("(i) `-h` の既定: 数で書いた %d 個を README の表と比べた" % len(pairs))
+print("(i) `-h` の既定: 数で書いた %d 個を specs/S7.md の表と比べた" % len(pairs))
 sys.exit(ng)
 HELPPY
 
 # --- (j) 「上の」「下の」の指す先 (T32.28) ------------------------------------------
-# README と `docs/*.md` の「上の「X」」「下の「X」」が、**同じファイルの**見出し・太字 (`**…X…**`)・段落の頭 (`X…`) に
+# README・`docs/*.md`・仕様 (`SPECS.md`・`specs/*.md`。T37.4) の「上の「X」」「下の「X」」が、**同じファイルの**見出し・太字 (`**…X…**`)・段落の頭 (`X…`) に
 # 実在し、向きが合うか。README を `docs/` に分けたとき (T29.32) に指す先が別のファイルへ移って切れた所と、
 # 下にあるのに「上の」と書いた所があった。別のファイルを指すときは「上の」ではなくリンクで書く。
 # コードの囲みの中は見ない
@@ -313,7 +316,7 @@ python3 - <<'UPDOWNPY' || NG=1
 import glob, re, sys
 REF = re.compile(r"(上|下)の「(?:\*\*)?([^」]+?)(?:\*\*)?」")
 ng = total = 0
-for path in ['README.md'] + sorted(glob.glob('docs/*.md')):
+for path in ['README.md', 'SPECS.md'] + sorted(glob.glob('docs/*.md')) + sorted(glob.glob('specs/*.md')):
     lines = open(path, encoding='utf-8').read().split('\n')
     fence, body = False, []
     for i, line in enumerate(lines):
@@ -346,7 +349,7 @@ for path in ['README.md'] + sorted(glob.glob('docs/*.md')):
                 print("  NG (j): %s:%d の %sの「%s」は向きが逆 (%s 行目)"
                       % (path, i + 1, way, name, ",".join(str(j + 1) for j in hits[:3])))
                 ng = 1
-print("(j) 「上の」「下の」: README と docs/*.md の %d か所を見た" % total)
+print("(j) 「上の」「下の」: README・docs/*.md・SPECS.md・specs/*.md の %d か所を見た" % total)
 sys.exit(ng)
 UPDOWNPY
 
