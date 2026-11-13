@@ -12,7 +12,7 @@
 **`--only connect` は tunnels/s (ops) を読まない**: TIME_WAIT 律速で同じバイナリでも ±24% 振れ、交互の組の中の位置だけで中央値が
 10% 動く (T14.1 の対照実験)。主指標は CPU/本 だけ、**前後交互は 6 組** (実例: T13.4 の個票を足した変更は 3 組で +5.6% と出て、
 6 組に増やしたら +1.4% に収まった)。他の経路 (forward / HIT / tunnel / 1 接続 1 要求) は 3 組のままでよい。この決まりは
-`scripts/cpu-per-request.sh` の先頭の注記にも書いてある (T14.2 (6))。
+`scripts/cpu-per-request.sh` の先頭の注記にも書いてある (T14.2)。
 
 **ただし `--only tunnel` だけは例外で、プロキシ cpu4-5 / ベンチ cpu6-7 (両方 big)。**
 ベンチの blaster と reader はどちらも本気で回るスレッドで、LITTLE に置くとベンチが先に頭打ちになる
@@ -188,7 +188,7 @@ CONNECT (`connect://`) と forward を別の表にし、**AAAA の有無で 2 �
   オリジンまでの待ちを見たいときは `-H 'Cache-Control: no-cache'` を足すか `X-Cache` を確かめる。
 - **`/status` は窓が混在している。** `total_requests` は起動から、`hosts[]` は `.rrd` の通算。
   `status-diff.py` の見出しは両方を印字し、`uptime_secs` が減っていたら
-  「**再起動をまたいでいる**」と出す (T12.4 (4) で `/status` 側に窓を書く)。
+  「**再起動をまたいでいる**」と出す (T12.4 で `/status` 側に窓を書く)。
 
 ## ビルドのメモリの測り方
 
