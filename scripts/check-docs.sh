@@ -5,23 +5,24 @@
 #
 # 今日の版はエンドポイントが 10 本以上増え、環境変数も増えた。増やしたのは別々のエージェントで、
 # **コードにあるのに文書に無い / 文書にあるのにコードに無い**が目で見つからなくなっている。
-# 突き合わせるのは 11 (下の (a)〜(k)):
+# 突き合わせるのは次の 11。検査は何を見るかの名前で呼び、出力の行の頭と NG の行にも `[名前]` で出す
+# (T37.7 で `(a)`〜`(k)` の記号から変えた):
 #
-#   (a) エンドポイント … `crates/endpoints/src/endpoints/dispatch.rs` の経路表 (match の腕)
+#   [エンドポイント]   … `crates/endpoints/src/endpoints/dispatch.rs` の経路表 (match の腕)
 #                        vs README の「動作確認 (curl)」の一覧 vs `/` の案内 (`endpoint_list`)
-#   (b) 環境変数     … コードの `"PROXY_…"` / `"SERVER_…"` vs 仕様 S7 (`specs/S7.md`) の環境変数の表の鍵の欄 (T37.4 で README から移した)
-#   (c) `/snapshot`  … `recent::snapshot` の `parts` vs 個票のエンドポイント
-#   (d) 画面の関数   … `check-dashboard.js` が `pick()` で切り出す名前 vs HTML の `function` と、呼び出し
-#   (e) クレート     … README の「クレート構成」の表 vs `crates/*/Cargo.toml` の `[package] name`
-#   (f) 道具の置き方 … README・`docs/*.md`・仕様 (`SPECS.md`・`specs/*.md`) が `scripts/<名前>.py` と書いている道具 vs 実ファイルの実行ビット
+#   [環境変数]         … コードの `"PROXY_…"` / `"SERVER_…"` vs 仕様 S7 (`specs/S7.md`) の環境変数の表の鍵の欄 (T37.4 で README から移した)
+#   [スナップショットの部] … `recent::snapshot` の `parts` vs 個票のエンドポイント
+#   [画面の関数]       … `check-dashboard.js` が `pick()` で切り出す名前 vs HTML の `function` と、呼び出し
+#   [クレート]         … README の「クレート構成」の表 vs `crates/*/Cargo.toml` の `[package] name`
+#   [道具の実行ビット] … README・`docs/*.md`・仕様 (`SPECS.md`・`specs/*.md`) が `scripts/<名前>.py` と書いている道具 vs 実ファイルの実行ビット
 #                        (直接叩かないもの = 共通部品・割った部・unittest が読むものは除外表)
-#   (g) 台帳        … `TASKS.md` (未着手)・`docs/task-index.md` (索引。T37.5 で `TODO.md` から移した)・`tasks/TNN.md` の
-#                     1 対 1 (移し忘れ・リンク・番号・1 行目)、相対リンクがその置き場所から辿れること (T32.38)。
-#                     中身は `scripts/check-ledger.py` (試験は `scripts/test_check_ledger.py`)
-#   (h) 判定表の既定 … `collect-deployed.sh` の `CRITERIA` の既定 vs README・`docs/*.md`・仕様の「既定は phaseNN」(T28.23)
-#   (i) `-h` の既定 … `crates/base/src/cli.rs` の `-h` の括弧の数 vs 仕様 S7 (`specs/S7.md`) の環境変数の表の既定 (T28.23)
-#   (j) 上の/下の   … README・`docs/*.md`・仕様 (`SPECS.md`・`specs/*.md`) の「上の「X」」「下の「X」」 vs 同じファイルの見出し・太字・段落の頭と向き (T32.28)
-#   (k) いまの数字 … `docs/perf.md` の「いまの数字」の版 vs `docs/status.md` の「デプロイ先の現在地」の版 (T32.28)
+#   [台帳]             … `TASKS.md` (未着手)・`docs/task-index.md` (索引。T37.5 で `TODO.md` から移した)・`tasks/TNN.md` の
+#                        1 対 1 (移し忘れ・リンク・番号・1 行目)、相対リンクがその置き場所から辿れること (T32.38)。
+#                        中身は `scripts/check-ledger.py` (試験は `scripts/test_check_ledger.py`)
+#   [判定表の既定]     … `collect-deployed.sh` の `CRITERIA` の既定 vs README・`docs/*.md`・仕様の「既定は phaseNN」(T28.23)
+#   [-h の既定]        … `crates/base/src/cli.rs` の `-h` の括弧の数 vs 仕様 S7 (`specs/S7.md`) の環境変数の表の既定 (T28.23)
+#   [上の・下の]       … README・`docs/*.md`・仕様 (`SPECS.md`・`specs/*.md`) の「上の「X」」「下の「X」」 vs 同じファイルの見出し・太字・段落の頭と向き (T32.28)
+#   [いまの数字の版]   … `docs/perf.md` の「いまの数字」の版 vs `docs/status.md` の「デプロイ先の現在地」の版 (T32.28)
 #
 # **意図的に外してあるものは下の除外表に理由つきで持つ** (黙って無視しない)。
 # 差分が 1 件でもあれば理由を印字して exit 1。
@@ -54,7 +55,7 @@ diffset() {
 echo "rust-http-proxy — 文書とコードの整合 (scripts/check-docs.sh)"
 echo
 
-# --- (a) エンドポイント -------------------------------------------------------
+# --- [エンドポイント] -------------------------------------------------------
 # コード側は `path == "/…"` と `path.strip_prefix("/snapshots/")` の全部。
 # 別名 (末尾の `/`、`/dashboard/inspect`、`/probe`) は代表の綴りに寄せてから比べる。
 norm_ep() {
@@ -81,14 +82,14 @@ sed -n '/^## 動作確認 (curl)/,/^```$/p' README.md |
   grep -oE 'http://127\.0\.0\.1:8080/[A-Za-z0-9<>?=&|,.:/_%$()-]*' |
   sed -e 's|http://127.0.0.1:8080||' -e 's/[?].*//' | norm_ep >"$W/ep-readme"
 
-printf '(a) エンドポイント: %s の経路表 %s 件 / README「動作確認 (curl)」 %s 件 / `/` の案内 %s 件\n' \
+printf '[エンドポイント] %s の経路表 %s 件 / README「動作確認 (curl)」 %s 件 / `/` の案内 %s 件\n' \
   "$MOD" "$(wc -l <"$W/ep-code")" "$(wc -l <"$W/ep-readme")" "$(wc -l <"$W/ep-guide")"
-diffset "(a)" "コード" "$W/ep-code" "README" "$W/ep-readme"
-diffset '(a)' 'コード' "$W/ep-code" '`/` の案内' "$W/ep-guide"
+diffset "[エンドポイント]" "コード" "$W/ep-code" "README" "$W/ep-readme"
+diffset '[エンドポイント]' 'コード' "$W/ep-code" '`/` の案内' "$W/ep-guide"
 echo "    除外: /  — 案内そのもの (自分を一覧に載せない)"
 echo "    別名: /inspect=/dashboard/inspect, /probe.html=/probe, 末尾の / は同じ口"
 
-# --- (b) 環境変数 -------------------------------------------------------------
+# --- [環境変数] -------------------------------------------------------------
 # コード側は `crates/` と `src/` の `"PROXY_…"` / `"SERVER_…"` の文字列すべて
 # (`config.rs` の `src.mark()` と各クレートの `envfile::var()` はここに入る)。
 cat >"$W/env-skip" <<'EOF'
@@ -107,12 +108,12 @@ sed -n '1,/^### 変数ごとの説明/p' "$ENVSPEC" |
   sed -n 's/^| \(`[^|]*`[^|]*\) |.*/\1/p' |
   grep -oE '`(PROXY|SERVER)_[A-Z0-9_]+`' | tr -d '`' | LC_ALL=C sort -u >"$W/env-readme"
 
-printf '(b) 環境変数: コードの文字列 %s 件 (除外 %s) / %s の表の鍵 %s 件\n' \
+printf '[環境変数] コードの文字列 %s 件 (除外 %s) / %s の表の鍵 %s 件\n' \
   "$(wc -l <"$W/env-code")" "$(wc -l <"$W/env-skip-names")" "$ENVSPEC" "$(wc -l <"$W/env-readme")"
-diffset "(b)" "コード" "$W/env-code" "$ENVSPEC の表" "$W/env-readme"
+diffset "[環境変数]" "コード" "$W/env-code" "$ENVSPEC の表" "$W/env-readme"
 sed 's/^/    除外: /;s/\t/ — /' "$W/env-skip"
 
-# --- (c) `/snapshot` の parts -------------------------------------------------
+# --- [スナップショットの部] `/snapshot` の parts -------------------------------------------------
 # `parts` の名前を口の綴りに戻す: `status_errors` / `status_dns` は `/status` の並べ替え、
 # `history.5` などは `/history` の解像度、`hosts_series` は `/hosts/series`。部の並びは `collect_parts` の `vec![…]` (T34.91)。
 sed -n '/^fn collect_parts(/,/^    \]$/p' "$REC" |
@@ -144,15 +145,15 @@ EOF
 cut -f1 "$W/snap-skip" | LC_ALL=C sort -u >"$W/snap-skip-names"
 LC_ALL=C sort -u "$W/ep-code" | comm -23 - "$W/snap-skip-names" >"$W/snap-want"
 
-printf '(c) `/snapshot` の parts: %s 部 = %s 口 / 雪像に入るべき口 %s (除外 %s)\n' \
+printf '[スナップショットの部] `/snapshot` の parts %s 部 = %s 口 / 雪像に入るべき口 %s (除外 %s)\n' \
   "$(wc -l <"$W/parts-raw")" "$(wc -l <"$W/parts-ep")" "$(wc -l <"$W/snap-want")" "$(wc -l <"$W/snap-skip-names")"
-diffset "(c)" "parts" "$W/parts-ep" "個票の口" "$W/snap-want"
+diffset "[スナップショットの部]" "parts" "$W/parts-ep" "個票の口" "$W/snap-want"
 sed 's/^/    除外: /;s/\t/ — /' "$W/snap-skip"
 
-# --- (d) 画面の関数名 ---------------------------------------------------------
+# --- [画面の関数] ---------------------------------------------------------
 # `check-dashboard.js` は HTML の `<script>` から名前で関数を切り出して 1 つの object にする。
-# 見るのは 3 つ: (1) 載せた名前が HTML にあること、(2) 呼んでいる名前を載せてあること、
-# (3) 載せたのに誰も (テストも、切り出した他の関数も) 呼ばない名前が残っていないこと。
+# 見るのは 3 つ: 載せた名前が HTML にあること、呼んでいる名前を載せてあること、
+# 載せたのに誰も (テストも、切り出した他の関数も) 呼ばない名前が残っていないこと。
 python3 - <<'PY' >"$W/api-out"
 import re
 
@@ -197,30 +198,30 @@ for m in re.finditer(
             ('呼んでいるが載せていない', sorted(called - set(listed))),
             ('載せたが誰も呼ばない', sorted(set(listed) - called - inner))):
         if names:
-            print('  NG (d): %s の %s: %s' % (var, kind, ' '.join(names)))
+            print('  NG [画面の関数]: %s の %s: %s' % (var, kind, ' '.join(names)))
 print('TOTAL %d' % total)
 PY
-printf '(d) 画面の関数: check-dashboard.js が切り出す %s 個\n' "$(sed -n 's/^TOTAL //p' "$W/api-out")"
+printf '[画面の関数] check-dashboard.js が切り出す %s 個\n' "$(sed -n 's/^TOTAL //p' "$W/api-out")"
 grep -v '^TOTAL ' "$W/api-out"
 grep -q '^  NG ' "$W/api-out" && NG=1
 
-# --- (e) クレートの表 ---------------------------------------------------------
+# --- [クレート] README の表 ---------------------------------------------------------
 awk '/^\[package\]/{p=1;next} /^\[/{p=0} p && /^name = /{gsub(/name = "|"/,"");print}' \
   crates/*/Cargo.toml Cargo.toml | LC_ALL=C sort -u >"$W/crate-code"
 sed -n '/^## クレート構成/,/^## /p' README.md |
   sed -n 's/^| `\([a-z0-9-]*\)` |.*/\1/p' | LC_ALL=C sort -u >"$W/crate-readme"
-printf '(e) クレート: Cargo.toml %s 個 / README の表 %s 行\n' \
+printf '[クレート] Cargo.toml %s 個 / README の表 %s 行\n' \
   "$(wc -l <"$W/crate-code")" "$(wc -l <"$W/crate-readme")"
-diffset "(e)" "Cargo.toml" "$W/crate-code" "README の表" "$W/crate-readme"
+diffset "[クレート]" "Cargo.toml" "$W/crate-code" "README の表" "$W/crate-readme"
 # 表の前の文の「(N + 本体)」も表と合っていること (本体 = rust-http-proxy の 1 行を引く)
 SAID=$(sed -n 's/.*分けてあります (\([0-9]*\) + 本体).*/\1/p' README.md)
 HAVE=$(($(wc -l <"$W/crate-code") - 1))
 if [ "$SAID" != "$HAVE" ]; then
   NG=1
-  echo "  NG (e): README の「($SAID + 本体)」が表の $HAVE 個と合わない"
+  echo "  NG [クレート]: README の「($SAID + 本体)」が表の $HAVE 個と合わない"
 fi
 
-# --- (f) 道具の置き方 (実行ビット) ----------------------------------------------
+# --- [道具の実行ビット] 道具の置き方 ----------------------------------------------
 # README が `scripts/<名前>.py` と書いているものは、**そのまま叩ける道具**であること
 # (`scripts/snapshot-diff.py a.json b.json` のように打つ。T24.7)。README にあるのにファイルが
 # 無いものも NG (名前を変えたのに文書を直し忘れた、がここで出る)。
@@ -246,26 +247,26 @@ while read -r name; do
     WANT=$((WANT + 1))
   fi
 done <"$W/py-readme"
-printf '(f) 道具の実行ビット: README の `scripts/*.py` の参照 %s 種類 / 直接叩く %s 件 (除外 %s)\n' \
+printf '[道具の実行ビット] README の `scripts/*.py` の参照 %s 種類 / 直接叩く %s 件 (除外 %s)\n' \
   "$(wc -l <"$W/py-readme")" "$WANT" "$(wc -l <"$W/py-skip")"
 sed 's/^/    除外: /;s/\t/ — /' "$W/py-skip"
 while read -r name; do
   if [ ! -f "scripts/$name" ]; then
     NG=1
-    echo "  NG (f): README にあるが scripts/$name が無い"
+    echo "  NG [道具の実行ビット]: README にあるが scripts/$name が無い"
   elif [ ! -x "scripts/$name" ]; then
     NG=1
-    echo "  NG (f): README の scripts/$name に実行ビットが無い (chmod +x scripts/$name)"
+    echo "  NG [道具の実行ビット]: README の scripts/$name に実行ビットが無い (chmod +x scripts/$name)"
   fi
 done <"$W/py-want"
 
-# --- (g) 台帳 (TASKS.md の未着手・docs/task-index.md の索引・tasks/TNN.md) ---------
+# --- [台帳] (TASKS.md の未着手・docs/task-index.md の索引・tasks/TNN.md) ---------
 # 済んだ Phase の本文を `tasks/TNN.md` へ移したので (T24.9)、**移し忘れ・リンク切れ・番号の重複**を
-# 見る (T24.10)。4 つの規則と足場 1 つは `scripts/check-ledger.py` の頭に書いてある (試験は
+# 見る (T24.10)。見る中身 (名前つきの小さな検査) は `scripts/check-ledger.py` の頭に書いてある (試験は
 # `scripts/test_check_ledger.py`)。**`TODO.md`・`docs/*.md`・`tasks/*.md` は読むだけで、1 文字も変えない。**
 python3 scripts/check-ledger.py || NG=1
 
-# --- (h) 判定表の既定 (T28.23) -------------------------------------------------
+# --- [判定表の既定] (T28.23) -------------------------------------------------
 # `collect-deployed.sh` の `CRITERIA` の既定と、README の「既定は phaseNN」の書き方がそろっているか。
 # T27.0 で phase25 にしたのに README は 3 か所 phase24 のままだった (2026-10-25 の洗い出しで見つかった)
 python3 - <<'CRITPY' || NG=1
@@ -273,7 +274,7 @@ import glob, re, sys
 src = open('scripts/collect-deployed.sh', encoding='utf-8').read()
 m = re.search(r'^CRITERIA=\$\{CRITERIA:-(phase\d+|T\d+)\}', src, re.M)
 if not m:
-    print("  NG (h): scripts/collect-deployed.sh に CRITERIA の既定が見つからない")
+    print("  NG [判定表の既定]: scripts/collect-deployed.sh に CRITERIA の既定が見つからない")
     sys.exit(1)
 want = m.group(1)
 # README から分けた本文 (`docs/*.md`。T29.32) と仕様 (`SPECS.md`・`specs/*.md`。T37.4) も同じ文書として読む
@@ -281,14 +282,14 @@ readme = ''.join(open(f, encoding='utf-8').read()
                  for f in ['README.md', 'SPECS.md'] + sorted(glob.glob('docs/*.md')) + sorted(glob.glob('specs/*.md')))
 bad = sorted(set(x for x in re.findall(r'(?:collect-deployed\.sh`? の既定は\s*|判定表の既定は \*\*`CRITERIA=)(phase\d+|T\d+)', readme)
                  if x != want))
-print("(h) 判定表の既定: collect-deployed.sh は %s / README の「既定は」の書き方 %d か所"
+print("[判定表の既定] collect-deployed.sh は %s / README の「既定は」の書き方 %d か所"
       % (want, len(re.findall(r'(?:collect-deployed\.sh`? の既定は\s*|判定表の既定は \*\*`CRITERIA=)(?:phase\d+|T\d+)', readme))))
 for x in bad:
-    print("  NG (h): README に「既定は %s」と書いた所がある (collect-deployed.sh の既定は %s)" % (x, want))
+    print("  NG [判定表の既定]: README に「既定は %s」と書いた所がある (collect-deployed.sh の既定は %s)" % (x, want))
 sys.exit(1 if bad else 0)
 CRITPY
 
-# --- (i) `-h` の既定 (T28.23) ----------------------------------------------------
+# --- [-h の既定] (T28.23) ----------------------------------------------------
 # `crates/base/src/cli.rs` の `-h` が括弧で書く既定 (`(5, 0 = unlimited)` の 5) と、仕様 S7 (`specs/S7.md`。T37.4 で README から移した) の環境変数の表の
 # 既定の欄がそろっているか。T23.3 で CONNECT の締め切りを 5 秒にしたのに `-h` は 10 のままだった
 python3 - <<'HELPPY' || NG=1
@@ -301,13 +302,13 @@ ng = 0
 for name, num in pairs:
     have = table.get(name)
     if have is not None and have.isdigit() and have != num:
-        print("  NG (i): `-h` の %s の既定が %s、specs/S7.md の表は %s" % (name, num, have))
+        print("  NG [-h の既定]: `-h` の %s の既定が %s、specs/S7.md の表は %s" % (name, num, have))
         ng = 1
-print("(i) `-h` の既定: 数で書いた %d 個を specs/S7.md の表と比べた" % len(pairs))
+print("[-h の既定] 数で書いた %d 個を specs/S7.md の表と比べた" % len(pairs))
 sys.exit(ng)
 HELPPY
 
-# --- (j) 「上の」「下の」の指す先 (T32.28) ------------------------------------------
+# --- [上の・下の] 「上の」「下の」の指す先 (T32.28) ------------------------------------------
 # README・`docs/*.md`・仕様 (`SPECS.md`・`specs/*.md`。T37.4) の「上の「X」」「下の「X」」が、**同じファイルの**見出し・太字 (`**…X…**`)・段落の頭 (`X…`) に
 # 実在し、向きが合うか。README を `docs/` に分けたとき (T29.32) に指す先が別のファイルへ移って切れた所と、
 # 下にあるのに「上の」と書いた所があった。別のファイルを指すときは「上の」ではなくリンクで書く。
@@ -342,18 +343,18 @@ for path in ['README.md', 'SPECS.md'] + sorted(glob.glob('docs/*.md')) + sorted(
                 if (head and key in head.group(1)) or bold or lead:
                     hits.append(j)
             if not hits:
-                print("  NG (j): %s:%d の %sの「%s」の指す先が同じファイルに無い (別のファイルならリンクで書く)"
+                print("  NG [上の・下の]: %s:%d の %sの「%s」の指す先が同じファイルに無い (別のファイルならリンクで書く)"
                       % (path, i + 1, way, name))
                 ng = 1
             elif not any((j < i) if way == "上" else (j > i) for j in hits):
-                print("  NG (j): %s:%d の %sの「%s」は向きが逆 (%s 行目)"
+                print("  NG [上の・下の]: %s:%d の %sの「%s」は向きが逆 (%s 行目)"
                       % (path, i + 1, way, name, ",".join(str(j + 1) for j in hits[:3])))
                 ng = 1
-print("(j) 「上の」「下の」: README・docs/*.md・SPECS.md・specs/*.md の %d か所を見た" % total)
+print("[上の・下の] README・docs/*.md・SPECS.md・specs/*.md の %d か所を見た" % total)
 sys.exit(ng)
 UPDOWNPY
 
-# --- (k) `docs/perf.md` の「いまの数字」の版 (T32.28) --------------------------------
+# --- [いまの数字の版] `docs/perf.md` の「いまの数字」の版 (T32.28) --------------------------------
 # `docs/perf.md` の「**いまの数字は 日付、… に X.Y.Z をデプロイして …**」の版が、`docs/status.md` の
 # 「## デプロイ先の現在地 (…)」の見出しの版と同じか。締めは現在地を直すが perf.md は 0.27.8 のまま 3 回残っていた
 # (現在地は T37.5 で `TODO.md` の章から `docs/status.md` へ移した)
@@ -364,11 +365,11 @@ status = open('docs/status.md', encoding='utf-8').read()
 m = re.search(r"\*\*いまの数字は [^*]*? (\d+\.\d+\.\d+) をデプロイして", perf)
 h = re.search(r"^#{2,3} デプロイ先の現在地 \([^\n]*? (\d+\.\d+\.\d+) をデプロイして", status, re.M)
 if not m or not h:
-    print("  NG (k): %s に版が見つからない" % ("docs/perf.md の「いまの数字は」" if not m else "docs/status.md の「デプロイ先の現在地」の見出し"))
+    print("  NG [いまの数字の版]: %s に版が見つからない" % ("docs/perf.md の「いまの数字は」" if not m else "docs/status.md の「デプロイ先の現在地」の見出し"))
     sys.exit(1)
-print("(k) いまの数字の版: docs/perf.md %s / docs/status.md %s" % (m.group(1), h.group(1)))
+print("[いまの数字の版] docs/perf.md %s / docs/status.md %s" % (m.group(1), h.group(1)))
 if m.group(1) != h.group(1):
-    print("  NG (k): docs/perf.md の「いまの数字」が %s (docs/status.md は %s)。締めで表ごと書き直す" % (m.group(1), h.group(1)))
+    print("  NG [いまの数字の版]: docs/perf.md の「いまの数字」が %s (docs/status.md は %s)。締めで表ごと書き直す" % (m.group(1), h.group(1)))
     sys.exit(1)
 NOWPY
 

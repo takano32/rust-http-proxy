@@ -50,4 +50,4 @@
 - **タスク 19** は 2026-10-23 に割り当てた (それまで欠番だった。はかせの指示で、番号を増やさずに済む空きを使う)。済んだら `tasks/T19.md` 1 本にまとめる。
 - コードやスクリプトのコメントにある `TODO.md T14.35` のような参照は、**このディレクトリの `TNN.md`** を指す (`TODO.md` にも `docs/HISTORY.md` にも本文はもう無い)。
 - 新しいタスクが終わったら、そのタスクの見出しごとこのディレクトリへ移し、`docs/task-index.md` には見出しと 1 行の索引だけ残す (未着手は `TASKS.md` に置く)。
-- 台帳の 1 対 1 は `./scripts/check-docs.sh` の (g) が見る (`scripts/check-ledger.py`)。`tasks/` のファイルは `TNN.md` という名前で、1 行目が `# タスク NN — …`。
+- 台帳の 1 対 1 は `./scripts/check-docs.sh` の台帳の検査が見る (`scripts/check-ledger.py`)。`tasks/` のファイルは `TNN.md` という名前で、1 行目が `# タスク NN — …`。

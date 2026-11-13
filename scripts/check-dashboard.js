@@ -54,7 +54,7 @@ const path = require('path');
 // 本文は節ごとに `scripts/check-dashboard/NN-*.js` に割ってある (T34.140。上の番号の節が 1 つか 2 つずつ)。
 // 節どうしは前の節の `const` (切り出した `api` `ins`・読んだ `hist` `st` `snap` …) をそのまま使うので、
 // **名前の順につないで 1 つの関数の本文として回す** (割る前の 1 ファイルと同じ 1 つのスコープ)。
-// `scripts/check-docs.sh` の (d) も同じ順につないで読む。
+// `scripts/check-docs.sh` の画面の関数の検査も同じ順につないで読む。
 const partsDir = path.join(__dirname, 'check-dashboard');
 const body = fs
   .readdirSync(partsDir)

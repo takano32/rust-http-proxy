@@ -7,11 +7,11 @@
 `check-ledger.py` の `collect()` / `main()` をそのまま呼ぶ。**本物の台帳は読まない** (中身が進んでもテストが揺れない)。
 見るのは、通る形 1 つと、規則ごとにわざと壊した形:
 
-  (1) 全部 `- [x]` のタスクが索引に残る / 移したタスクにタスクの行が残る
-  (2) リンクが無い / 指す先が無い / 見出しが無い / 番号が違う
-  (3) 番号が本文つきで 2 回出る (片方が `結果` だけの追記なら通る) / 番号と置き場所が違う
-  (4) 1 行目が `# タスク NN — …` でない
-  (足) 「済んだ N 本」がファイルの本数と合わない
+  [移し忘れ] 全部 `- [x]` のタスクが索引に残る / 移したタスクにタスクの行が残る
+  [リンク] リンクが無い / 指す先が無い / 見出しが無い / 番号が違う
+  [番号] 番号が本文つきで 2 回出る (片方が `結果` だけの追記なら通る) / 番号と置き場所が違う
+  [1 行目] 1 行目が `# タスク NN — …` でない
+  [済んだ本数] 「済んだ N 本」がファイルの本数と合わない
 
 索引と現在地は T37.5 で `TODO.md` の章から `docs/task-index.md`・`docs/status.md` へ移した。見本は新しい形で置き、
 `OldLayout` だけが古い形 (`TODO.md` の `## 5. …` の章と `### デプロイ先の現在地`) を置いて、過去の台帳も読めることを見る。
@@ -113,7 +113,7 @@ class LedgerCase(unittest.TestCase):
         return code, buf.getvalue()
 
     def assert_ng(self, out, needle):
-        self.assertIn("NG (g)", out)
+        self.assertIn("NG [台帳]", out)
         self.assertIn(needle, out)
 
 
@@ -360,7 +360,7 @@ class RealLedger(unittest.TestCase):
 
 
 class Ledger28(LedgerCase):
-    """T28.21 で足した (5)〜(8): 索引と範囲・済んだ節・現在地の版・未着手の参照。"""
+    """T28.21 で足した [索引と範囲]・[済んだ節]・[現在地の版]・[未着手の参照]。"""
 
     def base(self, readme=None, tasks_md=None, todo_extra=None, t2_lines=None, index_extra=None):
         sections = [phase(1, [], link=True, count=1), phase(2, [], link=True, count=1)]

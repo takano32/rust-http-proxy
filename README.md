@@ -323,26 +323,27 @@ fmt に落ちるコミットを push しました)。`--only fmt,versions` / `--
 
 **文書とコードが同じ集合かを見るのは `scripts/check-docs.sh`** (T14.56)。エンドポイントも環境変数も
 別々の作業で増えていくので、「**コードにあるのに文書に無い / 文書にあるのにコードに無い**」を機械で見ます。
-突き合わせるのは 11 で、(a) `crates/endpoints/src/endpoints/mod.rs` の `path == "/…"` と
-下の「動作確認 (curl)」の一覧と `/` の案内 (`endpoint_list`)、(b) コードの `"PROXY_…"` / `"SERVER_…"` の
-文字列と仕様 S7 ([`specs/S7.md`](specs/S7.md)) の環境変数の表の鍵の欄、(c) `/snapshot` の `parts` と個票のエンドポイント、
-(d) `scripts/check-dashboard.js` が画面の HTML から切り出す関数名と、そこで実際に呼んでいる名前、
-(e) 上の「クレート構成」の表と `crates/*/Cargo.toml` の `[package] name` (表の前の「(41 + 本体)」の数も見ます)、
-**(f) この README が `scripts/<名前>.py` と書いている道具に実行ビットがあるか** (そのまま叩ける道具か。
+突き合わせるのは 11 で、検査は何を見るかの名前で呼びます (出力の行の頭と NG の行に `[エンドポイント]` のように出ます。T37.7)。
+**[エンドポイント]** (`crates/endpoints/src/endpoints/dispatch.rs` の経路表と
+下の「動作確認 (curl)」の一覧と `/` の案内 (`endpoint_list`))、**[環境変数]** (コードの `"PROXY_…"` / `"SERVER_…"` の
+文字列と仕様 S7 ([`specs/S7.md`](specs/S7.md)) の環境変数の表の鍵の欄)、**[スナップショットの部]** (`/snapshot` の `parts` と個票のエンドポイント)、
+**[画面の関数]** (`scripts/check-dashboard.js` が画面の HTML から切り出す関数名と、そこで実際に呼んでいる名前)、
+**[クレート]** (上の「クレート構成」の表と `crates/*/Cargo.toml` の `[package] name`。表の前の「(41 + 本体)」の数も見ます)、
+**[道具の実行ビット]** (この README が `scripts/<名前>.py` と書いている道具に実行ビットがあるか。そのまま叩ける道具か。
 README にあるのにファイルが無いものも NG。共通部品の `proxydata.py`、判定の部の `snapshot_criteria.py`、
 unittest が名前で読む `test_*.py` は、叩かないものとして除外表に理由つきで入れてあります。T24.7)、
-**(g) 台帳** (`TASKS.md` の**未着手**、`docs/task-index.md` (タスクの見出しと索引だけ)、`tasks/TNN.md` の
+**[台帳]** (`TASKS.md` の**未着手**、`docs/task-index.md` (タスクの見出しと索引だけ)、`tasks/TNN.md` の
 3 つ。**移し忘れ** (`TASKS.md` に `- [x]` が無いこと。済んだタスクは `tasks/` へ移します)、
 **リンク** (`tasks/TNN.md` と `docs/task-index.md` の `## タスク NN (…)` の見出しが両方向で
 1 対 1)、**番号** (`T24.10` が台帳全体で 1 回だけ。番号のタスクが置き場所と合うこと)、
-**1 行目** (`# タスク NN — …`) を見ます。中身は `scripts/check-ledger.py` で、台帳だけを回すなら
+**1 行目** (`# タスク NN — …`) などを見ます。中身は `scripts/check-ledger.py` で、台帳だけを回すなら
 これ 1 本です。T24.10 / T24.13)、
-**(h) 判定表の既定** (`collect-deployed.sh` の `CRITERIA` の既定と、文書の「既定は phaseNN」。T28.23)、
-**(i) `-h` の既定** (`crates/base/src/cli.rs` の `-h` が括弧で書く既定と、仕様 S7 の環境変数の表の既定。T28.23)、
-**(j) 上の/下の** (README・`docs/*.md`・`SPECS.md`・`specs/*.md` で「上の」「下の」のあとにかぎ括弧で書いた名前が、同じファイルの見出し・太字・段落の頭にあって向きが合うか。
-別のファイルを指すときはリンクで書きます。T32.28)、**(k) いまの数字** (`docs/perf.md` の「いまの数字」の版が `docs/status.md` の
+**[判定表の既定]** (`collect-deployed.sh` の `CRITERIA` の既定と、文書の「既定は phaseNN」。T28.23)、
+**[-h の既定]** (`crates/base/src/cli.rs` の `-h` が括弧で書く既定と、仕様 S7 の環境変数の表の既定。T28.23)、
+**[上の・下の]** (README・`docs/*.md`・`SPECS.md`・`specs/*.md` で「上の」「下の」のあとにかぎ括弧で書いた名前が、同じファイルの見出し・太字・段落の頭にあって向きが合うか。
+別のファイルを指すときはリンクで書きます。T32.28)、**[いまの数字の版]** (`docs/perf.md` の「いまの数字」の版が `docs/status.md` の
 「デプロイ先の現在地」の版と同じか。T32.28) です。
-(f) と (h) は README のほかに `docs/*.md` (性能の本文。T29.32) と仕様 (`SPECS.md`・`specs/*.md`。T37.4) も読みます。
+[道具の実行ビット] と [判定表の既定] は README のほかに `docs/*.md` (性能の本文。T29.32) と仕様 (`SPECS.md`・`specs/*.md`。T37.4) も読みます。
 **意図的に外してあるものはスクリプトの中の除外表に理由つきで持ちます** (`/snapshot` に入れない 18 の口、
 ビルド時にしか無い `PROXY_VERSION`、`tasks/README.md` = `tasks/` の索引 など)。差分が 1 件でもあれば
 その名前を印字して終了コード 1 です。

@@ -177,7 +177,7 @@
   版 (T21.6) で **約 2,750 行 (推測)**。
 - メモリ: 割れて下がる余地は**最大 11 MB** (床 63.6 MB からの上乗せ)。ただし関門 120 MB に対して
   余裕 30 MB なので、**関門は動かない**。下げたい理由が別に要る。
-- リスク: **中〜高**。`scripts/check-docs.sh` の (e) が README のクレート表と `crates/*/Cargo.toml` を
+- リスク: **中〜高**。`scripts/check-docs.sh` のクレートの検査が README のクレート表と `crates/*/Cargo.toml` を
   突き合わせるので、**README を同じコミットで直さないと CI が落ちる**。`crate-versions.py --check` も通す必要がある。
 - 試験の動かし方: 案 A の 2 コマンド + `cargo test -p proxy-metrics` (状態ファイルの試験 9 本) +
   `python3 scripts/crate-versions.py --check` + `scripts/check-docs.sh`。

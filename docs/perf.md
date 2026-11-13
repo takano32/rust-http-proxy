@@ -56,7 +56,7 @@ curl -s localhost:8080/status | grep -o '"self_bench":{[^}]*}'
 **道具はどれも `scripts/` に置いてあり、この README が `scripts/<名前>.py` と書いているものは実行ビット付き**
 なので、そのまま `scripts/snapshot-diff.py a.json b.json` と打てます (`proxydata.py` は共通部品、
 `snapshot_criteria.py` は `snapshot-diff.py` の判定の部、`test_*.py` は unittest が名前で読むものなので
-実行ビットは付けません)。**この区別は `scripts/check-docs.sh` の (f) が毎回見ます** (T24.7)。
+実行ビットは付けません)。**この区別は `scripts/check-docs.sh` の道具の実行ビットの検査が毎回見ます** (T24.7)。
 
 **要求の枠組み (`Content-Length` / `Host` / 折り返し) を実機で流すなら `scripts/framing-probe.py`** (T19.4)。
 `python3 scripts/framing-probe.py ./target/release/rust-http-proxy` で、オリジンとプロキシを自分で起こして
@@ -408,7 +408,7 @@ T16.99 の数字 (`conn` 役 0.0013 コア、`dns_warm_max` 15、`warm_evicted` 
 (T17.16。名前は番号が前後で合わないので、`discord.com` を見張る行は「判定できず」になります)。
 
 **いまの数字は 2026-11-13、tokyo (`tokyo.sorahost.net:60357`) に 0.36.34 をデプロイして 17.7 時間の実測**です ([`docs/status.md`](status.md) の「デプロイ先の現在地」と同じ版。
-`scripts/check-docs.sh` の (k) が見ます。T32.28)。出どころはスナップショット 1 枚 (`VIA=$HTTPS_PROXY scripts/collect-deployed.sh --closeout tokyo.sorahost.net:60357 status/tokyo`
+`scripts/check-docs.sh` のいまの数字の版の検査が見ます。T32.28)。出どころはスナップショット 1 枚 (`VIA=$HTTPS_PROXY scripts/collect-deployed.sh --closeout tokyo.sorahost.net:60357 status/tokyo`
 が取った `status/tokyo/2026-11-13T093317Z-snapshot.json`)。版は `0.36.34+99d9f004` (2026-11-12 15:48:31Z 起動、再起動なし。本体はタグ `v0.36.34` = `22bc96e` と同じ) です。
 **締めは利用者の判断で、48 時間を待たずに 17.7 時間で行いました** (main の先頭が CI の直しで 0.36.36 に進んだため。本体の動きは同じ)。
 数字の本文と判定 (判定表 `T36` で満たした 13・届かず 3) は [`tasks/T36.md`](../tasks/T36.md) の T36.99 の結果にあり、[`docs/status.md`](status.md) の「デプロイ先の現在地」はそこを指しています (T28.21 で、締めのたびに表を書き写すのをやめました)。**スナップショットはリポジトリに入れません** (利用者の閲覧先ホストと接続元 IP が並びます)。

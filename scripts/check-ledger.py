@@ -3,30 +3,30 @@
 
 2026-10-22 に済んだタスク 15〜23 の本文を `tasks/TNN.md` へ移し (T24.9)、同じ日に
 **未着手のタスクを `TASKS.md` に集めた** (T24.13)。**移し忘れ・番号の重複・リンク切れ**は
-目で見つからないので、`scripts/check-docs.sh` の (g) として毎回見る。見るのは 4 つと、
-そこから出る足場 1 つ:
+目で見つからないので、`scripts/check-docs.sh` の [台帳] として毎回見る。見るのは次の名前つきの検査
+(T37.7 で `(1)`〜`(9)`・`(足)` の記号から、何を見るかの名前に変えた):
 
-  (1) 移し忘れ … `TASKS.md` に `- [x]` が 1 本も無いこと (済んだら `tasks/TNN.md` へ移す)。
+  [移し忘れ] … `TASKS.md` に `- [x]` が 1 本も無いこと (済んだら `tasks/TNN.md` へ移す)。
       移したタスク (`tasks/TNN.md` がある番号) のタスクが `TASKS.md` に残っていたら NG。
       索引 (`docs/task-index.md`) は見出しと索引だけなので、索引にタスクの行が 1 本でもあったら NG。
-  (2) リンク … `tasks/TNN.md` と索引の `## タスク NN (…)` の見出しが 1 対 1 (両方向)。
+  [リンク] …`tasks/TNN.md` と索引の `## タスク NN (…)` の見出しが 1 対 1 (両方向)。
       リンクの番号が見出しの番号と違う・指す先が無い・どの見出しからも指されていない、が NG。
-  (3) 番号 … タスクの番号 (`T24.10`) が台帳全体 (`TASKS.md` + `tasks/`) で 1 回だけ。**同じ番号が
+  [番号] … タスクの番号 (`T24.10`) が台帳全体 (`TASKS.md` + `tasks/`) で 1 回だけ。**同じ番号が
       2 度出るのは、片方が `結果` だけの追記** (本文を持たない行) のときだけ許す。番号のタスクが
       置き場所と合うこと (`TASKS.md` のタスク 24 の節なら `T24.x`、`tasks/T17.md` なら `T17.x`)。
-  (4) 1 行目 … `tasks/TNN.md` の 1 行目が `# タスク NN — …`。
-  (足) 見出しの「済んだ N 本の本文は …」の N が、`tasks/TNN.md` のタスクの本数と合うこと
+  [1 行目] … `tasks/TNN.md` の 1 行目が `# タスク NN — …`。
+  [済んだ本数] … 見出しの「済んだ N 本の本文は …」の N が、`tasks/TNN.md` のタスクの本数と合うこと
       (T24.9 が番号ごとに書いたので、片方だけ足したときにここで出る)。
-  (5) 索引と範囲 (T28.21) … `tasks/README.md` の表に全部の `TNN.md` の行がある、その見出しの
+  [索引と範囲] (T28.21) … `tasks/README.md` の表に全部の `TNN.md` の行がある、その見出しの
       「タスク 0〜N」と、`TODO.md` に「T15〜TN」の印があればその N が `tasks/` のいちばん大きい番号。
-  (6) 済んだ節 (T28.21) … `TASKS.md` の `### タスク N (…)` の節が未着手を 1 本以上持つ
+  [済んだ節] (T28.21) … `TASKS.md` の `### タスク N (…)` の節が未着手を 1 本以上持つ
       (全部済んだら節ごと消す。2026-10-25 に済んだ節が 5 つ残っていた)。
-  (7) 現在地の版 (T28.21) … `docs/status.md` の `## デプロイ先の現在地 (…)` の見出しの版が、
+  [現在地の版] (T28.21) … `docs/status.md` の `## デプロイ先の現在地 (…)` の見出しの版が、
       `tasks/*.md` の「デプロイ済み」の行に出るいちばん新しい版 (`X.Y.Z+hash`) と同じ
       (締めのたびに現在地を書き直すのが 2 回続けて抜けたため)。
-  (8) 参照 (T28.21) … `TODO.md`・`docs/*.md`・`tasks/*.md` の「未着手の Tn.m は …」が、`TASKS.md` に
+  [未着手の参照] (T28.21) … `TODO.md`・`docs/*.md`・`tasks/*.md` の「未着手の Tn.m は …」が、`TASKS.md` に
       実在する未着手のタスクを指す (「」で引いた文は数えない)。
-  (9) 相対リンク (T32.38) … `TASKS.md`・`TODO.md`・`docs/*.md`・`tasks/*.md` の `[…](相対パス)` の指す先のファイルが、
+  [相対リンク] (T32.38) … `TASKS.md`・`TODO.md`・`docs/*.md`・`tasks/*.md` の `[…](相対パス)` の指す先のファイルが、
       **そのファイルの置き場所から辿って**ある (コードの囲みの中と `http:` などの URL は見ない)。
       `TASKS.md` から `tasks/` へ移すときに `tasks/T29.md` のまま移して切れたのが 2 本あった。
 
@@ -74,7 +74,7 @@ BULLET = re.compile(r"^\s+- ([^\s(:：]{1,12})")
 # `結果` だけの行は「あとから足した追記」で、タスクの本文ではない (番号の重複で数えない)
 NOTE_ONLY = {"結果"}
 MISSING_HEAD = "`# タスク NN — …`"
-# (5)〜(8) の形 (T28.21)
+# [索引と範囲]・[済んだ節]・[現在地の版]・[未着手の参照] の形 (T28.21)
 README_HEAD = re.compile(r"^# tasks/ — 済んだタスクの本文 \(タスク 0〜(\d+)\)", re.M)
 TODO_RANGE = re.compile(r"済んだタスクのタスク本文 \(T15〜T(\d+)。")
 CURRENT_HEAD = re.compile(r"^#{2,3} デプロイ先の現在地 \((.*)\)\s*$", re.M)
@@ -271,7 +271,7 @@ def read_ledger(led, root):
                 led.ngs.append("%s の番号 %s がタスク %d の節にある"
                                % (task.at(), task.ident, num))
 
-    # --- (1) の材料: `TASKS.md` (未着手) を先に見る。無い木 (古い形) では索引の行を未着手として見る。
+    # --- [移し忘れ] の材料: `TASKS.md` (未着手) を先に見る。無い木 (古い形) では索引の行を未着手として見る。
     t.has_tasks_md = os.path.isfile(os.path.join(root, TASKS_MD))
     t.open_tasks = open_tasks = {}
     if t.has_tasks_md:
@@ -288,9 +288,9 @@ def read_ledger(led, root):
 
 
 def check_moves_and_links(led, t):
-    """(1) 移し忘れと (2) リンク (両方向)。"""
+    """[移し忘れ] と [リンク] (両方向)。"""
     names, filed, inline, links, open_tasks = t.names, t.filed, t.inline, t.links, t.open_tasks
-    # --- (1) 移し忘れ ---------------------------------------------------------
+    # --- [移し忘れ] ---------------------------------------------------------
     if t.has_tasks_md:
         for num in sorted(open_tasks):
             done = [task for task in open_tasks[num] if task.done]
@@ -322,7 +322,7 @@ def check_moves_and_links(led, t):
             "タスク %d (タスク %d 本、[x] %d 本)"
             % (num, len(inline[num]), sum(1 for task in inline[num] if task.done)) for num in rest))
 
-    # --- (2) リンク (両方向) --------------------------------------------------
+    # --- [リンク] (両方向) --------------------------------------------------
     for num in sorted(links):
         for linked in links[num]:
             if linked != num:
@@ -339,9 +339,9 @@ def check_moves_and_links(led, t):
 
 
 def check_numbers(led, t):
-    """(3) 番号の重複と、(足) 見出しの「済んだ N 本」。"""
+    """[番号] の重複と、[済んだ本数] (見出しの「済んだ N 本」)。"""
     names, filed, inline, open_tasks = t.names, t.filed, t.inline, t.open_tasks
-    # --- (3) 番号の重複 -------------------------------------------------------
+    # --- [番号] の重複 -------------------------------------------------------
     all_tasks = [task for num in sorted(inline) for task in inline[num]]
     all_tasks += [task for num in sorted(open_tasks) for task in open_tasks[num]]
     all_tasks += [task for num in sorted(filed) for task in filed[num]]
@@ -361,7 +361,7 @@ def check_numbers(led, t):
             led.notes.append("同じ番号が %d 回出る (%s)。1 行は `結果` だけの追記なので重複と数えない"
                              % (len(tasks), ", ".join(task.at() for task in tasks)))
 
-    # --- (足) 見出しの「済んだ N 本」 ------------------------------------------
+    # --- [済んだ本数] 見出しの「済んだ N 本」 ------------------------------------------
     for num in sorted(names):
         text = "\n".join(line for _, line in t.bodies.get(num, []))
         m = LINK_COUNT.search(text)
@@ -373,9 +373,9 @@ def check_numbers(led, t):
 
 
 def check_index_and_refs(led, t):
-    """(5) 索引と範囲・(6) 済んだ節の残り・(7) 現在地の版・(8) 「未着手の Tn.m」の参照先・(9) 相対リンク。"""
+    """[索引と範囲]・[済んだ節] の残り・[現在地の版]・[未着手の参照] (「未着手の Tn.m」の参照先)・[相対リンク]。"""
     root, tdir, todo, names, open_tasks = t.root, t.tdir, t.todo, t.names, t.open_tasks
-    # --- (5) 索引と範囲 (T28.21) ------------------------------------------------
+    # --- [索引と範囲] (T28.21) ------------------------------------------------
     top = max(names) if names else None
     readme = os.path.join(tdir, "README.md")
     if top is not None and os.path.isfile(readme):
@@ -392,12 +392,12 @@ def check_index_and_refs(led, t):
     if m and top is not None and int(m.group(1)) != top:
         led.ngs.append("TODO.md 冒頭の表が「T15〜T%s」(いちばん大きいのは %d)" % (m.group(1), top))
 
-    # --- (6) 済んだ節が TASKS.md に残っていない (T28.21) -------------------------
+    # --- [済んだ節] が TASKS.md に残っていない (T28.21) -------------------------
     for num in sorted(open_tasks):
         if not open_tasks[num]:
             led.ngs.append("%s のタスク %d の節に未着手が 0 本 (全部済んだら節ごと消す)" % (TASKS_MD, num))
 
-    # --- (7) 現在地 (`docs/status.md`。古い木では `TODO.md`) の版 (T28.21) ---------------
+    # --- [現在地の版] (`docs/status.md`。古い木では `TODO.md`) の版 (T28.21) ---------------
     deployed = None
     for name in names.values():
         for line in read_lines(os.path.join(tdir, name)):
@@ -416,7 +416,7 @@ def check_index_and_refs(led, t):
                            % (t.status_name, ".".join(map(str, have)) if have else "(無い)",
                               ".".join(map(str, deployed))))
 
-    # --- (8) 「未着手の Tn.m は …」の参照先 (T28.21) -------------------------------
+    # --- [未着手の参照] 「未着手の Tn.m は …」の参照先 (T28.21) -------------------------------
     open_ids = {task.ident for num in open_tasks for task in open_tasks[num] if not task.done}
     sources = [(TODO, todo)] + doc_sources(root) + [("tasks/" + name, read_lines(os.path.join(tdir, name)))
                                                     for name in names.values()]
@@ -428,7 +428,7 @@ def check_index_and_refs(led, t):
                 if m.group(1) not in open_ids:
                     led.ngs.append("%s:%d の「未着手の %s」が %s に無い" % (where, i + 1, m.group(1), TASKS_MD))
 
-    # --- (9) 相対リンクが置き場所から辿れる (T32.38) ---------------------------------
+    # --- [相対リンク] が置き場所から辿れる (T32.38) ---------------------------------
     sources = [(TODO, todo)] + doc_sources(root) + [("tasks/" + name, read_lines(os.path.join(tdir, name)))
                                                     for name in sorted(os.listdir(tdir)) if name.endswith(".md")]
     if os.path.exists(os.path.join(root, TASKS_MD)):
@@ -476,13 +476,13 @@ def main(argv):
     try:
         led = collect(root)
     except OSError as exc:
-        print("  NG (g): 台帳が読めない: %s" % exc)
+        print("  NG [台帳]: 台帳が読めない: %s" % exc)
         return 1
-    print("(g) 台帳: %s の未着手 %d 本 (うち [x] %d 本) / %s のタスク見出し %d 節 / "
+    print("[台帳] %s の未着手 %d 本 (うち [x] %d 本) / %s のタスク見出し %d 節 / "
           "tasks/TNN.md %d 本 (タスク %d 本) / 索引に残るタスク %d 本"
           % (TASKS_MD, led.open, led.open_done, led.index, led.sections, led.files, led.filed, led.inline))
     for message in led.ngs:
-        print("  NG (g): " + message)
+        print("  NG [台帳]: " + message)
     for name, why in led.skipped:
         print("    除外: tasks/%s — %s" % (name, why))
     for note in led.notes:
