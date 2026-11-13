@@ -1,12 +1,12 @@
 #!/bin/bash
-# CPU/要求 を測る (TODO.md §1 の手順をそのまま自動化したもの)。
+# CPU/要求 を測る (`docs/measuring.md` の手順をそのまま自動化したもの)。
 #
 # プロキシを big コア (cpu4-7) に、ベンチを LITTLE コア (cpu0-3) に固定して回し、
 # `/proc/<pid>/stat` の utime + stime の差をベンチの操作数で割る。
 # 主指標は **CPU/要求** で、スループットは律速がベンチ側に移るので補助でしかない。
 #
 # **どの経路も同じ条件で測る** (T10.11)。プロファイルは `--lite`、ログ水準は `warn`、
-# キャッシュの ballast は off で揃える。§2 は「経路どうしを比べる表」なので、
+# キャッシュの ballast は off で揃える。`docs/status.md` の表は「経路どうしを比べる表」なので、
 # 1 行だけ条件が違うと比べられない数字が並ぶ。以前は `--cacheable` (キャッシュ HIT) だけ
 # 「`PROXY_ARGS=""` = 既定プロファイル = ログ **info**」で回す手順になっていて、
 # HIT の行にだけアクセスログ 1 行 (T10.10 の実測で 7.1 us/要求) が乗っていた。
@@ -20,7 +20,7 @@
 # CONNECT する。**この条件でしか Happy Eyeballs の 250 ms は出ない** (`--only connect` は宛先が
 # IP リテラルなので候補が 1 つになり、`crates/net-conn/src/net.rs` の短絡に入る)。
 # 終わる前に `/status` の `"ipv6"` を 1 回引いて印字する (T12.1 の記憶が効いたかはここで見る)。
-# §2 の表 (経路どうしを比べる表) はこの条件では測らない — 条件が 1 行だけ違う数字になる。
+# `docs/status.md` の表 (経路どうしを比べる表) はこの条件では測らない — 条件が 1 行だけ違う数字になる。
 #
 # **`--only tunnel` だけは既定の配置が違う** (プロキシ cpu4-5 / ベンチ cpu6-7。T10.8 で実測して決めた)。
 # この経路のベンチは blaster (送る) と reader (受ける) の 2 スレッドがどちらも本気で回るので、
@@ -39,7 +39,7 @@
 #     scripts/deployed-like.sh -- scripts/cpu-per-request.sh --only connect-multi
 #                                                                 # 名前宛ての CONNECT (下)
 #     scripts/cpu-per-request.sh --only tunnel --conc 1           # トンネル 1 本 (主指標は CPU/MiB)
-#       ← **§2 の「トンネル」の行はこの `--conc 1` の値**。`--conc N` にすると N 本を
+#       ← **`docs/status.md` の表の「トンネル」の行はこの `--conc 1` の値**。`--conc N` にすると N 本を
 #         並列に張って運んだ MiB の合計で割るので、別の数字になる (比べるときは本数を揃える)
 #     scripts/cpu-per-request.sh --cacheable                      # キャッシュ HIT
 #     PROXY_MAX_CONNS=8192 scripts/cpu-per-request.sh --only idle-tunnels --conc 5000
@@ -56,7 +56,7 @@
 # **上限 (T10.5 の auto = 256) を外さないと止まる**: 預けないと 1 接続が 1 スレッドを握ったままなので、
 # 257 本目からは待ち行列に入って応答が返らない。
 #
-# **変更の前後を比べるときの組数** (TODO.md §1 の「ぶれの扱い」):
+# **変更の前後を比べるときの組数** (`docs/measuring.md` の「ぶれの扱い」):
 # 変更前と変更後のバイナリを `BIN=` で切り替えて**交互に**回し、中央値で比べる
 # (片方を続けて測ると、機械の状態の変化が差に化ける)。**ビルドとベンチの間には
 # 捨て走りを 1 本**入れる (ビルド直後の 1〜2 本は 15〜20% 重く出る。T10.11)。
@@ -137,7 +137,7 @@ done
 work=$(mktemp -d)
 trap 'kill $pid 2>/dev/null; wait $pid 2>/dev/null; rm -rf "$work"' EXIT
 export PROXY_CACHE_DIR=${PROXY_CACHE_DIR:-$work/cache}
-# 1 行目に「何をどの条件で測ったか」を出す。§2 の行はこの 1 行で再現できる。
+# 1 行目に「何をどの条件で測ったか」を出す。`docs/status.md` の表の行はこの 1 行で再現できる。
 if [ $CACHEABLE -eq 1 ]; then
   cache_desc="cache=$PROXY_CACHE_ENABLED (${PROXY_MEM_CACHE_MB}MB mem / ${PROXY_DISK_CACHE_MB}MB disk)"
 else

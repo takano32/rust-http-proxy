@@ -1,6 +1,6 @@
 #!/bin/bash
 # README・`/` の案内・`/snapshot`・画面の関数名が**コードと同じ集合**か、README が叩く道具に
-# 実行ビットがあるかを機械で見る (T14.56・T24.7)。台帳 (`TODO.md` の §5 と `tasks/TNN.md`) の
+# 実行ビットがあるかを機械で見る (T14.56・T24.7)。台帳 (`docs/task-index.md` の索引と `tasks/TNN.md`) の
 # 1 対 1 も一緒に見る (T24.10)。
 #
 # 今日の版はエンドポイントが 10 本以上増え、環境変数も増えた。増やしたのは別々のエージェントで、
@@ -15,13 +15,13 @@
 #   (e) クレート     … README の「クレート構成」の表 vs `crates/*/Cargo.toml` の `[package] name`
 #   (f) 道具の置き方 … README・`docs/*.md`・仕様 (`SPECS.md`・`specs/*.md`) が `scripts/<名前>.py` と書いている道具 vs 実ファイルの実行ビット
 #                        (直接叩かないもの = 共通部品・割った部・unittest が読むものは除外表)
-#   (g) 台帳        … `TASKS.md` (未着手)・`TODO.md` の §5 (索引)・`tasks/TNN.md` の 1 対 1 (移し忘れ・リンク・番号・1 行目)、
-#                     3 つの相対リンクがその置き場所から辿れること (T32.38)。
+#   (g) 台帳        … `TASKS.md` (未着手)・`docs/task-index.md` (索引。T37.5 で `TODO.md` から移した)・`tasks/TNN.md` の
+#                     1 対 1 (移し忘れ・リンク・番号・1 行目)、相対リンクがその置き場所から辿れること (T32.38)。
 #                     中身は `scripts/check-ledger.py` (試験は `scripts/test_check_ledger.py`)
 #   (h) 判定表の既定 … `collect-deployed.sh` の `CRITERIA` の既定 vs README・`docs/*.md`・仕様の「既定は phaseNN」(T28.23)
 #   (i) `-h` の既定 … `crates/base/src/cli.rs` の `-h` の括弧の数 vs 仕様 S7 (`specs/S7.md`) の環境変数の表の既定 (T28.23)
 #   (j) 上の/下の   … README・`docs/*.md`・仕様 (`SPECS.md`・`specs/*.md`) の「上の「X」」「下の「X」」 vs 同じファイルの見出し・太字・段落の頭と向き (T32.28)
-#   (k) いまの数字 … `docs/perf.md` の「いまの数字」の版 vs `TODO.md` §2 の「デプロイ先の現在地」の版 (T32.28)
+#   (k) いまの数字 … `docs/perf.md` の「いまの数字」の版 vs `docs/status.md` の「デプロイ先の現在地」の版 (T32.28)
 #
 # **意図的に外してあるものは下の除外表に理由つきで持つ** (黙って無視しない)。
 # 差分が 1 件でもあれば理由を印字して exit 1。
@@ -259,10 +259,10 @@ while read -r name; do
   fi
 done <"$W/py-want"
 
-# --- (g) 台帳 (TASKS.md の未着手・TODO.md の §5 の索引・tasks/TNN.md) ---------
+# --- (g) 台帳 (TASKS.md の未着手・docs/task-index.md の索引・tasks/TNN.md) ---------
 # 済んだ Phase の本文を `tasks/TNN.md` へ移したので (T24.9)、**移し忘れ・リンク切れ・番号の重複**を
 # 見る (T24.10)。4 つの規則と足場 1 つは `scripts/check-ledger.py` の頭に書いてある (試験は
-# `scripts/test_check_ledger.py`)。**`TODO.md` と `tasks/*.md` は読むだけで、1 文字も変えない。**
+# `scripts/test_check_ledger.py`)。**`TODO.md`・`docs/*.md`・`tasks/*.md` は読むだけで、1 文字も変えない。**
 python3 scripts/check-ledger.py || NG=1
 
 # --- (h) 判定表の既定 (T28.23) -------------------------------------------------
@@ -354,20 +354,21 @@ sys.exit(ng)
 UPDOWNPY
 
 # --- (k) `docs/perf.md` の「いまの数字」の版 (T32.28) --------------------------------
-# `docs/perf.md` の「**いまの数字は 日付、… に X.Y.Z をデプロイして …**」の版が、`TODO.md` §2 の
-# 「### デプロイ先の現在地 (…)」の見出しの版と同じか。締めは §2 を直すが perf.md は 0.27.8 のまま 3 回残っていた
+# `docs/perf.md` の「**いまの数字は 日付、… に X.Y.Z をデプロイして …**」の版が、`docs/status.md` の
+# 「## デプロイ先の現在地 (…)」の見出しの版と同じか。締めは現在地を直すが perf.md は 0.27.8 のまま 3 回残っていた
+# (現在地は T37.5 で `TODO.md` の章から `docs/status.md` へ移した)
 python3 - <<'NOWPY' || NG=1
 import re, sys
 perf = open('docs/perf.md', encoding='utf-8').read()
-todo = open('TODO.md', encoding='utf-8').read()
+status = open('docs/status.md', encoding='utf-8').read()
 m = re.search(r"\*\*いまの数字は [^*]*? (\d+\.\d+\.\d+) をデプロイして", perf)
-h = re.search(r"^### デプロイ先の現在地 \([^\n]*? (\d+\.\d+\.\d+) をデプロイして", todo, re.M)
+h = re.search(r"^#{2,3} デプロイ先の現在地 \([^\n]*? (\d+\.\d+\.\d+) をデプロイして", status, re.M)
 if not m or not h:
-    print("  NG (k): %s に版が見つからない" % ("docs/perf.md の「いまの数字は」" if not m else "TODO.md §2 の見出し"))
+    print("  NG (k): %s に版が見つからない" % ("docs/perf.md の「いまの数字は」" if not m else "docs/status.md の「デプロイ先の現在地」の見出し"))
     sys.exit(1)
-print("(k) いまの数字の版: docs/perf.md %s / TODO.md §2 %s" % (m.group(1), h.group(1)))
+print("(k) いまの数字の版: docs/perf.md %s / docs/status.md %s" % (m.group(1), h.group(1)))
 if m.group(1) != h.group(1):
-    print("  NG (k): docs/perf.md の「いまの数字」が %s (TODO.md §2 は %s)。締めで表ごと書き直す" % (m.group(1), h.group(1)))
+    print("  NG (k): docs/perf.md の「いまの数字」が %s (docs/status.md は %s)。締めで表ごと書き直す" % (m.group(1), h.group(1)))
     sys.exit(1)
 NOWPY
 
@@ -376,5 +377,5 @@ if [ "$NG" = 0 ]; then
   echo "11 を突き合わせて 差分 0 件。"
   exit 0
 fi
-echo "差分あり。README / \`/\` の案内 / \`/snapshot\` / 環境変数の表 / 台帳 (\`TODO.md\` の §5 と \`tasks/\`) / 判定表の既定 / \`-h\` の既定 / 上の・下の / いまの数字 を直すか、理由を除外表に書くこと。"
+echo "差分あり。README / \`/\` の案内 / \`/snapshot\` / 環境変数の表 / 台帳 (\`docs/task-index.md\` と \`tasks/\`) / 判定表の既定 / \`-h\` の既定 / 上の・下の / いまの数字 を直すか、理由を除外表に書くこと。"
 exit 1

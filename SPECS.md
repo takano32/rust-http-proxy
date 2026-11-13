@@ -14,7 +14,7 @@
 
 ## 仕様の一覧
 
-T37.4 で `README.md` と `docs/features.md` から移した 23 個。80 行以上のものは `specs/Sn.md` に本文を置き、ここには題と 1 行の要約だけを残した。
+S1〜S23 は T37.4 で `README.md` と `docs/features.md` から、S24・S25 は T37.5 で `TODO.md` から移した。80 行以上のものは `specs/Sn.md` に本文を置き、ここには題と 1 行の要約だけを残した。
 
 | 番号 | 題 | 本文 |
 |---|---|---|
@@ -41,6 +41,8 @@ T37.4 で `README.md` と `docs/features.md` から移した 23 個。80 行以�
 | S21 | `/history` | [`specs/S21.md`](specs/S21.md) |
 | S22 | `/profile` | この文書 |
 | S23 | 配布物とビルドの設定 | この文書 |
+| S24 | 完了の定義 (速さの約束) | この文書 |
+| S25 | 守ること (認証なし・外部クレートなし・ビルドのメモリ・動作環境) | この文書 |
 
 ## S1 受け付ける要求と断るもの
 
@@ -922,3 +924,42 @@ CPU/要求 が数 % ぶれるので手元の A/B は取らず、**デプロイ�
 fat LTO と合わせた `dist` の実測 (2026-09-08) は `release` に対して forward 8 並列 **+1.9%** (CPU/要求 41.4 → 39.6 us で -4.4%)、
 キャッシュ HIT +0.7%、64 並列 -1.2%、CONNECT 確立 -8% (この経路のぶれ ±25% の中) で、**CPU 以外はほぼぶれの中**です。
 それでも `dist` は 721 KB 小さい (2026-09-19 の実測) ので、配布は `dist` のままにしています。
+
+## S24 完了の定義 (速さの約束)
+
+ゴール (「バイナリを 1 つ置いて起動するだけで使える、認証なしの HTTP/HTTPS(CONNECT) プロキシ」を、同じ条件でこれ以上速くならないところまで速くする。`docs/goals.md`) に対して、満たしたことを確かめた約束。数字は手元の loopback で、測り方は `docs/measuring.md`、いまの表は `docs/status.md`。
+
+> T37.5 で `TODO.md` の現在地の「完了の定義」から移した (本文は移す前と同じ)。
+
+- [x] タスク 0〜1 と T2.1・T2.2・T3.1・T3.2・T3.4 が完了、README の性能節に Rust ベンチの値がある
+- [x] forward 8 並列 p50 が 1 ms 台 (loopback) — 実際は **0.18 ms**
+- [x] **トンネル 1 本の CPU が 200 us/MiB を切る** — **185.5 us/MiB** (user 11.5 / kernel 174.0。ほぼ全部 `splice`)。
+  同じ条件のスループットは **3,960 MiB/s (3.87 GiB/s)** で旧条件「1.5 GiB/s 以上」も満たすが、
+  **この MiB/s はベンチ律速**なので完了条件には使わない (プロキシは 1 コアの 73% しか使わず、飽和するのはベンチの blaster)。
+  測り方は `scripts/cpu-per-request.sh --only tunnel --conc 1` (プロキシ cpu4-5 / ベンチ cpu6-7、10 秒 × 3 回の中央値、T10.8)。
+  旧記述の「固定なしで 2.2 GiB/s / 固定ありで 1.24 GiB/s」は **256 MiB 固定 (0.2 秒) の測り方**の値で、
+  立ち上がりと 10 ms 刻みの丸めを含んでいた
+- [x] 既定設定で `cargo test --workspace` 全通過 (T9.6 時点で 189 単体 + 48 結合)
+- [x] `rust-http-proxy --lite -p 8080` の 1 行で「認証なし・手軽・最速」
+
+## S25 守ること (認証なし・外部クレートなし・ビルドのメモリ・動作環境)
+
+このプロキシとそのビルドが守る約束 (非目標も含む)。作業の決まり (1 ファイルの行数・文体・`$HOME` に書かない・権限を上げない) は `docs/goals.md` に残した。
+
+> T37.5 で `TODO.md` のゴールと前提の「守ること」から、振る舞いとビルドの約束だけを移した (本文は移す前と同じ)。
+
+- **認証は入れない**。`Proxy-Authorization` を要求するコードは書かない (履歴上 `dad8984 refactor: remove authentication` で意図的に外した)。
+- **外部クレートは追加しない**。依存してよいのはこのリポジトリのコードだけ (`crates/` のワークスペースメンバー)。
+  crates.io のクレートは 1 つも入れない (`libc` も入れない)。
+  システムコールが必要なら `crates/sys/src/sys.rs` (`poll` / `epoll` / `splice` / `recv`)、`crates/sys/src/signal.rs`、
+  `crates/sysinfo/src/sysinfo/inotify.rs`、`crates/tls/src/tls.rs` (`dlopen`) と同じく `unsafe extern "C"` で直接宣言し、
+  `#[cfg(target_os = "linux")]` で囲んで他 OS には従来コードへのフォールバックを残す。
+- **既存機能を壊さない**。`cargo test --workspace` は常に全通過。キャッシュ・ダッシュボード等は
+  「使わないときに一切コストがかからない」ようにするのが方針で、削除はしない。
+- Rust は `edition = "2024"`、stable の `rustc` で動くこと (版は固定しない)。`cargo clippy --workspace --all-targets` の警告を増やさない。
+- **`cargo build --release` はメモリ 120 MB で通ること** (動作環境のコンテナが小さい。2026-09-16 に 200 → 180、2026-09-26 に T17.11 (T15.12 段 8) で 180 → 120 に下げた。
+  手元の通る最小は 90 MB)。`scripts/build-memory.sh` が CI で見張っている (実際にその cgroup に入れてビルドする)。
+  効くのは 2 つだけ: **クレートを小さく割ること** (`rustc` はクレート単位で全部を抱える。
+  **ファイルを割っても下がらない**) と、**`jobs = 1`** (`.cargo/config.toml`。並列に走る rustc の
+  合計が上限を超えるため)。
+- 動作環境は Linux (Pterodactyl コンテナ) が主。`SERVER_PORT` / `SERVER_MEMORY` / `$HOME/.env` の扱いは変えない。

@@ -123,7 +123,7 @@ jobs:
       - run: RUSTFLAGS="-D warnings" cargo check --workspace --target aarch64-apple-darwin
       - run: cargo check --workspace --all-targets --target aarch64-apple-darwin
 
-  # 動作環境 (メモリの小さいコンテナ) でビルドできることを守る (§0 の関門)。
+  # 動作環境 (メモリの小さいコンテナ) でビルドできることを守る (仕様 S25 の関門)。
   # 120 MB の cgroup (systemd-run --scope -p MemoryMax=120M) の中で実際に
   # リリースビルドを回し、rustc が OOM killer に落とされたら失敗する。
   # **これは毎回回す** (通るかどうかは push ごとに知りたい)。
@@ -153,7 +153,7 @@ jobs:
   # デプロイ先に似せた条件で短く回し、`/snapshot` を成果物として残す (T14.30)。
   #
   # **見張るのは「形の退行」だけで、数字の絶対値は比べない** (CI の runner は世代も負荷も毎回違う。
-  # §1 のレシピの数字は手元の機械でしか取れない)。落とすのは 3 つだけ:
+  # `docs/measuring.md` のレシピの数字は手元の機械でしか取れない)。落とすのは 3 つだけ:
   #   1. `--only connect-multi` の p50 が 50 ms 以上 (= Happy Eyeballs の 250 ms が戻ってきた。T12.1)
   #   2. `/snapshot` が 1 要求で取れない・JSON として読めない (T14.4)
   #   3. `/status` の `ipv6.v4_first` か `/profile` の段階 (T14.3) が入っていない・全部 0
@@ -238,7 +238,7 @@ jobs:
 
   # ビルドが通る最小のメモリを CI の機械で実測する (T11.7)。
   #
-  # **なぜ push ごとに回さないか**: 上の `Build memory` が §0 の条件 (120 MB で通ること) を
+  # **なぜ push ごとに回さないか**: 上の `Build memory` が仕様 S25 の条件 (120 MB で通ること) を
   # 毎回確かめており、守りたいことはそれで足りている。ここで測るのは「余裕がいくつあるか」で、
   # コミット単位で追う必要は無い。段ごとに `cargo clean` からのビルドが 1 回要るので
   # (runner で 1 段 10〜16 秒、既定の 8 段で 2〜3 分)、刻むほど毎回の CI が延びる。
@@ -248,7 +248,7 @@ jobs:
   # **なぜ手回し (workflow_dispatch) と週 1 (schedule) の両方か**: 手回しは
   # クレートを割った直後など「いま知りたい」ときのため (ladder も指定できる)。
   # 週 1 は放っておくと値が古くなるため — 実際 T7.4 の 110 MB が Phase 8〜10 の間ずっと
-  # §1 に載ったままになり、T10.9 で取り下げる羽目になった。
+  # 計測の作法 (いまの `docs/measuring.md`) に載ったままになり、T10.9 で取り下げる羽目になった。
   # なお schedule は既定ブランチでしか走らず、リポジトリが 60 日動かないと GitHub に止められる。
   build-memory-find:
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'

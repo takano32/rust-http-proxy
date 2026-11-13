@@ -8,7 +8,9 @@
 「。 タスク 31」と空白が入ったのと、前置きの相対リンク `tasks/T30.md` が `tasks/` の中から切れていた
 (T32.38) ので、その 2 か所は直した形と比べる。履歴の無い浅い clone では飛ばす。
 (2) 作り物の小さな台帳で: 新しい `tasks/TNN.md` と索引の行を作る・範囲の印 2 つを広げる・`--finish` の
-`--deployed` で §2 の見出しを直す・ほかに開いているタスクがあれば「なし」を書かない・使い方の誤り。
+`--deployed` で「デプロイ先の現在地」の見出しを直す・ほかに開いているタスクがあれば「なし」を書かない・使い方の誤り。
+`SyntheticTest` は T37.5 より前の形 (索引と現在地が `TODO.md` の章にある木。(1) の再生もこの形)、
+`DocsLayoutTest` は T37.5 からの形 (索引は `docs/task-index.md`、現在地は `docs/status.md`)。
 """
 
 import os
@@ -176,6 +178,8 @@ README = """# tasks/ — 済んだタスクの本文 (タスク 0〜4)
 
 
 class SyntheticTest(unittest.TestCase):
+    """T37.5 より前の形 (索引と「デプロイ先の現在地」が `TODO.md` の章にある木)。過去の台帳を読み直すために残す。"""
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix="test-ledger-close-")
         self.w = self.tmp.name
@@ -269,6 +273,103 @@ class SyntheticTest(unittest.TestCase):
         # --no-check を付けなければ最後に check-ledger.py を回す (作り物の台帳は合わないので 1)
         code, out = run("-C", self.w, "--date", "2026-01-03", "T5.0", self.r)
         self.assertEqual(code, 1, out)
+
+
+TODO_NOW = """# TODO.md
+
+入り口の索引だけ (T37.5 から)。
+"""
+
+INDEX_NOW = """# docs/task-index.md — タスクの索引
+
+## タスク 4 (2026-01-01 に起こした: 前の題)
+
+**済んだ 1 本の本文は [`tasks/T4.md`](../tasks/T4.md) に移した** (2026-01-01。T4.99、1 文字も変えていない)。
+
+## タスク 19 (2026-10-23 に起こした: 別の題)
+
+**済んだ 1 本**。
+"""
+
+STATUS_NOW = """# docs/status.md — 現在地
+
+## デプロイ先の現在地 (2026-01-01、tokyo (`tokyo.example:1`) に 0.4.9 をデプロイして 24.0 時間)
+
+**数字の本文は締めの結果にだけ置く**。いまの数字は [`tasks/T4.md`](../tasks/T4.md) の **T4.99 の結果** (要点)。
+"""
+
+
+class DocsLayoutTest(unittest.TestCase):
+    """T37.5 からの形: 索引は `docs/task-index.md` (`## タスク N (…)`)、現在地は `docs/status.md`。`TODO.md` は触らない。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix="test-ledger-close-docs-")
+        self.w = self.tmp.name
+        write(self.w, "TASKS.md", TASKS)
+        write(self.w, "TODO.md", TODO_NOW)
+        write(self.w, "docs/task-index.md", INDEX_NOW)
+        write(self.w, "docs/status.md", STATUS_NOW)
+        write(self.w, "tasks/README.md", README)
+        write(self.w, "tasks/T4.md", "# タスク 4 — 記録\n")
+        self.r = os.path.join(self.w, "r.txt")
+        with open(self.r, "w", encoding="utf-8") as f:
+            f.write("  - 結果 (2026-01-03、`abc1234`): 直した ([`T4.md`](T4.md))。\n")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def close(self, tid, *extra):
+        code, out = run("-C", self.w, "--no-check", "--date", "2026-01-03", tid, self.r, *extra)
+        self.assertEqual(code, 0, out)
+
+    def test_index_line_goes_to_the_index_document(self):
+        self.close("T5.0")
+        index = read(self.w, "docs/task-index.md")
+        self.assertIn("## タスク 4 (2026-01-01 に起こした: 前の題)\n\n**済んだ 1 本の本文は [`tasks/T4.md`]"
+                      "(../tasks/T4.md) に移した** (2026-01-01。T4.99、1 文字も変えていない)。\n\n"
+                      "## タスク 5 (2026-01-02 に起こした: 作り物の題)\n\n**済んだ 1 本の本文は [`tasks/T5.md`]"
+                      "(../tasks/T5.md) に移した** (2026-01-02〜03。T5.0、1 文字も変えていない)。"
+                      "未着手の残りは [`TASKS.md`](../TASKS.md)。\n\n## タスク 19", index)
+        self.assertEqual(read(self.w, "TODO.md"), TODO_NOW)  # 入り口は触らない
+        self.assertIn("# tasks/ — 済んだタスクの本文 (タスク 0〜5)", read(self.w, "tasks/README.md"))
+        # 2 本目は同じ節の行を書き直す
+        self.close("T5.99")
+        index = read(self.w, "docs/task-index.md")
+        self.assertEqual(index.count("## タスク 5 ("), 1, index)
+        self.assertIn("(2026-01-02〜03。T5.0・T5.99、1 文字も変えていない)", index)
+
+    def test_finish_deployed_rewrites_the_status_document(self):
+        self.close("T5.0")
+        self.close("T5.99")
+        code, out = run("-C", self.w, "--no-check", "--date", "2026-01-04", "--finish", "5",
+                        "--deployed", "0.5.3+abcdef0", "--hours", "48.1")
+        self.assertEqual(code, 0, out)
+        self.assertIn("手で書く: docs/status.md「デプロイ先の現在地」", out)
+        index = read(self.w, "docs/task-index.md")
+        self.assertIn("未着手の残りは [`TASKS.md`](../TASKS.md)。タスク 5 は全部済んだ (2026-01-04、T5.99 で 0.5.3 を締めた)。\n",
+                      index)
+        status = read(self.w, "docs/status.md")
+        self.assertIn("## デプロイ先の現在地 (2026-01-04、tokyo (`tokyo.example:1`) に 0.5.3 をデプロイして 48.1 時間)",
+                      status)
+        self.assertIn("いまの数字は [`tasks/T5.md`](../tasks/T5.md) の **T5.99 の結果** (要点)", status)
+        self.assertEqual(read(self.w, "TODO.md"), TODO_NOW)
+
+    def test_check_ledger_passes_on_the_closed_tree(self):
+        """締めた木を check-ledger.py が通す (索引の行のリンクが docs/ から辿れる)。"""
+        write(self.w, "TASKS.md", TASKS.replace("**利用者が決めたもの**: なし。\n",
+                                                "**利用者が決めたもの**: なし。\n\n### タスク 6 (2026-01-03 に起こした: 次)\n\n"
+                                                "- [ ] **T6.0 次の**\n"))
+        write(self.w, "tasks/T4.md", "# タスク 4 — 記録\n\n- [x] **T4.99 前の**\n  - 結果: 済み。\n")
+        write(self.w, "docs/task-index.md", INDEX_NOW.replace(
+            "## タスク 19 (2026-10-23 に起こした: 別の題)\n\n**済んだ 1 本**。\n", ""))
+        write(self.w, "README.md", "# README\n")       # 前置きのリンクの先 (作り物)
+        write(self.w, "scripts/x.py", "# 作り物\n")
+        self.close("T5.0")
+        self.close("T5.99")
+        code, out = run("-C", self.w, "--date", "2026-01-04", "--finish", "5")
+        self.assertEqual(code, 0, out)
+        self.assertIn("docs/task-index.md のタスク見出し 2 節", out)
+        self.assertNotIn("NG", out)
 
 
 class VersionCheckTest(unittest.TestCase):

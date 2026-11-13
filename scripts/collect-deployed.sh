@@ -116,7 +116,7 @@
 #   FOLLOW_SECS (既定 60) … 既定で追う `recent`・`hosts`・`dns`・`profile` の続きを引く時間の合計の上限 (秒)。
 #                         越えたら次の 1 枚を引かずに止める (T22.5)
 #   FULL (無指定)       … `0` で `--no-follow` と同じ (切れた部をどれも追わない)、`1` で `--full` と同じ
-#   AAAA (無指定)       … `status-diff.py --aaaa FILE` に渡す表 (数字を残すときは固定する。§1)
+#   AAAA (無指定)       … `status-diff.py --aaaa FILE` に渡す表 (数字を残すときは固定する。`docs/measuring.md`)
 #   ANON (既定 1)       … 0 で匿名化した写し (`<時刻>-snapshot.anon.json` ほか) を置かない
 #
 # 出口: 雪像が取れなければ 1 (それ以外は、途中の道具が失敗しても 1 枚は出す)。

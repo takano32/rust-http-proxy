@@ -1,7 +1,7 @@
 #!/bin/bash
 # CI で「デプロイ先に似せた条件」を短く回し、`/snapshot` を成果物として残す (TODO.md T14.30)。
 #
-# §1 のレシピの数字は手元の機械でしか取れない (CI の runner は世代も負荷も毎回違う) ので、
+# `docs/measuring.md` のレシピの数字は手元の機械でしか取れない (CI の runner は世代も負荷も毎回違う) ので、
 # **ここで見張るのは「形の退行」だけ**で、数字の絶対値は比べない:
 #
 #   1. `--only connect-multi` の **p50 が `CI_SNAPSHOT_P50_MAX_MS` (既定 50) ms 以上なら落とす**。
@@ -20,7 +20,7 @@
 # IP リテラル宛ての `--only connect` を回す。名前が引けないと `connect-multi` は終了コード 2 で終わるため)。
 #
 # **CPU は固定しない** (`taskset` を使わない)。CI の機械にコアの大小は無く、ここで読むのは p50 の桁だけで
-# CPU/要求 は読まないため。**この条件の数字は §2 の表には載せない** (§1 の「デプロイ先に似せた条件」の注)。
+# CPU/要求 は読まないため。**この条件の数字は `docs/status.md` の表には載せない** (`docs/measuring.md` の「デプロイ先に似せた条件」の注)。
 #
 # 使い方:
 #   scripts/ci-snapshot.sh [--out snapshot.json] [--seconds 10] [--conc 8]

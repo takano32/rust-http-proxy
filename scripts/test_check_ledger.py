@@ -3,15 +3,18 @@
 
     python3 -m unittest discover -s scripts        # リポジトリの根から
 
-一時のディレクトリに `TODO.md` と `tasks/TNN.md` の見本を置き、`check-ledger.py` の
-`collect()` / `main()` をそのまま呼ぶ。**本物の台帳は読まない** (中身が進んでもテストが揺れない)。
+一時のディレクトリに `TODO.md`・`docs/task-index.md`・`docs/status.md` と `tasks/TNN.md` の見本を置き、
+`check-ledger.py` の `collect()` / `main()` をそのまま呼ぶ。**本物の台帳は読まない** (中身が進んでもテストが揺れない)。
 見るのは、通る形 1 つと、規則ごとにわざと壊した形:
 
-  (1) 全部 `- [x]` のタスクが §5 に残る / 移したタスクにタスクの行が残る
+  (1) 全部 `- [x]` のタスクが索引に残る / 移したタスクにタスクの行が残る
   (2) リンクが無い / 指す先が無い / 見出しが無い / 番号が違う
   (3) 番号が本文つきで 2 回出る (片方が `結果` だけの追記なら通る) / 番号と置き場所が違う
   (4) 1 行目が `# タスク NN — …` でない
   (足) 「済んだ N 本」がファイルの本数と合わない
+
+索引と現在地は T37.5 で `TODO.md` の章から `docs/task-index.md`・`docs/status.md` へ移した。見本は新しい形で置き、
+`OldLayout` だけが古い形 (`TODO.md` の `## 5. …` の章と `### デプロイ先の現在地`) を置いて、過去の台帳も読めることを見る。
 """
 
 import contextlib
@@ -41,7 +44,7 @@ def task(ident, status="x", body=BODY, title="見本のタスク"):
 
 
 def phase(num, blocks, link=False, count=None, moved_line=None):
-    """§5 の節 1 つ。`blocks` は `task()` の列。"""
+    """索引の節 1 つ (古い `TODO.md` の形。`as_index` で `docs/task-index.md` の形にする)。`blocks` は `task()` の列。"""
     lines = ["### タスク %d (2026-10-22 に決めた: 見本)" % num, ""]
     if link or moved_line:
         n = len(blocks) if count is None else count
@@ -54,8 +57,18 @@ def phase(num, blocks, link=False, count=None, moved_line=None):
     return lines
 
 
+def as_index(lines):
+    """古い `TODO.md` の節を `docs/task-index.md` の形にする (見出しは `##`、リンクは `docs/` から辿る)。"""
+    out = []
+    for line in lines:
+        if line.startswith("### タスク "):
+            line = line[1:]
+        out.append(line.replace("](tasks/", "](../tasks/"))
+    return out
+
+
 def todo_md(sections, extra=None):
-    """§5 の外にも `- [x]` を置いた `TODO.md` (§5 だけを見ていることの確認)。"""
+    """章の外にも `- [x]` を置いた古い形の `TODO.md` (索引の章だけを見ていることの確認)。"""
     lines = ["# 台帳の見本", "", "## 4. 測って採らなかったもの", "",
              "- [x] **T1.1 §4 の見本 (台帳のタスクではない)**", "",
              "## 5. これから (未着手)", ""]
@@ -73,14 +86,25 @@ class LedgerCase(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
         self.root = self._tmp.name
         os.makedirs(os.path.join(self.root, "tasks"))
+        os.makedirs(os.path.join(self.root, "docs"))
 
     def write(self, rel, lines):
         with open(os.path.join(self.root, rel), "w", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n")
 
     def build(self, sections, files):
-        """`TODO.md` と `tasks/*.md` を置いて、道具を回した (終了コード, 出力) を返す。"""
-        self.write("TODO.md", todo_md(sections))
+        """`TODO.md`・`docs/task-index.md` と `tasks/*.md` を置いて、道具を回した (終了コード, 出力) を返す。
+
+        `TODO.md` には古い形の章 (`- [x]` の見本) だけを置き、索引の節は `docs/task-index.md` に置く
+        (索引の置き場が文書になったあとは、`TODO.md` の章を読まないことの確認)。
+        """
+        self.write("TODO.md", todo_md([]))
+        self.write("docs/task-index.md", ["# docs/task-index.md — 見本", ""]
+                   + as_index([line for section in sections for line in section + [""]]))
+        return self.run_tool(files)
+
+    def run_tool(self, files):
+        """`tasks/*.md` を置いて道具を回す。"""
         for name, lines in files.items():
             self.write(os.path.join("tasks", name), lines)
         buf = io.StringIO()
@@ -102,10 +126,11 @@ class Pass(LedgerCase):
         self.assertEqual(code, 0, out)
         self.assertNotIn("NG", out)
         self.assertIn("tasks/TNN.md 1 本 (タスク 2 本)", out)
-        self.assertIn("§5 に残るタスク 2 本", out)
+        self.assertIn("索引に残るタスク 2 本", out)
+        self.assertIn("docs/task-index.md のタスク見出し 2 節", out)
 
     def test_instruction_heading_is_not_a_phase(self):
-        """`### タスク 15 の渡し方 (…)` のような指示文の節は台帳の節として数えない。"""
+        """`## タスク 15 の渡し方 (…)` のような指示文の節は台帳の節として数えない。"""
         code, out = self.build(
             [["### タスク 15 の渡し方 (2026-09-18 版。指示文の型)", ""] + task("T15.0")],
             {})
@@ -134,28 +159,28 @@ class Move(LedgerCase):
     def test_all_done_phase_must_move(self):
         code, out = self.build([phase(24, [task("T24.0"), task("T24.1")])], {})
         self.assertEqual(code, 1)
-        self.assert_ng(out, "全部 [x] なのに §5 に残っている")
+        self.assert_ng(out, "全部 [x] なのに docs/task-index.md に残っている")
 
     def test_moved_phase_must_not_keep_rows(self):
         code, out = self.build(
             [phase(23, [task("T23.0")], link=True)],
             {"T23.md": ["# タスク 23 — 見本", ""] + task("T23.0")})
         self.assertEqual(code, 1)
-        self.assert_ng(out, "移したのに §5 にタスクの行が 1 本")
+        self.assert_ng(out, "移したのに docs/task-index.md にタスクの行が 1 本")
 
 
 class Link(LedgerCase):
     def test_missing_link(self):
         code, out = self.build([], {"T23.md": ["# タスク 23 — 見本", ""] + task("T23.0")})
         self.assertEqual(code, 1)
-        self.assert_ng(out, "tasks/T23.md を指す `### タスク 23 (…)` の見出しが §5 に無い")
+        self.assert_ng(out, "tasks/T23.md を指す「タスク 23 (…)」の見出しが docs/task-index.md に無い")
 
     def test_phase_file_not_linked_from_its_heading(self):
         code, out = self.build(
             [phase(23, [], link=False)],
             {"T23.md": ["# タスク 23 — 見本", ""] + task("T23.0")})
         self.assertEqual(code, 1)
-        self.assert_ng(out, "が §5 のタスク 23 の見出しからリンクされていない")
+        self.assert_ng(out, "が docs/task-index.md のタスク 23 の見出しからリンクされていない")
 
     def test_link_to_missing_file(self):
         code, out = self.build([phase(21, [], link=True)], {})
@@ -169,7 +194,7 @@ class Link(LedgerCase):
             {"T22.md": ["# タスク 22 — 見本", ""] + task("T22.0"),
              "T23.md": ["# タスク 23 — 見本", ""]})
         self.assertEqual(code, 1)
-        self.assert_ng(out, "§5 のタスク 23 の見出しが tasks/T22.md を指している")
+        self.assert_ng(out, "docs/task-index.md のタスク 23 の見出しが tasks/T22.md を指している")
 
     def test_unknown_file_in_tasks(self):
         code, out = self.build(
@@ -211,7 +236,7 @@ class Numbers(LedgerCase):
         self.assert_ng(out, "番号 T22.1 がタスク 23 のファイルにある")
 
     def test_number_of_two_files(self):
-        """同じ番号が §5 と tasks/ の両方に出る (移し忘れの取り残し) も重複。"""
+        """同じ番号が索引と tasks/ の両方に出る (移し忘れの取り残し) も重複。"""
         code, out = self.build(
             [phase(23, [], link=True),
              phase(24, [task("T23.0"), task("T24.0", status=" ", body=())])],
@@ -337,14 +362,16 @@ class RealLedger(unittest.TestCase):
 class Ledger28(LedgerCase):
     """T28.21 で足した (5)〜(8): 索引と範囲・済んだ節・現在地の版・未着手の参照。"""
 
-    def base(self, readme=None, tasks_md=None, todo_extra=None, t2_lines=None):
+    def base(self, readme=None, tasks_md=None, todo_extra=None, t2_lines=None, index_extra=None):
         sections = [phase(1, [], link=True, count=1), phase(2, [], link=True, count=1)]
+        # `TODO.md` の「T15〜TN」の印は、残っている木では見る (T37.5 で入り口から外した)
         self.write("TODO.md", ["# 台帳の見本", "",
-                               "> | `tasks/TNN.md` | 済んだタスクのタスク本文 (T15〜T2。1 文字も変えずに移したもの) |", "",
-                               "## 2. 現在地", "",
-                               "### デプロイ先の現在地 (2026-10-25、tokyo に 0.2.1 をデプロイして 24 時間)", "",
-                               "## 5. これから (未着手)", ""]
-                   + [line for sec in sections for line in sec + [""]] + (todo_extra or []))
+                               "> | `tasks/TNN.md` | 済んだタスクのタスク本文 (T15〜T2。1 文字も変えずに移したもの) |", ""]
+                   + (todo_extra or []))
+        self.write("docs/status.md", ["# docs/status.md — 見本", "",
+                                      "## デプロイ先の現在地 (2026-10-25、tokyo に 0.2.1 をデプロイして 24 時間)", ""])
+        self.write("docs/task-index.md", ["# docs/task-index.md — 見本", ""]
+                   + as_index([line for sec in sections for line in sec + [""]]) + (index_extra or []))
         self.write("tasks/T1.md", ["# タスク 1 — 見本", ""] + task("T1.1"))
         self.write("tasks/T2.md", ["# タスク 2 — 見本", ""] + task("T2.1")
                    + (t2_lines if t2_lines is not None else ["  - 前提: **デプロイ済み** (2026-10-25)、版 `0.2.1+abcdef0`。", ""]))
@@ -371,8 +398,8 @@ class Ledger28(LedgerCase):
                                       "| T1.1 | [T1.md](T1.md) | 見本 |", "| T2.1 | [T2.md](T2.md) | 見本 |"])
         self.assert_ng(out, "「タスク 0〜1」(いちばん大きいのは 2)")
         self.write("tasks/T3.md", ["# タスク 3 — 見本", ""] + task("T3.1"))
-        code, out = self.base(todo_extra=["### タスク 3 (2026-10-25: 見本)", "",
-                                          "**済んだ 1 本の本文は [`tasks/T3.md`](tasks/T3.md) に移した**", ""])
+        code, out = self.base(index_extra=["## タスク 3 (2026-10-25: 見本)", "",
+                                           "**済んだ 1 本の本文は [`tasks/T3.md`](../tasks/T3.md) に移した**", ""])
         self.assert_ng(out, "TODO.md 冒頭の表が「T15〜T2」(いちばん大きいのは 3)")
 
     def test_finished_section_left_in_tasks_md(self):
@@ -382,7 +409,7 @@ class Ledger28(LedgerCase):
 
     def test_current_heading_must_match_the_latest_deploy(self):
         code, out = self.base(t2_lines=["  - 前提: **デプロイ済み** (2026-10-26)、版 `0.2.5+1234567`。", ""])
-        self.assert_ng(out, "§2 の「デプロイ先の現在地」の版が 0.2.1 (tasks/ のいちばん新しい「デプロイ済み」は 0.2.5)")
+        self.assert_ng(out, "docs/status.md の「デプロイ先の現在地」の版が 0.2.1 (tasks/ のいちばん新しい「デプロイ済み」は 0.2.5)")
 
     def test_open_reference_must_exist(self):
         code, out = self.base(todo_extra=["締めの T2.99 は未着手の T2.99 は `TASKS.md` にある。", "",
@@ -407,6 +434,40 @@ class Ledger28(LedgerCase):
         self.assert_ng(out, "TODO.md:")
         self.assertIn("docs/none.md", out)
         self.assertNotIn("tasks/README.md の指す先", out)
+        # docs/ の文書 (T37.5 で TODO.md の章を移した先) は docs/ から辿る
+        code, out = self.base(index_extra=["[切れ](none.md) と [通る](../tasks/T1.md)", ""])
+        self.assert_ng(out, "docs/task-index.md:")
+        self.assertIn("のリンク none.md の指す先が無い (docs/ から辿る", out)
+        self.assertNotIn("../tasks/T1.md の指す先", out)
+
+
+class OldLayout(LedgerCase):
+    """T37.5 より前の木 (索引が `TODO.md` の `## 5. …` の章、現在地が `TODO.md` の `### デプロイ先の現在地`) も読む。"""
+
+    def old(self, sections, files, current=None):
+        lines = todo_md(sections)
+        if current:
+            lines = ["## 2. 現在地", "", "### デプロイ先の現在地 (%s)" % current, ""] + lines
+        self.write("TODO.md", lines)
+        os.rmdir(os.path.join(self.root, "docs"))
+        return self.run_tool(files)
+
+    def test_clean_old_ledger_passes(self):
+        code, out = self.old(
+            [phase(23, [], link=True, count=2),
+             phase(24, [task("T24.0"), task("T24.1", status=" ", body=())])],
+            {"T23.md": ["# タスク 23 — 見本", ""] + task("T23.0") + task("T23.1")})
+        self.assertEqual(code, 0, out)
+        self.assertIn("TODO.md のタスクの索引 のタスク見出し 2 節", out)
+
+    def test_old_ledger_ngs_name_the_old_place(self):
+        code, out = self.old(
+            [phase(23, [task("T23.0")], link=True)],
+            {"T23.md": ["# タスク 23 — 見本", ""] + task("T23.0")
+             + ["  - 前提: **デプロイ済み** (2026-10-26)、版 `0.23.5+1234567`。", ""]},
+            current="2026-10-25、tokyo に 0.23.1 をデプロイして 24 時間")
+        self.assert_ng(out, "移したのに TODO.md のタスクの索引 にタスクの行が 1 本")
+        self.assert_ng(out, "TODO.md の「デプロイ先の現在地」の版が 0.23.1 (tasks/ のいちばん新しい「デプロイ済み」は 0.23.5)")
 
 
 if __name__ == "__main__":
