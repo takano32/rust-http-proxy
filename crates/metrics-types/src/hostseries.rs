@@ -192,14 +192,14 @@ impl HostSeries {
     fn reassign(&mut self, keep: &[String], hosts: &mut HashMap<String, HostStats>) {
         self.alloc();
         // 落ちたホストの旗を下ろして枠を空ける
-        for i in 0..SLOTS {
-            if self.names[i].is_empty() || keep.iter().any(|h| *h == self.names[i]) {
+        for name in self.names.iter_mut() {
+            if name.is_empty() || keep.iter().any(|h| h == name) {
                 continue;
             }
-            if let Some(s) = hosts.get_mut(self.names[i].as_str()) {
+            if let Some(s) = hosts.get_mut(name.as_str()) {
                 s.series_slot = None;
             }
-            self.names[i].clear();
+            name.clear();
         }
         // 上がったホストに空き枠を配る (**前の住人の標本は捨てる**)
         for h in keep {
