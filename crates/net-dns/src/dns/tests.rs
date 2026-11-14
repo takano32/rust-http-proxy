@@ -221,8 +221,18 @@ fn the_winning_family_survives_a_relookup() {
 fn failure_is_remembered_briefly() {
     let _guard = RESOLVE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let host = "no-such-host.invalid";
-    let e1 = resolve(&format!("{host}:80")).unwrap_err();
-    assert_eq!(cached(host), Some((0, true)));
+    // 同時に引く本数の上限で断られた回は、引きもしないので失敗として覚えない (本体の決まりどおり)。
+    // 前の試験が締め切りで諦めた問い合わせがまだ枠を持っていると起きるので、枠が空くまで少し待って
+    // 引き直す (T37.10。名前解決の遅い CI の runner で 1 回だけ覚えていなかった)
+    let mut e1 = resolve(&format!("{host}:80")).unwrap_err();
+    for _ in 0..200 {
+        if !pool::is_busy(&e1) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+        e1 = resolve(&format!("{host}:80")).unwrap_err();
+    }
+    assert_eq!(cached(host), Some((0, true)), "{e1}");
     let e2 = resolve(&format!("{host}:80")).unwrap_err();
     assert_eq!(e1.kind(), e2.kind());
     assert!(status_json().contains("\"negative_hits\":"));

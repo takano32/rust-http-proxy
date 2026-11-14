@@ -249,7 +249,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-net-dns"
-version = "0.37.8"
+version = "0.37.10"
 dependencies = [
  "proxy-base",
 ]
@@ -306,7 +306,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-server"
-version = "0.37.8"
+version = "0.37.10"
 dependencies = [
  "proxy-base",
  "proxy-blocklist",
@@ -368,7 +368,7 @@ dependencies = [
 
 [[package]]
 name = "rust-http-proxy"
-version = "0.37.8"
+version = "0.37.10"
 dependencies = [
  "proxy-endpoints",
  "proxy-run",
