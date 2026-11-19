@@ -9,14 +9,14 @@
 - **番号は `S1` から、付けた順に振る。使い回さない。並び替えても振り直さない** (タスクの番号と同じ)。
 - **1 つの仕様は 1 つのまとまった振る舞い** (例: CONNECT のトンネル、キャッシュの鮮度、環境変数の読み方)。
 - **仕様は生きている文書**。振る舞いを変えたタスクは、同じコミットで仕様を書き直し、どのタスクで変えたかを仕様の中に書く (`T36.8 で足した` のように)。済んだタスクの記録 (`tasks/TNN.md`) と違い、書き直してよい。
-- **仕様はいまの振る舞いの決まりだけを現在形で書く** (T38.4)。前の版の振る舞い・変えた理由・そのとき測った数字は、決めたタスクの番号で指すだけにして、運用や読み方に要るものは [`docs/spec-history.md`](docs/spec-history.md) の同じ仕様の見出しの下に置く。
+- **仕様はいまの振る舞いの決まりだけを現在形で書く** (T38.4)。前の版の振る舞い・変えた理由・そのとき測った数字は、決めたタスクの番号で指すだけにして、運用や読み方に要るものは [`specs/HISTORY.md`](specs/HISTORY.md) の同じ仕様の見出しの下に置く。
 - **大きくなった仕様は `specs/Sn.md` に分ける**。分けたら、この文書には番号・題・1 行の要約と `specs/Sn.md` への参照だけを残す。
 - **指すときは `Sn`・タスク `Tn.m`・文書の名前だけを使う**。`§`・`(a)` のような記号や章の番号は使わない ([`AGENTS.md`](AGENTS.md) の「指し方」)。
 
 ## 仕様の一覧
 
 S1〜S23 は T37.4 で、S24・S25 は T37.5 で起こし、T38.4 でいまの振る舞いの決まりだけを現在形で書いた文にした。80 行を越える仕様は `specs/Sn.md` に本文を置き、ここには題と 1 行の要約だけを置く。
-決まりを入れた・変えたタスクは仕様の中に番号で書き、そのときの経緯 (前の版の振る舞い・理由・測った数字) は [`docs/spec-history.md`](docs/spec-history.md) に仕様ごとに置く。
+決まりを入れた・変えたタスクは仕様の中に番号で書き、そのときの経緯 (前の版の振る舞い・理由・測った数字) は [`specs/HISTORY.md`](specs/HISTORY.md) に仕様ごとに置く。
 
 | 番号 | 題 | 本文 |
 |---|---|---|
@@ -50,10 +50,10 @@ S1〜S23 は T37.4 で、S24・S25 は T37.5 で起こし、T38.4 でいまの�
 
 認証なしで受ける HTTP / CONNECT の要求、RFC に沿った枠組みの検査、自分宛ての判定と `Via` によるループの検知、読めない要求を断る理由。
 
-経緯は [`docs/spec-history.md`](docs/spec-history.md) の「S1 受け付ける要求と断るもの」。
+経緯は [`specs/HISTORY.md`](specs/HISTORY.md) の「S1 受け付ける要求と断るもの」。
 
 - **認証は無い**: 事前の設定なしで、届いた人は誰でも使える (S25)。
-- **外部クレートに依存しない** (S25)。バイナリは小さく、配布物は `dist` プロファイル (fat LTO) で作る (S23。測った大きさは `docs/spec-history.md`)。
+- **外部クレートに依存しない** (S25)。バイナリは小さく、配布物は `dist` プロファイル (fat LTO) で作る (S23。測った大きさは `specs/HISTORY.md`)。
 - HTTP の要求と HTTPS (CONNECT トンネル) を中継する。
 - RFC 7230 / RFC 9110 に沿う:
   - Hop-by-hop ヘッダーを除く
@@ -117,7 +117,7 @@ S1〜S23 は T37.4 で、S24・S25 は T37.5 で起こし、T38.4 でいまの�
 
 クライアント側の持続接続、オリジン側の接続プールと生存確認、デュアルスタックと Happy Eyeballs、確立・ヘッダー・無通信・転送の速さの締め切り。
 
-経緯は [`docs/spec-history.md`](docs/spec-history.md) の「S2 接続・keep-alive・接続プール・IPv4 / IPv6・タイムアウト」。
+経緯は [`specs/HISTORY.md`](specs/HISTORY.md) の「S2 接続・keep-alive・接続プール・IPv4 / IPv6・タイムアウト」。
 
 ### keep-alive と接続プール
 
@@ -178,7 +178,7 @@ S1〜S23 は T37.4 で、S24・S25 は T37.5 で起こし、T38.4 でいまの�
 
 起動直後のスレッドの本数、接続スレッドの使い回しと上限、暇な keep-alive 接続とトンネルを監視スレッドに預ける仕組み。
 
-経緯と測った数字は [`docs/spec-history.md`](docs/spec-history.md) の「S3 スレッドと暇な接続の預かり」。
+経緯と測った数字は [`specs/HISTORY.md`](specs/HISTORY.md) の「S3 スレッドと暇な接続の預かり」。
 
 ### 起動直後のスレッド
 
@@ -243,7 +243,7 @@ S1〜S23 は T37.4 で、S24・S25 は T37.5 で起こし、T38.4 でいまの�
 
 ACL・接続元ごとの上限・ブロックリスト・自動設定スクリプト、書き換える口を誰でも使えることと `PROXY_ENDPOINTS_READONLY`、重い口を同時に 1 本だけ組むこと。
 
-経緯は [`docs/spec-history.md`](docs/spec-history.md) の「S4 あて先と接続元の許可・拒否、ブロックリスト、`/proxy.pac`、外から使える口の守り」。
+経緯は [`specs/HISTORY.md`](specs/HISTORY.md) の「S4 あて先と接続元の許可・拒否、ブロックリスト、`/proxy.pac`、外から使える口の守り」。
 
 ### 許可と拒否
 
@@ -308,7 +308,7 @@ CPU と統計の鍵の時間を食う。そこで**大きい応答を組む口�
 
 DNS キャッシュの TTL、期限前の引き直し、keep-warm、serve-stale、失敗の記憶、1 要求 1 回の解決、答えが変わった回数。
 
-経緯と見積もりの道具の読み方は [`docs/spec-history.md`](docs/spec-history.md) の「S6 名前解決」。
+経緯と見積もりの道具の読み方は [`specs/HISTORY.md`](specs/HISTORY.md) の「S6 名前解決」。
 
 - **DNS キャッシュ**: 名前解決の結果を 60 秒保持し (`PROXY_DNS_TTL_SECS`)、CONNECT ごとの解決をなくす。解決に失敗したときは古い結果で凌ぐ。
   **直近 60 秒に使われた名前は期限の 3/4 (45 秒) で裏で引き直す**ので、使い続けているホストは
@@ -357,7 +357,7 @@ DNS キャッシュの TTL、期限前の引き直し、keep-warm、serve-stale�
 
 標準出力への 1 要求 1 行のアクセスログ、レベルごとの中身、`/log` に残す行、WARN を理由ごとに 1 分 1 行に抑えること、`cache=` の値。
 
-経緯は [`docs/spec-history.md`](docs/spec-history.md) の「S9 ログ」。
+経緯は [`specs/HISTORY.md`](specs/HISTORY.md) の「S9 ログ」。
 
 - 既定 (INFO) で 1 リクエスト 1 行のアクセスログ (キャッシュ HIT/MISS/REVALIDATED/STALE 付き) を標準出力へ出す
 - `PROXY_LOG_LEVEL` で `error` / `warn` / `info` / `debug` / `trace` を切り替える
@@ -412,7 +412,7 @@ DNS キャッシュの TTL、期限前の引き直し、keep-warm、serve-stale�
 
 統計と履歴の状態ファイル (`.rrd`) の大きさと版、日次の要約、日次のスナップショット、個票のファイル。
 
-経緯と測った数字は [`docs/spec-history.md`](docs/spec-history.md) の「S10 状態ファイルと再起動をまたぐもの」。
+経緯と測った数字は [`specs/HISTORY.md`](specs/HISTORY.md) の「S10 状態ファイルと再起動をまたぐもの」。
 
 - **統計と履歴の永続化**: 固定サイズ (**8 MiB**) の状態ファイルに、履歴 3 解像度 (5 秒 × 1 時間、1 分 × 1 日、
   1 時間 × 30 日) を環状に、ホスト別・接続元別の上位 1000 を固定スロットに書く。ファイルは伸びず、再起動後も表とグラフが残る。
@@ -436,7 +436,7 @@ DNS キャッシュの TTL、期限前の引き直し、keep-warm、serve-stale�
 
 - 先頭 8 バイトが版の印で、いまは `SHPRRD03` (**版 3**)。大きさは
   **8,388,608 B 固定** (領域の合計は 4,274,208 B、残りは次に項目が増えたときの余白)。1 レコードは
-  履歴の標本が 1,024 B (いま使っているのは 976 B = 122 項目。足したタスクは `docs/spec-history.md`)、ホスト別・接続元別が 640 B (同 568 B) で、
+  履歴の標本が 1,024 B (いま使っているのは 976 B = 122 項目。足したタスクは `specs/HISTORY.md`)、ホスト別・接続元別が 640 B (同 568 B) で、
   項目は**「固定の順 + 予備」**。**末尾に足す限り版は上がらない** (古いファイルはその位置が
   ゼロ埋めなので 0 として読み戻る)。`/status` の `state_file` に `version` と `converted_from` が出る
 - **領域を 1 つ足しても版 3 のまま** (T24.4。並びの末尾に 32 B の `baseline` を 1 本。
@@ -462,7 +462,7 @@ DNS キャッシュの TTL、期限前の引き直し、keep-warm、serve-stale�
 
 健康診断の検査と状態コード、この環境で何が読めるかの項目。
 
-経緯は [`docs/spec-history.md`](docs/spec-history.md) の「S13 `/healthz` と `capabilities`」。
+経緯は [`specs/HISTORY.md`](specs/HISTORY.md) の「S13 `/healthz` と `capabilities`」。
 
 ### `/healthz`
 
@@ -516,7 +516,7 @@ DNS キャッシュの TTL、期限前の引き直し、keep-warm、serve-stale�
 
 `/events` に積む出来事の種類、異常の自動検知の規則、初めて見た接続元。
 
-経緯と測った数字は [`docs/spec-history.md`](docs/spec-history.md) の「S15 出来事と異常の自動検知 (`/events`)」。
+経緯と測った数字は [`specs/HISTORY.md`](specs/HISTORY.md) の「S15 出来事と異常の自動検知 (`/events`)」。
 
 ### 起きたことの時系列
 
@@ -591,7 +591,7 @@ DNS キャッシュの TTL、期限前の引き直し、keep-warm、serve-stale�
 
 1 要求で全部を取る `/snapshot` の形と上限、日次・起動・停止のスナップショットを残す規則。
 
-経緯と測った数字は [`docs/spec-history.md`](docs/spec-history.md) の「S16 `/snapshot` と日次のスナップショット」。
+経緯と測った数字は [`specs/HISTORY.md`](specs/HISTORY.md) の「S16 `/snapshot` と日次のスナップショット」。
 
 ### 1 要求で全部取る (`/snapshot`)
 
@@ -645,7 +645,7 @@ DNS キャッシュの TTL、期限前の引き直し、keep-warm、serve-stale�
 
 利用者の要求が無い時間帯も待ちを測る canary の宛先・周期・IPv6 側。
 
-経緯は [`docs/spec-history.md`](docs/spec-history.md) の「S17 canary」。
+経緯は [`specs/HISTORY.md`](specs/HISTORY.md) の「S17 canary」。
 
 ### canary
 
@@ -738,7 +738,7 @@ DNS キャッシュの TTL、期限前の引き直し、keep-warm、serve-stale�
 
 上位ホストの 5 分 × 24 時間の時系列と、1 宛先・1 接続元を 1 枚に組む口。
 
-経緯は [`docs/spec-history.md`](docs/spec-history.md) の「S19 ホスト別の時系列と 1 相手の説明 (`/hosts/series`・`/explain`)」。
+経緯は [`specs/HISTORY.md`](specs/HISTORY.md) の「S19 ホスト別の時系列と 1 相手の説明 (`/hosts/series`・`/explain`)」。
 
 ### ホスト別の時系列 (`/hosts/series`)
 
@@ -798,7 +798,7 @@ DNS キャッシュの TTL、期限前の引き直し、keep-warm、serve-stale�
 
 1 要求の時間がどの段階に消えたか、CPU がどの役割のスレッドに使われたか、ロックの取り合い。
 
-測った数字は [`docs/spec-history.md`](docs/spec-history.md) の「S22 `/profile`」。
+測った数字は [`specs/HISTORY.md`](specs/HISTORY.md) の「S22 `/profile`」。
 
 - **`/profile?res=5|60`** は「**1 要求の時間がどの段階に消えたか**」「**CPU がどの役割のスレッドで何をして使われたか**」
   「**ロックの取り合いと待ち行列の待ち**」を 1 枚で返す (5 秒 × 720 = 1 時間 と 60 秒 × 1,440 = 1 日 の窓。
@@ -832,7 +832,7 @@ DNS キャッシュの TTL、期限前の引き直し、keep-warm、serve-stale�
   - 記録はプロセスのメモリだけ (約 6.9 MB = 1 標本 3,216 B × (720 + 1,440)。状態ファイルには書かない)。応答は 256 KiB 以下で、
     入り切らないときは**新しい標本を残して**古い方から落とし `"truncated": true` を出す。**`--lite` では `{"profile":"off"}`**
   - **`?n=` と `?offset=` (T15.0)** — 応答の 256 KiB に対して標本 1 本の JSON の行が太いので、
-    1 枚に全部の標本は入らない (入る本数の実測は `docs/spec-history.md`。メモリの見積もりの 3,216 B は JSON の行の長さとは別の数)。
+    1 枚に全部の標本は入らない (入る本数の実測は `specs/HISTORY.md`。メモリの見積もりの 3,216 B は JSON の行の長さとは別の数)。
     `n=` が 1 枚に返す標本の数 (既定はその解像度の全部、上は 720 / 1,440)、`offset=` が**新しい方から何本飛ばすか**。
     応答の末尾に `n` / `offset` / `next_offset` が出て、`next_offset` が `null` ならそれで終わり。
     **時刻では引けない** (`since=` / `until=` は無い) — 環は新しい順に詰めるだけの作りで、
@@ -852,7 +852,7 @@ DNS キャッシュの TTL、期限前の引き直し、keep-warm、serve-stale�
 
 配布に musl 静的リンクを採らない理由と、`release` / `dist` のプロファイルの設定。
 
-決めたときに測った数字は [`docs/spec-history.md`](docs/spec-history.md) の「S23 配布物とビルドの設定」。
+決めたときに測った数字は [`specs/HISTORY.md`](specs/HISTORY.md) の「S23 配布物とビルドの設定」。
 
 ### musl 静的リンクを採らない
 
@@ -892,7 +892,7 @@ DNS キャッシュの TTL、期限前の引き直し、keep-warm、serve-stale�
 
 ゴール (「バイナリを 1 つ置いて起動するだけで使える、認証なしの HTTP/HTTPS(CONNECT) プロキシ」を、同じ条件でこれ以上速くならないところまで速くする。`docs/goals.md`) に対して、満たしたことを確かめた約束。数字は手元の loopback で、測り方は `docs/measuring.md`、いまの表は `docs/status.md`。
 
-経緯は [`docs/spec-history.md`](docs/spec-history.md) の「S24 完了の定義 (速さの約束)」。
+経緯は [`specs/HISTORY.md`](specs/HISTORY.md) の「S24 完了の定義 (速さの約束)」。
 
 - [x] タスク 0〜1 と T2.1・T2.2・T3.1・T3.2・T3.4 が完了、README の性能節に Rust ベンチの値がある
 - [x] forward 8 並列 p50 が 1 ms 台 (loopback) — 実際は **0.18 ms**
@@ -907,7 +907,7 @@ DNS キャッシュの TTL、期限前の引き直し、keep-warm、serve-stale�
 
 このプロキシとそのビルドが守る約束 (非目標も含む)。作業の決まり (1 ファイルの行数・文体・`$HOME` に書かない・権限を上げない) は `docs/goals.md` にある。
 
-経緯は [`docs/spec-history.md`](docs/spec-history.md) の「S25 守ること (認証なし・外部クレートなし・ビルドのメモリ・動作環境)」。
+経緯は [`specs/HISTORY.md`](specs/HISTORY.md) の「S25 守ること (認証なし・外部クレートなし・ビルドのメモリ・動作環境)」。
 
 - **認証は入れない**。`Proxy-Authorization` を要求するコードは書かない (履歴上 `dad8984 refactor: remove authentication` で意図的に外した)。
 - **外部クレートは追加しない**。依存してよいのはこのリポジトリのコードだけ (`crates/` のワークスペースメンバー)。
