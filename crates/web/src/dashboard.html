@@ -257,7 +257,7 @@ function mergeWindows(samples,n,prefix){
     if(!b)continue;
     if(!out.buckets)out.buckets=b.map(function(){return 0});
     for(var j=0;j<b.length;j++)out.buckets[j]+=b[j];
-    // 件数の列だけ綴りが違う (`connects` / `waits` / `forwards`。T15.0 (10))
+    // 件数の列だけ綴りが違う (`connects` / `waits` / `forwards`。T15.0)
     out.count+=s[prefix==='connect'?'connects':prefix==='wait'?'waits':'forwards']||0;
     out.sum+=s[prefix+'_ms_sum']||0;
     out.max=Math.max(out.max,s[prefix+'_ms_max']||0);
@@ -266,7 +266,7 @@ function mergeWindows(samples,n,prefix){
 }
 // 名前解決の KPI (`/status` の dns をそのまま読む)。ミス率・ミス 1 回の値段・先回り。
 // `refreshes` と `negative_ttl_secs` は T13.1、`warm` は T14.1、引き直しの様子
-// (`refresh_*`) は T15.0 (7) で足すキーなので、**無ければ null** (「–」で描く)
+// (`refresh_*`) は T15.0 で足すキーなので、**無ければ null** (「–」で描く)
 // **ミス率は名前解決に失敗した試みのミスを除く** (T32.17。`/slo` の `dns_miss_per_connect` と同じ考え):
 // `sum` は `/history?summary=1&since=restart` で、その `dns_fail_misses ÷ dns_misses` の割合を `/status` の
 // ミスから引き、serve-stale で返した回 (`stale_hits`。ミスに入れていない) を当たりに数える。
@@ -293,7 +293,7 @@ function dnsStats(s,sum){
     refmax:d.refresh_ms_max==null?null:+d.refresh_ms_max,
     reflate:d.refresh_late==null?null:+d.refresh_late};
 }
-// ミスの種類別 (`/status` の `dns.misses_by_kind`。T15.0 (7))。並びは固定。
+// ミスの種類別 (`/status` の `dns.misses_by_kind`。T15.0)。並びは固定。
 // **画面では差分を溜めない** (通算をそのまま横棒 1 本に)。持たない版では null
 function dnsMissKinds(s){
   var d=(s&&s.dns)||{},k=d.misses_by_kind;
@@ -354,7 +354,7 @@ function connRows(j,n){
   return {rows:all.slice(0,n||50),states:states,kinds:kinds,bytes:bytes,
     count:(j&&j.count!=null)?+j.count:all.length,lite:!!(j&&j.lite)};
 }
-// 「動かないトンネル」: **`idle_secs` が `secs` 以上の CONNECT** だけ (T15.0 (4))。
+// 「動かないトンネル」: **`idle_secs` が `secs` 以上の CONNECT** だけ (T15.0)。
 // 欄は「無い = 既定値」で来る (256 KiB に 1,000 本入れる口なので既定の行には書かない)
 function idleTunnels(j,secs,n){
   var want=secs||300,all=[],tunnels=0,spins=0,half=0,quiet=0;
@@ -371,7 +371,7 @@ function idleTunnels(j,secs,n){
     spins:spins,half_closed:half,quiet:quiet,lite:!!(j&&j.lite)};
 }
 // `/history` の `kernel` (T14.12 の**標本とは別の配列**) を列名で引ける形に戻す。
-// 読めない源は `null` で来る (T15.0 (14))
+// 読めない源は `null` で来る (T15.0)
 function toKernel(h){
   var k=(h&&h.kernel)||null;
   if(!k||!Array.isArray(k.samples))return [];
@@ -381,9 +381,9 @@ function toKernel(h){
     for(var i=0;i<keys.length;i++)o[keys[i]]=row[i];
     return o});
 }
-// CPU の絞り (`/status` の `kernel.cgroup_cpu` と `/history` の `kernel`。T15.0 (6))。
+// CPU の絞り (`/status` の `kernel.cgroup_cpu` と `/history` の `kernel`。T15.0)。
 // 割合 = `nr_throttled ÷ nr_periods`。**`quota_cores` が null なら割り当てが無い**。
-// 持たない版 (`nr_periods` は T15.0 (6) の欄。分母が無いと割合が出せない) と、
+// 持たない版 (`nr_periods` は T15.0 の欄。分母が無いと割合が出せない) と、
 // cgroup v2 の読めない環境では null
 function cpuThrottle(s,rows,n){
   var c=s&&s.kernel&&s.kernel.cgroup_cpu;
@@ -401,7 +401,7 @@ function cpuThrottle(s,rows,n){
     since:ss?{periods:+ss.nr_periods||0,throttled:+ss.nr_throttled||0,usec:+ss.throttled_usec||0}:null,
     window:{samples:seen,periods:wp,throttled:wt,pct:wp>0?wt/wp*100:null}};
 }
-// --- ここから下は `/profile` を読む側 (T14.3、T15.0 (5))。DOM に触らないので node からも呼ぶ ---
+// --- ここから下は `/profile` を読む側 (T14.3、T15.0)。DOM に触らないので node からも呼ぶ ---
 // `/profile` の配列の配列を、名前で引ける形に戻す。
 // 段階は件数 0 なら `0` 1 文字、役割は標本 0 なら `0` 1 文字で来るので、そこを開き直す
 function toProfile(j){
@@ -415,7 +415,7 @@ function toProfile(j){
     return (v&&v.length)?{cpu_us:+v[0]||0,samples:+v[1]||0,states:v[2]||null}
                         :{cpu_us:0,samples:0,states:null};
   };
-  // 上位スレッド (T15.0 (5))。**空の窓は `0` 1 文字**、持たない版は undefined
+  // 上位スレッド (T15.0)。**空の窓は `0` 1 文字**、持たない版は undefined
   var top=function(v){
     return (v&&v.length)?v.map(function(t){
       return {tid:+t[0]||0,comm:t[1]||'',role:+t[2]||0,cpu_us:+t[3]||0,running:+t[4]||0};
@@ -430,7 +430,7 @@ function toProfile(j){
     unknown:j.unknown_syscalls||[],recent:j.recent||null,
     count:+j.count||0,shown:+j.shown||0,truncated:!!j.truncated,
     samples:(j.samples||[]).map(function(r){
-      // **末尾の 2 列は T15.0 (5) で足したもの**。位置で開くので、持たない版は空 / null
+      // **末尾の 2 列は T15.0 で足したもの**。位置で開くので、持たない版は空 / null
       return {t:+r[0]||0,requests:+r[1]||0,cpu_us:+r[2]||0,
         connect:(r[3]||[]).map(win),forward:(r[4]||[]).map(win),
         threads:(r[5]||[]).map(role),locks:r[6]||[],queue:r[7]||[0,0,0],
@@ -514,7 +514,7 @@ function lockRows(p,n){
     queue:{waited:q[0],ms_sum:q[1],ms_max:q[2],
       total:{waited:+(p.queueTotal||[])[0]||0,ms_sum:+(p.queueTotal||[])[1]||0,ms_max:+(p.queueTotal||[])[2]||0}}};
 }
-// CPU を使っているスレッド (`/profile` の `threads_top`。T15.0 (5))。直近 n 標本を
+// CPU を使っているスレッド (`/profile` の `threads_top`。T15.0)。直近 n 標本を
 // **tid で束ねて** CPU の多い順に。持たない版は 0 件
 function topThreads(p,n){
   var a=(p&&p.samples)||[],roles=(p&&p.roles)||[],by={},out=[];
@@ -533,7 +533,7 @@ function topThreads(p,n){
   out.forEach(function(r){r.cpu_pct=r.cpu_us/1e6/secs*100});
   return out.sort(function(x,y){return y.cpu_us-x.cpu_us});
 }
-// 走れるのに走れなかった時間 (`/profile` の `run_delay_us`。T15.0 (5))。
+// 走れるのに走れなかった時間 (`/profile` の `run_delay_us`。T15.0)。
 // **読めない環境は標本ごと `null`** なので折れ線はそこで切れる (`ok` = 1 つでも読めたか)
 function runDelay(p,n){
   var a=(p&&p.samples)||[],roles=(p&&p.roles)||[],secs=(p&&p.interval)||5;
@@ -592,7 +592,7 @@ function rates(){ // hist から区間ごとの派生値
       mem:b.mem_used/1048576,memlim:b.mem_limit/1048576,rss:b.rss/1048576,disk:b.disk_used/1048576,disklim:b.disk_limit/1048576,
       cp50:winQuantile(b.connect_buckets,b.connects,b.connect_ms_max,0.5,bounds),
       cp95:winQuantile(b.connect_buckets,b.connects,b.connect_ms_max,0.95,bounds),
-      // 利用者が待つ時間 (T15.0 (10) の `wait_*`)。この列を持たない版では null = 折れ線が出ない
+      // 利用者が待つ時間 (T15.0 の `wait_*`)。この列を持たない版では null = 折れ線が出ない
       wp50:b.wait_buckets?winQuantile(b.wait_buckets,b.waits,b.wait_ms_max,0.5,bounds):null,
       wp95:b.wait_buckets?winQuantile(b.wait_buckets,b.waits,b.wait_ms_max,0.95,bounds):null,
       warm:b.dns_warm==null?null:b.dns_warm,
@@ -791,7 +791,7 @@ function redraw(){
     :'12 段の区間の内側を線形補間した値 (1 ms 単位では読めません)';
   $('connp50').textContent=k?fmtMsFine(k.p50):'–';
   $('conndetail').textContent=k?k.detail:'この窓に CONNECT がありません';
-  // (e) 利用者が待つ時間 (T15.0 (2))
+  // (e) 利用者が待つ時間 (T15.0)
   var wk=waitKpi(last,mergeWindows(hist,span,'wait'),bounds);
   // T29.18: 近い接続元 (RTT < 100 ms) の値があればそちらを見出しに (NAT の向こうの遠い集団と混ぜない)
   var nw=nearWait;
@@ -803,7 +803,7 @@ function redraw(){
   $('waitdetail').textContent=nw?nw.detail+(wk?' · 全体 (遠い接続元を含む) p50 '+fmtMsFine(wk.p50):''):wk?wk.detail
     :'利用者が待つ時間を記録していません (wait を持たない版、--lite、またはこの窓に CONNECT なし)';
   $('c-wait').textContent=lastR&&lastR.wp50!=null?fmtMs(lastR.wp50)+' / '+fmtMs(lastR.wp95):'–';
-  // (a) CPU の絞りの図 (`/history` の `kernel`。T15.0 (6))。周期 / 秒
+  // (a) CPU の絞りの図 (`/history` の `kernel`。T15.0)。周期 / 秒
   var kr=function(key){return kern.map(function(x){
     return typeof x[key]==='number'?x[key]/(interval||5):null})};
   drawChart('ch-cpu',[{data:kr('cpu_nr_periods'),color:'#8b91a5',dash:[4,4],width:1},
@@ -813,7 +813,7 @@ function redraw(){
     ?(lastK.cpu_nr_periods/(interval||5)).toFixed(1)+' / '+((+lastK.cpu_nr_throttled||0)/(interval||5)).toFixed(1):'–';
   if(last)renderCpu(last);   // 窓が来た直後にカードの「直近 5 分」も埋める
 }
-// (a) CPU の絞りのカード (T15.0 (14))。読めない環境と持たない版では断る
+// (a) CPU の絞りのカード (T15.0)。読めない環境と持たない版では断る
 function renderCpu(s){
   var c=cpuThrottle(s,kern,Math.max(1,Math.round(300/(interval||5))));
   if(!c){
@@ -853,7 +853,7 @@ function connectKpi(s,w,bounds){
   return{exact:false,label:'直近 5 分',p50:p50,p90:null,p99:null,max:w.max,n:w.count,window:null,
     detail:w.count+' 本 · p95 '+fmtMs(p95)+' · 平均 '+fmtMs(w.sum/w.count)+' (区間の補間)'};
 }
-// KPI「利用者が待つ時間 p50」(T15.0 (2))。`connectKpi` と同じ作りで `wait` を読む。**DOM には触らない**
+// KPI「利用者が待つ時間 p50」(T15.0)。`connectKpi` と同じ作りで `wait` を読む。**DOM には触らない**
 function waitKpi(s,w,bounds){
   var q=s&&s.recent_quantiles&&s.recent_quantiles.wait;
   if(q&&q.n>0){
@@ -1003,14 +1003,14 @@ function renderStatus(s){
   if(dn.warm!=null)dparts.push('warm '+fmtNum(dn.warm)+' 件'+(dn.warmsecs?' ('+dn.warmsecs+' s)':''));
   if(dn.negative)dparts.push('失敗の再利用 '+fmtNum(dn.negative));
   if(dn.stale)dparts.push('古い答え '+fmtNum(dn.stale));
-  // 引き直しの様子 (T15.0 (7))。失敗・遅れ・1 回の値段の 3 語
+  // 引き直しの様子 (T15.0)。失敗・遅れ・1 回の値段の 3 語
   if(dn.reffail!=null)dparts.push('引き直しの失敗 '+fmtNum(dn.reffail));
   if(dn.reflate!=null)dparts.push('遅れ '+fmtNum(dn.reflate));
   if(dn.refms!=null&&dn.refreshes)dparts.push('引き直し 1 回 '+fmtMs(dn.refms/dn.refreshes)
     +(dn.refmax==null?'':' (最大 '+fmtMs(dn.refmax)+')'));
   dparts.push('表 '+fmtNum(dn.entries)+' 件'+(dn.ttl==null?'':' (TTL '+dn.ttl+' s'+(dn.negttl==null?'':' / 失敗 '+dn.negttl+' s')+')'));
   $('dnsdetail').textContent=dparts.join(' · ');
-  // (c) ミスの種類別の横棒 1 本 (T15.0 (7))
+  // (c) ミスの種類別の横棒 1 本 (T15.0)
   var mk=dnsMissKinds(s);
   $('st-dnskind').innerHTML=mk?stackHtml(mk.rows,mk.total,fmtNum):'';
   $('lg-dnskind').innerHTML=mk?mk.rows.map(function(r,i){
