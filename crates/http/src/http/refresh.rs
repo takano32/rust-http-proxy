@@ -32,7 +32,7 @@ use super::upstream::{OriginConn, acquire_origin, request_head};
 use super::{Shared, read_response_head};
 use crate::Upstream;
 use crate::body::{BodyReader, Framing};
-use crate::cache::{Cache, CacheKey};
+use crate::cache::{BeginRevalidation, Cache, CacheKey};
 use crate::freshness;
 use crate::headers;
 use crate::log_debug;
@@ -56,8 +56,20 @@ impl Drop for Revalidating {
     }
 }
 
-/// 裏で再検証を始める。既に同じキーが再検証中、上限に達している、または
-/// 接続スレッドに空きが無ければ false (呼び出し元は普通の (同期の) 再検証に回る)。
+/// [`spawn`] の答え (T38.10)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Refresh {
+    /// 裏の再検証を走らせた
+    Started,
+    /// 同じキーが既に裏で再検証中 (新しくは走らせない)。呼び出し元は古い表現をそのまま返してよい
+    InProgress,
+    /// 上限に達している、または接続スレッドに空きが無い。呼び出し元は普通の (同期の) 再検証に回る
+    NotStarted,
+}
+
+/// 裏で再検証を始める。同じキーが既に裏で再検証中なら [`Refresh::InProgress`] (T38.10。
+/// 前は同期の再検証に回り、オリジンへもう 1 本出していた)、上限に達している、または
+/// 接続スレッドに空きが無ければ [`Refresh::NotStarted`]。
 pub fn spawn(
     shared: &Shared<'_>,
     origin: &Origin,
@@ -65,9 +77,11 @@ pub fn spawn(
     url: &str,
     cached_head: Vec<u8>,
     accept_encoding: Option<String>,
-) -> bool {
-    if !shared.cache.begin_revalidation(key) {
-        return false;
+) -> Refresh {
+    match shared.cache.begin_revalidation(key) {
+        BeginRevalidation::Started => {}
+        BeginRevalidation::InProgress => return Refresh::InProgress,
+        BeginRevalidation::Full => return Refresh::NotStarted,
     }
     // 印はここから番人が持つ (以後どの道を通っても 1 回だけ消える)
     let ticket = Revalidating {
@@ -113,7 +127,7 @@ pub fn spawn(
         // ここで ticket が落ち、「再検証中」の印が消える
     });
     match shared.workers.try_run(job) {
-        Ok(()) => true,
+        Ok(()) => Refresh::Started,
         Err(_returned) => {
             // 生きているスレッドが上限。**待ち行列には積まない** (モジュール冒頭の理由)。
             // 戻ってきた仕事はここで落ち、番人が印を消す
@@ -122,7 +136,7 @@ pub fn spawn(
                 Some(conn_id),
                 "background revalidation skipped (no worker thread available)"
             );
-            false
+            Refresh::NotStarted
         }
     }
 }

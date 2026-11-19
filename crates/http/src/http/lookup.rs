@@ -222,8 +222,8 @@ fn grace_for(entry: &CachedResponse, cache_control: Option<&str>, default_grace:
 }
 
 /// stale-while-revalidate: 期限切れの表現 (`entry`) が猶予の内で、validator があり、配ってよい表現なら、
-/// 裏の再検証を起こす。起こせたら真 (呼ぶ側がこの表現を `REFRESHING` で返す)。`default_grace` は
-/// 既定の猶予 (秒。[`grace_for`])。
+/// 裏の再検証を起こす。起こせたか、同じキーが既に裏で再検証中なら真 (呼ぶ側がこの表現を `REFRESHING`
+/// で返す。後者は T38.10)。`default_grace` は既定の猶予 (秒。[`grace_for`])。
 fn try_refreshing(
     x: &Exchange<'_>,
     key: CacheKey,
@@ -245,7 +245,7 @@ fn try_refreshing(
             x.ctx.url,
             entry.head.clone(),
             x.ctx.req.accept_encoding.clone(),
-        )
+        ) != refresh::Refresh::NotStarted
 }
 
 /// 同時ミスの合流: 先頭になれたら印 (`cs.leader`) を持ってオリジンへ行き、誰かが取得中なら保存の

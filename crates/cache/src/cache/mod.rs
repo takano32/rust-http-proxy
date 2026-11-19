@@ -82,6 +82,17 @@ pub(crate) struct Margins {
     pub disk: Margin,
 }
 
+/// [`Cache::begin_revalidation`] の答え (T38.10)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BeginRevalidation {
+    /// 印を付けた。呼び出し元が裏の再検証を走らせ、終わったら [`Cache::end_revalidation`] を呼ぶ
+    Started,
+    /// 同じキーが裏で再検証中 (印は付けていない)
+    InProgress,
+    /// 裏の再検証が上限 ([`MAX_BACKGROUND_REVALIDATIONS`]) に達している (印は付けていない)
+    Full,
+}
+
 pub struct Cache {
     cfg: CacheConfig,
     /// 起動時の確認を経た、実際に使う割当の扱い (`Auto` はホストディスクだと分かれば `Unknown` に落とす)
@@ -443,17 +454,22 @@ impl Cache {
         self.inflight.len()
     }
 
-    /// 裏側の再検証を始めてよいか (同じキーが進行中、または上限なら false)。
+    /// 裏側の再検証を始めてよいか。始めてよければ印を付けて [`BeginRevalidation::Started`]、
+    /// 同じキーが進行中なら [`BeginRevalidation::InProgress`]、上限なら [`BeginRevalidation::Full`]。
     ///
     /// **この上限 ([`MAX_BACKGROUND_REVALIDATIONS`]) はキーの数の上限**で、走らせる場所の
-    /// 上限は接続スレッドの置き場 (`Workers`) 側にある (T11.3)。
-    pub fn begin_revalidation(&self, key: CacheKey) -> bool {
+    /// 上限は接続スレッドの置き場 (`Workers`) 側にある (T11.3)。進行中と上限を分けて返すのは、
+    /// 進行中なら呼び出し元が古い表現をそのまま返せるため (T38.10)。
+    pub fn begin_revalidation(&self, key: CacheKey) -> BeginRevalidation {
         let mut set = self.revalidating.locked();
-        if set.len() >= MAX_BACKGROUND_REVALIDATIONS || set.contains(&key) {
-            return false;
+        if set.contains(&key) {
+            return BeginRevalidation::InProgress;
+        }
+        if set.len() >= MAX_BACKGROUND_REVALIDATIONS {
+            return BeginRevalidation::Full;
         }
         set.insert(key);
-        true
+        BeginRevalidation::Started
     }
 
     pub fn end_revalidation(&self, key: CacheKey) {

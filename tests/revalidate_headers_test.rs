@@ -4,7 +4,7 @@
 //! 内部の期限 (TTL) だけ延ばし、配る先頭は古いまま (`max-age=0`・`X-Ver: 1`) だった。
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use rust_http_proxy::cache::{CacheConfig, MIB};
@@ -124,8 +124,7 @@ fn test_integration_background_304_rewrites_the_stored_head() {
     let second = get_via_proxy(proxy_port, &url, &host);
     assert!(second.contains("X-Cache: REFRESHING"), "{}", second);
     // **裏の再検証が保存し終わるまで値で待つ** (T38.2)。オリジンが 304 を受けた (`counter` が 2) だけ
-    // では、まだ先頭を書き直していない。その間の要求は「同じキーが再検証中」なので同期の再検証に
-    // 回り (`refresh::spawn` の決まり)、`REVALIDATED` を返す (負荷の下で 1 回落ちた)。
+    // では、まだ先頭を書き直していない (その間の要求は古い表現の `REFRESHING` になる。T38.10)。
     // 書き直したあとで数が増える `background_revalidations` と、印が消えた `revalidating` を見る
     wait_until(
         || {
@@ -142,6 +141,80 @@ fn test_integration_background_304_rewrites_the_stored_head() {
     assert!(third.contains("Cache-Control: max-age=600"), "{}", third);
     assert!(third.contains("X-Ver: 2"), "{}", third);
     assert_eq!(body_of(&third), BODY);
+}
+
+/// 裏で再検証している間に来た同じキーの要求は、古い表現を `REFRESHING` で返し、オリジンへ
+/// もう 1 本出さない (T38.10)。前は同期の再検証に回り、`REVALIDATED` でオリジンへ 2 本目を出していた。
+#[test]
+fn test_integration_request_during_background_revalidation_gets_the_stale_copy() {
+    let counter = Arc::new(AtomicUsize::new(0));
+    // 304 は `release` が真になるまで返さない (裏の再検証を「進行中」に留めておく)
+    let release = Arc::new(AtomicBool::new(false));
+    let gate = Arc::clone(&release);
+    let (origin_port, _origin) = start_origin(
+        Arc::clone(&counter),
+        Arc::new(move |req, _| {
+            if req.contains("If-None-Match: \"v1\"") {
+                // 待つのは最大 10 秒 (直す前の形なら 3 本目がここで待たされ、`REVALIDATED` で落ちる)
+                for _ in 0..2000 {
+                    if gate.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                return b"HTTP/1.1 304 Not Modified\r\nCache-Control: max-age=600\r\nX-Ver: 2\r\n\
+                         ETag: \"v1\"\r\nConnection: close\r\n\r\n"
+                    .to_vec();
+            }
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nCache-Control: max-age=1\r\nX-Ver: 1\r\n\
+                 ETag: \"v1\"\r\nConnection: close\r\n\r\n{}",
+                BODY.len(),
+                BODY
+            )
+            .into_bytes()
+        }),
+    );
+    let clock = ManualClock::starting_now();
+    let (proxy_port, _) = start_test_proxy_clocked(
+        proxy_config(),
+        cache_cfg("shp-it-304-during-background"),
+        clock.clone(),
+    );
+    let url = format!("http://127.0.0.1:{}/r", origin_port);
+    let host = format!("127.0.0.1:{}", origin_port);
+
+    let first = get_via_proxy(proxy_port, &url, &host);
+    assert!(first.contains("X-Ver: 1"), "{}", first);
+    clock.advance(Duration::from_secs(2));
+    let second = get_via_proxy(proxy_port, &url, &host);
+    assert!(second.contains("X-Cache: REFRESHING"), "{}", second);
+    // 裏の再検証がオリジンに届き、304 を待たされている
+    wait_until(
+        || counter.load(Ordering::SeqCst) == 2,
+        "background revalidation reaches the origin",
+    );
+    assert_eq!(json::uint(&status_json(proxy_port), "revalidating"), 1);
+    // その間の要求は古い表現をすぐ返す (オリジンへは行かない)
+    let third = get_via_proxy(proxy_port, &url, &host);
+    assert!(third.contains("X-Cache: REFRESHING"), "{}", third);
+    assert!(third.contains("X-Ver: 1"), "{}", third);
+    assert_eq!(body_of(&third), BODY);
+    assert_eq!(counter.load(Ordering::SeqCst), 2);
+
+    release.store(true, Ordering::SeqCst);
+    wait_until(
+        || {
+            let status = status_json(proxy_port);
+            json::uint(&status, "background_revalidations") == 1
+                && json::uint(&status, "revalidating") == 0
+        },
+        "background revalidation",
+    );
+    let fourth = get_via_proxy(proxy_port, &url, &host);
+    assert!(fourth.contains("X-Cache: HIT"), "{}", fourth);
+    assert!(fourth.contains("X-Ver: 2"), "{}", fourth);
+    assert_eq!(counter.load(Ordering::SeqCst), 2);
 }
 
 /// 応答の `Age` の値 (無ければ `None`)。
