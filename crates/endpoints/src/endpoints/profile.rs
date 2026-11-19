@@ -16,7 +16,7 @@
 //! `/proc/<tid>/schedstat` が読めない環境では `null`。`user_us` (役割ごと) と `cpu_user_us`
 //! (プロセス全体) は CPU のうちユーザー空間のぶん (us。T16.0)。カーネル側は `cpu_us` から引く。
 //!
-//! 応答は [`super::recent::MAX_BODY`] (256 KiB) 以下。入り切らないときは**新しい方を残して**
+//! 応答は [`super::recent::MAX_BODY`] (256 KiB) 以下 (ディスクに書くスナップショットの部だけは全体の上限まで。T38.7)。入り切らないときは**新しい方を残して**
 //! 古い標本から落とし、`"truncated":true` を出す (`/errors` などと同じ方針)。
 //! 落ちたぶんは **`?offset=`** で続きが引ける (`?n=` は 1 枚に返す標本の数。T15.0)。
 //! **`?summary=1` は標本を返さず**、5 分 / 1 時間 / 全部の 3 段に畳んだ CPU/要求 だけを返す
@@ -63,6 +63,16 @@ struct Page {
 
 /// `/profile?res=5|60&n=&offset=&summary=1` を組み立てる。
 pub fn profile(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, String) {
+    profile_within(ep, query, super::recent::MAX_BODY)
+}
+
+/// [`profile`](fn@profile) の本体。`limit` は応答の上限 (ふだんは 256 KiB、ディスクに書く
+/// スナップショットの部だけ全体の上限。T38.7)。
+pub(super) fn profile_within(
+    ep: &Endpoint<'_>,
+    query: Option<&str>,
+    limit: usize,
+) -> (u16, &'static str, String) {
     if ep.lite {
         return (
             200,
@@ -83,7 +93,7 @@ pub fn profile(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, St
     let n = num("n").map_or(cap, |v| (v as usize).clamp(1, cap));
     // `offset=` の読み方は 3 つの口で 1 か所 (`super::offset_param`)
     let offset = offset_param(query, cap);
-    let budget = super::recent::MAX_BODY.saturating_sub(HEADER_ROOM);
+    let budget = limit.saturating_sub(HEADER_ROOM);
     let (rows, shown, total, cut) = p.rows_within_page(res, budget, n, offset);
 
     let mut out = String::with_capacity(rows.len() + HEADER_ROOM);

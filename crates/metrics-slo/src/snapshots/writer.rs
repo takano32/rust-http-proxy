@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 
 use super::names::{Moment, day_name, moment_name};
 use super::store::{newest_day, prune, prune_moments};
-use super::{DAILY_MAX_FILE, EXT, MAX_FILE, MAX_KEPT_DAYS};
+use super::{DAILY_MAX_FILE, EXT, MAX_KEPT_DAYS};
 use crate::day_rollover::DayRollover;
 use crate::{log_debug, log_info, log_warn};
 
@@ -128,7 +128,8 @@ impl Writer {
             return None;
         };
         let path = dir.join(format!("{}{}", moment_name(t, m), EXT));
-        if !self.put(&dir, &path, &body, MAX_FILE, space) {
+        // 上限は日次と同じ 6 MiB (T38.7)
+        if !self.put(&dir, &path, &body, DAILY_MAX_FILE, space) {
             return None;
         }
         self.moments += 1;

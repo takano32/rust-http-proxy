@@ -604,8 +604,9 @@ DNS キャッシュの TTL、期限前の引き直し、keep-warm、serve-stale�
 ### 日次・起動・停止のスナップショット
 
 - `/snapshots` は `$HOME/.rust-http-proxy/snapshots/` に残してある日付と大きさ (`files[]` の `date` / `bytes` /
-  `t` (書いた時刻)、**古い順**) と、置き場所 (`dir`)・残す日数 (`days`)・1 ファイルの上限
-  (`max_bytes` = 4 MiB。起動と停止の 1 枚と `/snapshot` の上限。**日次の 1 枚だけは末尾の `daily_max_bytes` = 6 MiB**。T29.16)
+  `t` (書いた時刻)、**古い順**) と、置き場所 (`dir`)・残す日数 (`days`)・上限
+  (`max_bytes` = 4 MiB は `/snapshot` の上限。**ディスクに書く 1 枚 (日次・起動・停止) の上限は末尾の `daily_max_bytes` = 6 MiB**。
+  T29.16 で日次、T38.7 で起動と停止も。鍵の名前は日次だけだった頃のまま)
   を返す (T14.34。既定 30 日ぶん)。`/snapshots/<YYYY-MM-DD>` はその日のファイルを
   **そのまま** (`/snapshot` の応答そのもの) 返すので、`scripts/snapshot-diff.py` や
   `scripts/status-diff.py`、1 週間ぶんを 1 枚にする `scripts/weekly-report.py` に
@@ -615,9 +616,13 @@ DNS キャッシュの TTL、期限前の引き直し、keep-warm、serve-stale�
   `PROXY_STATS_PERSIST=off` (と `--lite`) では 1 ファイルも書かない (`dir` が `null`)。
   ディスクの空きが予算 (`PROXY_DISK_KEEP_FREE_MB` のマージン) を割り込むときは**書かずに**
   `/events` に 1 件 (`state_file`) 残す
-- **日次の 1 枚だけは `recent` を部の 256 KiB ではなく 1 MiB まで持つ** (T28.46。いつもの `/snapshot` と起動の 1 枚は
-  256 KiB)。環の 2,000 件が全部入り、合計が上限を越えるときは停止の 1 枚と同じく切った `recent` に戻す。
-  日次の 1 枚の全体の上限は 6 MiB (T29.16。スナップショットの `limit_bytes` に効いた上限が出る)
+- **ディスクに書く 1 枚 (日次・起動・停止) は、部を部ごとの 256 KiB で切らずに入れる** (T38.7)。
+  `dns`・`hosts`・`profile` は全体の上限まで全部入れ、`recent` は日次の 1 枚が 1 MiB まで (T28.46。環の 2,000 件が入る)、
+  起動と停止の 1 枚は 2,000 件全部 (T28.20・T38.7)。全体の上限は 3 つとも 6 MiB (T29.16・T38.7。スナップショットの
+  `limit_bytes` に効いた上限が出る)。いつもの `/snapshot` と `/dns`・`/hosts`・`/profile`・`/recent` の口は部ごとの 256 KiB で切る
+- **ディスクに書く 1 枚が全体の上限を越えるときは、全部入れた部を `profile` → `hosts` → `dns` → `recent` の順に 1 つずつ
+  いつもの 256 KiB で切った形に戻し**、収まったらそこで止める。4 つとも戻しても越えるときに、いつもの順
+  (`recent` → `log` → `history.5`) に `null` へ落とす (全部入れたせいで部ごと `null` にはしない。T38.7)
 - `collect-deployed.sh --from-server` は取り寄せた 1 枚ごとに大きさ・上限に対する割合・部の `truncated` を並べ、
   **90% 以上なら警告**する (`scripts/snapshot-summary.py --size-check FILE…` と同じ 1 行。要約の頭にも同じ行が出る)
 - **起動と停止の 1 枚** (T28.20) は同じ置き場所の `<YYYY-MM-DDTHHMMSSZ>-shutdown.json` (**停止シグナルで状態ファイルを書く前**) と
@@ -626,10 +631,9 @@ DNS キャッシュの TTL、期限前の引き直し、keep-warm、serve-stale�
   `/snapshots/<name>` で**そのまま**返る (日次の `files[]` とは別の並びなので、日付で取りに行く道具はそのまま使える)。
   締めの判定の「前」と「0 時間」(`collect-deployed.sh` の `BEFORE` / `ZERO`) をプロキシ自身が残すためのもので、
   `collect-deployed.sh --from-server` が取り寄せる
-- **停止の 1 枚だけは `recent` を部の 256 KiB で切らずに 2,000 件全部入れる** (判定の接続のエラーの行は `/recent` の試行が分母で 1,000 本が下限なのに、取り寄せた 1 枚は `offset=` で
-  続きを追えず、個票のファイルも 1 周期 64 KiB までしか書かないので再起動で残らない分があるため。全部入れても 2,000 件で
-  1 MB 前後、合計が 4 MiB を越えるときは切った `recent` に戻す)。組んで書くのは停止の後始末の頭で、手元の 2,000 件で
-  数 ms (後始末の上限は 3 秒)
+- 起動と停止の 1 枚が部を切らずに入れるのは、取り寄せた 1 枚は `offset=` で続きを追えず (取り寄せたときにはもうプロセスが居ない)、
+  締めの判定の分母 (接続のエラーの行は `/recent` の試行、名前解決の行は `/dns` の答えのある名前) が欠けるため (T28.20・T38.7)。
+  停止の 1 枚を組んで書くのは停止の後始末の頭で、手元で数 ms (後始末の上限は 3 秒)
 - 起動と停止の 1 枚を残すのは種類ごとに `PROXY_SNAPSHOT_DAYS` 日以内かつ新しい方から
   `PROXY_SNAPSHOT_DAYS` 枚まで (再起動を繰り返しても置き場所を埋めない)
 

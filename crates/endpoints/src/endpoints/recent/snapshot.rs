@@ -55,7 +55,7 @@ pub(in crate::endpoints) fn snapshots() -> (u16, &'static str, String) {
         moments_shown,
         l.moments_bytes,
         moments_cut,
-        // 日次の 1 枚だけの上限 (T29.16。`max_bytes` は起動・停止の 1 枚と `/snapshot` の 4 MiB)
+        // ディスクに書く 1 枚の上限 (T29.16 で日次、T38.7 で起動と停止も。`max_bytes` は `/snapshot` の 4 MiB)
         crate::snapshots::DAILY_MAX_FILE
     );
     (200, "application/json", out)
@@ -92,6 +92,19 @@ pub(super) const MAX_SNAPSHOT: usize = 4 * 1024 * 1024;
 /// `/snapshot` が越えたときに落とす順 (大きいものから)。落としたものは `"dropped"` に出る。
 const DROP_ORDER: [&str; 3] = ["recent", "log", "history.5"];
 
+/// ディスクに書く 1 枚で部の上限を外す部と、全体の上限を越えたときに**切った形へ戻す順** (T38.7)。
+///
+/// 締めの判定の材料として大事なものほど後ろ (最後まで全部のまま残す): `profile` (段階とスレッドの
+/// 標本) → `hosts` (ホスト別の通算) → `dns` (答えのある名前 1 つあたりの裏の引き直しの分母) →
+/// `recent` (接続のエラーの行の分母。T28.20 から全部入れている)。
+const WHOLE_ORDER: [&str; 4] = ["profile", "hosts", "dns", "recent"];
+
+/// 部を組む問い合わせ (いつもの `/snapshot` とディスクに書く 1 枚、切った形へ戻すときで同じもの)。
+const RECENT_QUERY: &str = "n=2000";
+const DNS_QUERY: &str = "sort=age&limit=4096";
+const HOSTS_QUERY: &str = "limit=1000";
+const PROFILE_QUERY: &str = "res=5";
+
 /// `/snapshot` — 上の全部を **1 要求で** 1 つの JSON にして返す (T14.4)。
 ///
 /// デプロイ先のデータ収集が 17 本の URL を手で叩く作業になっていた (T14.0) ので、
@@ -111,6 +124,22 @@ pub(in crate::endpoints) fn snapshot(ep: &Endpoint<'_>) -> (u16, &'static str, S
     snapshot_with(ep, None, MAX_SNAPSHOT)
 }
 
+/// **ディスクに書く 1 枚** (日次・起動・停止。`snapshots` の組み方として預ける。T38.7)。
+///
+/// [`snapshot_with`] に加えて、`dns`・`hosts`・`profile` も部の 256 KiB ([`MAX_BODY`]) で切らずに
+/// 全体の上限 (`limit`) まで入れる。0.36.34 の停止の 1 枚は全体が 4 MiB の 94% で、この 3 つの部が
+/// 部ごとの上限で切れていた (`/dns` は 1,122 行のうち 694 行。締めの「前」の材料が欠けた)。
+/// 合計が `limit` を越えるときは [`WHOLE_ORDER`] の順に**切った形に戻してから**いつもの順
+/// ([`DROP_ORDER`]) に落とす (全部入れたせいで部ごと `null` にはしない)。
+/// いつもの `/snapshot` と `/dns`・`/hosts`・`/profile` の口は変えない。
+pub(in crate::endpoints) fn disk_snapshot(
+    ep: &Endpoint<'_>,
+    recent_max: Option<usize>,
+    limit: usize,
+) -> (u16, &'static str, String) {
+    build_snapshot(ep, recent_max, true, limit)
+}
+
 /// [`snapshot`](fn@snapshot) の本体。`recent_max` が `Some(上限)` なら **`recent` を部の 256 KiB ([`MAX_BODY`]) で
 /// 切らずに、その上限まで入れる** (停止の雪像は [`MAX_SNAPSHOT`] = 2,000 件を全部。T28.20。
 /// 日次の雪像は `snapshots::DAILY_RECENT_MAX` = 1 MiB。T28.46)。`None` はいつもの `/snapshot`。
@@ -122,20 +151,40 @@ pub(in crate::endpoints) fn snapshot(ep: &Endpoint<'_>) -> (u16, &'static str, S
 /// 締めの「前」は `/recent` の窓が判定の分母 (phase25 の接続のエラーは試行 1,000 本が下限) になるのに、
 /// `collect-deployed.sh` が `offset=` で続きを追って繋ぐ形 (T22.5) は、`--from-server` で取り寄せた
 /// 1 枚にはできない (取り寄せたときにはもうプロセスが居ない)。全部入れても 2,000 件 × 1 件 500 B
-/// 前後 = 1 MB 前後で、合計が 4 MiB を越えるときは**切った `recent` に戻してから**いつもの順に落とす
+/// 前後 = 1 MB 前後で、合計が全体の上限を越えるときは**切った `recent` に戻してから**いつもの順に落とす
 /// (全部入れたせいで `recent` ごと `null` にはしない)。
 ///
-/// `limit` は全体の上限 (いつもの `/snapshot` と起動・停止の 1 枚は [`MAX_SNAPSHOT`] = 4 MiB、
-/// 日次の 1 枚は `snapshots::DAILY_MAX_FILE` = 6 MiB。T29.16)。`limit_bytes` に出る。
-pub(in crate::endpoints) fn snapshot_with(
+/// `limit` は全体の上限 (いつもの `/snapshot` は [`MAX_SNAPSHOT`] = 4 MiB、ディスクに書く 1 枚は
+/// `snapshots::DAILY_MAX_FILE` = 6 MiB。T29.16・T38.7)。`limit_bytes` に出る。
+fn snapshot_with(
     ep: &Endpoint<'_>,
     recent_max: Option<usize>,
     limit: usize,
 ) -> (u16, &'static str, String) {
-    let mut part = collect_parts(ep, recent_max, limit);
-    if recent_max.is_some() {
-        fit_full_recent(&mut part, limit, || recent(ep, Some("n=2000")).2);
-    }
+    build_snapshot(ep, recent_max, false, limit)
+}
+
+/// [`snapshot_with`] と [`disk_snapshot`] の本体。`whole` なら `dns`・`hosts`・`profile` も
+/// 部の上限を外す (T38.7)。
+fn build_snapshot(
+    ep: &Endpoint<'_>,
+    recent_max: Option<usize>,
+    whole: bool,
+    limit: usize,
+) -> (u16, &'static str, String) {
+    let mut part = collect_parts(ep, recent_max, whole, limit);
+    // 部の上限を外した部 (`recent` は `recent_max` があるときだけ)
+    let opened: Vec<&str> = WHOLE_ORDER
+        .into_iter()
+        .filter(|&name| {
+            if name == "recent" {
+                recent_max.is_some()
+            } else {
+                whole
+            }
+        })
+        .collect();
+    fit_whole_parts(&mut part, limit, &opened, |name| cut_part(ep, name));
     let dropped = drop_to_fit(&mut part, limit);
     let at = crate::cache::now_epoch();
     let uptime = ep.metrics.start_time.elapsed().as_secs();
@@ -145,10 +194,12 @@ pub(in crate::endpoints) fn snapshot_with(
 
 /// 17 の部を、それぞれの口と同じ関数で組む (T34.91 で [`snapshot_with`] から出した)。
 ///
-/// 並びは `parts` に出る順そのもの。`recent_max` は [`snapshot_with`] と同じ。
+/// 並びは `parts` に出る順そのもの。`recent_max` は [`snapshot_with`] と、`whole` は
+/// [`build_snapshot`] と同じ。
 fn collect_parts(
     ep: &Endpoint<'_>,
     recent_max: Option<usize>,
+    whole: bool,
     limit: usize,
 ) -> Vec<(&'static str, String)> {
     use crate::history::History;
@@ -169,24 +220,45 @@ fn collect_parts(
             "history.3600",
             history_body(ep, History::index_for(3600), None),
         ),
-        ("dns", dns(Some("sort=age&limit=4096")).2),
+        (
+            "dns",
+            if whole {
+                dns_within(Some(DNS_QUERY), limit).2
+            } else {
+                dns(Some(DNS_QUERY)).2
+            },
+        ),
         ("errors", errors(ep, Some("n=500")).2),
         ("connections", connections(ep).2),
         (
             "recent",
             match recent_max {
-                Some(max) => recent_within(ep, Some("n=2000"), max.min(limit)).2,
-                None => recent(ep, Some("n=2000")).2,
+                Some(max) => recent_within(ep, Some(RECENT_QUERY), max.min(limit)).2,
+                None => recent(ep, Some(RECENT_QUERY)).2,
             },
         ),
-        ("hosts", hosts(ep, Some("limit=1000")).2),
+        (
+            "hosts",
+            if whole {
+                hosts_within(ep, Some(HOSTS_QUERY), limit).2
+            } else {
+                hosts(ep, Some(HOSTS_QUERY)).2
+            },
+        ),
         // ホスト別の時系列 (上位 16 × 5 分 × 24 時間。T14.22)
         ("hosts_series", host_series(ep, Some("top=16")).2),
         ("clients", clients(ep, Some("limit=1000")).2),
         ("bursts", bursts(ep, Some("n=50")).2),
         // 待ちの段階・スレッドの CPU と状態・ロックの取り合い (T14.3)。
         // `--lite` では `{"profile":"off"}` の 1 行になる
-        ("profile", profile::profile(ep, Some("res=5")).2),
+        (
+            "profile",
+            if whole {
+                profile::profile_within(ep, Some(PROFILE_QUERY), limit).2
+            } else {
+                profile::profile(ep, Some(PROFILE_QUERY)).2
+            },
+        ),
         ("events", events(ep, Some("n=512")).2),
         ("log", log(ep, Some("n=1000")).2),
     ]
@@ -252,23 +324,42 @@ fn render_snapshot(
     out
 }
 
-/// 全部入れた `recent` で合計が `limit` を越えるなら、`cut` (いつもの 256 KiB で切った `recent`) に
-/// 置き換える (T28.20)。置き換えたかを返す。
-fn fit_full_recent(
+/// 部の上限を外した部 (`opened`) で合計が `limit` を越えるなら、[`WHOLE_ORDER`] の順に 1 つずつ
+/// `cut` (いつもの 256 KiB で切った形) に置き換え、収まったらそこで止める (T28.20・T38.7)。
+/// 置き換えた部の名前を返す。
+fn fit_whole_parts(
     part: &mut [(&'static str, String)],
     limit: usize,
-    cut: impl FnOnce() -> String,
-) -> bool {
-    let total: usize = overhead_of(part) + part.iter().map(|(_, v)| v.len()).sum::<usize>();
-    if total <= limit {
-        return false;
-    }
-    match part.iter_mut().find(|(k, _)| *k == "recent") {
-        Some((_, body)) => {
-            *body = cut();
-            true
+    opened: &[&str],
+    mut cut: impl FnMut(&str) -> String,
+) -> Vec<&'static str> {
+    let mut total: usize = overhead_of(part) + part.iter().map(|(_, v)| v.len()).sum::<usize>();
+    let mut cuts = Vec::new();
+    for name in WHOLE_ORDER {
+        if total <= limit {
+            break;
         }
-        None => false,
+        if !opened.contains(&name) {
+            continue;
+        }
+        if let Some((_, body)) = part.iter_mut().find(|(k, _)| *k == name) {
+            let short = cut(name);
+            total = total - body.len() + short.len();
+            *body = short;
+            cuts.push(name);
+        }
+    }
+    cuts
+}
+
+/// 部をいつもの `/snapshot` と同じ形 (部ごと 256 KiB で切る) で組み直す ([`fit_whole_parts`] が使う)。
+fn cut_part(ep: &Endpoint<'_>, name: &str) -> String {
+    match name {
+        "recent" => recent(ep, Some(RECENT_QUERY)).2,
+        "dns" => dns(Some(DNS_QUERY)).2,
+        "hosts" => hosts(ep, Some(HOSTS_QUERY)).2,
+        "profile" => profile::profile(ep, Some(PROFILE_QUERY)).2,
+        _ => unreachable!("切った形の無い部: {}", name),
     }
 }
 
@@ -439,11 +530,15 @@ mod tests {
             "全部入れても何も落とさない"
         );
 
-        // 全部入れて 4 MiB を越えるなら、切った `recent` に戻す (部ごと `null` にはしない)
+        // 全部入れて上限を越えるなら、切った `recent` に戻す (部ごと `null` にはしない)
         let mut part = vec![("status", "s".repeat(100)), ("recent", "r".repeat(1000))];
-        assert!(!fit_full_recent(&mut part, 4096, || "cut".to_string()));
+        let cut = |_: &str| "cut".to_string();
+        assert!(fit_whole_parts(&mut part, 4096, &["recent"], cut).is_empty());
         assert_eq!(part[1].1.len(), 1000, "収まるなら全部のまま");
-        assert!(fit_full_recent(&mut part, 1000, || "cut".to_string()));
+        assert_eq!(
+            fit_whole_parts(&mut part, 1000, &["recent"], cut),
+            ["recent"]
+        );
         assert_eq!(part[1], ("recent", "cut".to_string()));
     }
 
@@ -461,16 +556,198 @@ mod tests {
                 ("recent", "r".repeat(896_914)),
             ]
         };
+        let cut = |_: &str| "cut".to_string();
         let mut four = parts();
-        assert!(fit_full_recent(&mut four, MAX_SNAPSHOT, || "cut".to_string()));
+        assert_eq!(
+            fit_whole_parts(&mut four, MAX_SNAPSHOT, &["recent"], cut),
+            ["recent"]
+        );
         let mut six = parts();
-        assert!(!fit_full_recent(&mut six, daily, || "cut".to_string()));
+        assert!(fit_whole_parts(&mut six, daily, &["recent"], cut).is_empty());
         assert_eq!(six[2].1.len(), 896_914, "recent は全部のまま");
         assert!(drop_to_fit(&mut six, daily).is_empty());
         let total: usize = overhead_of(&six) + six.iter().map(|(_, v)| v.len()).sum::<usize>();
         // 実際の 3,692,328 B は 6 MiB の 58.7% (受け入れ基準の 70% 以下)、60 万 B 増えても 68.2%
         assert!(total * 100 <= daily * 70, "{} B", total);
         assert!(3_692_328 * 100 <= daily * 70);
+    }
+
+    /// `recent`・`dns`・`hosts`・`profile` の 4 つの部を、どれも 256 KiB を越える中身で埋める (T38.7)。
+    ///
+    /// `dns` の表はプロセスに 1 つ (大域) なので、ほかの試験と混ざらない名前で置く。
+    fn fill_four_parts(m: &Metrics) {
+        use crate::metrics::{Detail, HostOutcome, MAX_HOSTS};
+        use crate::profile::{ROLES, RoleWindow, Sample};
+        use std::time::Duration;
+
+        fill(m, false);
+        for i in 0..MAX_HOSTS {
+            m.record_host_detail(
+                &format!("connect://host{:04}.t38-7.example.net:443", i),
+                HostOutcome::Bypass,
+                98_765_432,
+                Some(Duration::from_millis(12)),
+                Detail {
+                    dns_ms: 3,
+                    connect_ms: 9,
+                    family_v6: Some(false),
+                    ..Detail::default()
+                },
+            );
+        }
+        let v4: std::net::IpAddr = "93.184.216.34".parse().unwrap();
+        let v6: std::net::IpAddr = "2001:db8:85a3:8d3:1319:8a2e:370:7348".parse().unwrap();
+        for i in 0..1_200 {
+            crate::dns::put_answer_for_test(
+                &format!("name{:04}.t38-7-snapshot.example.com", i),
+                &[v4, v6],
+                Duration::from_secs(30),
+            );
+        }
+        let role = RoleWindow {
+            cpu_us: 123_456,
+            user_us: 98_765,
+            samples: 1_000,
+            states: [99; crate::profile::NSTATES],
+        };
+        for i in 0..crate::profile::RESOLUTIONS[0].1 as u64 {
+            m.profile.push(Sample {
+                t: 1_700_000_000 + i * 5,
+                requests: 1_234,
+                cpu_us: 456_789,
+                threads: [role; ROLES.len()],
+                ..Sample::default()
+            });
+        }
+    }
+
+    /// スナップショットの部 `name` の中身 (次の部 `next` の手前まで)。
+    fn section<'a>(body: &'a str, name: &str, next: &str) -> &'a str {
+        let from = body
+            .find(&format!(",\"{}\":{{\"schema\":", name))
+            .unwrap_or_else(|| panic!("{} の部が無い", name));
+        let rest = &body[from..];
+        let to = rest
+            .find(&format!(",\"{}\":", next))
+            .unwrap_or_else(|| panic!("{} の部が無い", next));
+        &rest[..to]
+    }
+
+    /// 部の末尾の `truncated` (行の中ではなく、その口の応答の最後の欄)。
+    fn cut_of(part: &str) -> bool {
+        let at = part.rfind("\"truncated\":").expect("truncated が無い");
+        part[at..].starts_with("\"truncated\":true")
+    }
+
+    /// 4 つの部の名前と、その次の部の名前 (部の並びは [`collect_parts`] の順)。
+    const FOUR: [(&str, &str); 4] = [
+        ("dns", "errors"),
+        ("recent", "hosts"),
+        ("hosts", "hosts_series"),
+        ("profile", "events"),
+    ];
+
+    /// **T38.7 の受け入れ基準**: 止めるときの 1 枚 (ディスクに書く 1 枚) は `recent`・`dns`・`hosts`・`profile` の
+    /// 4 つの部を `truncated` にせず全部入れ、全体の上限は 6 MiB。いつもの `/snapshot` は 4 つとも
+    /// 今までどおり 256 KiB で切る。
+    #[test]
+    fn the_shutdown_snapshot_keeps_the_four_parts_whole() {
+        let daily = crate::snapshots::DAILY_MAX_FILE as usize;
+        let m = Metrics::new();
+        fill_four_parts(&m);
+        let (usual, disk) = with_ep(&m, |ep| {
+            (snapshot(ep).2, disk_snapshot(ep, Some(daily), daily).2)
+        });
+        let sizes: Vec<String> = FOUR
+            .iter()
+            .map(|(name, next)| format!("{} {} B", name, section(&disk, name, next).len()))
+            .collect();
+        println!(
+            "T38.7 4 つの部を埋めた 1 枚: いつもの /snapshot {} B / 止めるときの 1 枚 {} B ({})",
+            usual.len(),
+            disk.len(),
+            sizes.join("、")
+        );
+        assert!(disk.contains(&format!("\"limit_bytes\":{}", daily)));
+        assert!(disk.contains("\"dropped\":[]"), "{}", &disk[..300]);
+        assert!(disk.len() <= daily, "{} B", disk.len());
+        for (name, next) in FOUR {
+            let whole = section(&disk, name, next);
+            assert!(!cut_of(whole), "{} が切れている", name);
+            assert!(whole.len() > MAX_BODY, "{} は 256 KiB を越えて入る", name);
+            assert!(
+                cut_of(section(&usual, name, next)),
+                "いつもの {} は切る",
+                name
+            );
+        }
+        assert!(usual.len() <= MAX_SNAPSHOT, "{} B", usual.len());
+    }
+
+    /// 全部入れた 4 つの部で全体の上限を越えるなら、`profile` → `hosts` → `dns` → `recent` の順に
+    /// 1 つずつ切った形へ戻し、収まったらそこで止める (部ごと `null` にはしない。T38.7)。
+    #[test]
+    fn the_disk_snapshot_cuts_whole_parts_back_before_dropping() {
+        let daily = crate::snapshots::DAILY_MAX_FILE as usize;
+        let m = Metrics::new();
+        fill_four_parts(&m);
+        // 上限を、全部入れた 1 枚より 1 B だけ小さくする (`profile` を戻せば収まる)
+        let (full, tight) = with_ep(&m, |ep| {
+            let full = disk_snapshot(ep, Some(daily), daily).2;
+            let limit = full.len() - 1;
+            (full.len(), disk_snapshot(ep, Some(daily), limit).2)
+        });
+        assert!(tight.len() < full);
+        assert!(tight.contains("\"dropped\":[]"), "{}", &tight[..300]);
+        assert!(
+            cut_of(section(&tight, "profile", "events")),
+            "profile は切った形"
+        );
+        for (name, next) in &FOUR[..3] {
+            assert!(
+                !cut_of(section(&tight, name, next)),
+                "{} は全部のまま",
+                name
+            );
+        }
+
+        // 作り物の部 (6 MiB を越える): 戻す順と、戻したぶんで収まれば何も落とさないこと
+        let parts = || {
+            vec![
+                ("history.60", "h".repeat(2_700_000)),
+                ("dns", "d".repeat(1_500_000)),
+                ("recent", "r".repeat(1_000_000)),
+                ("hosts", "o".repeat(1_000_000)),
+                ("profile", "p".repeat(1_000_000)),
+                ("log", "l".repeat(200_000)),
+            ]
+        };
+        let opened = ["recent", "dns", "hosts", "profile"];
+        let cut = |name: &str| format!("cut-{}", name);
+        let mut part = parts();
+        assert_eq!(
+            fit_whole_parts(&mut part, daily, &opened, cut),
+            ["profile", "hosts"]
+        );
+        assert_eq!(part[4].1, "cut-profile");
+        assert_eq!(part[3].1, "cut-hosts");
+        assert_eq!(part[1].1.len(), 1_500_000, "dns は全部のまま");
+        assert_eq!(part[2].1.len(), 1_000_000, "recent は全部のまま");
+        assert!(drop_to_fit(&mut part, daily).is_empty());
+        // 4 つとも戻しても越えるなら、そのあとでいつもの順に落とす
+        let mut part = parts();
+        assert_eq!(
+            fit_whole_parts(&mut part, 2_000_000, &opened, cut),
+            ["profile", "hosts", "dns", "recent"]
+        );
+        assert_eq!(drop_to_fit(&mut part, 2_000_000), ["recent", "log"]);
+        // 部の上限を外していない部は戻さない (いつもの `/snapshot` の形の `recent_max` だけ)
+        let mut part = parts();
+        assert_eq!(
+            fit_whole_parts(&mut part, daily, &["recent"], cut),
+            ["recent"]
+        );
+        assert_eq!(part[4].1.len(), 1_000_000);
     }
 
     /// 4 MiB を越えたら `/recent` → `/log` → `/history?res=5` の順に落とすこと (T14.4)。

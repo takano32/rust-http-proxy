@@ -33,7 +33,7 @@ mod tests;
 
 pub(super) use closed::recent;
 use closed::recent_within;
-pub(super) use snapshot::{snapshot, snapshot_file, snapshot_with, snapshots};
+pub(super) use snapshot::{disk_snapshot, snapshot, snapshot_file, snapshots};
 
 /// 個票の応答 1 本の上限 (256 KiB)。監視が 1 分おきに引いても回線を埋めない大きさで、
 /// `/errors` 500 件・`/connections` 240 件・`/hosts` 1,000 件のどれも収まる。
@@ -48,7 +48,8 @@ fn array_within(out: &mut String, items: impl IntoIterator<Item = String>) -> (u
     array_within_budget(out, items, MAX_BODY)
 }
 
-/// [`array_within`] の上限を `limit` にした版 (停止の雪像の `recent` だけが使う。T28.20)。
+/// [`array_within`] の上限を `limit` にした版 (ディスクに書くスナップショットの `recent`・`dns`・`hosts`
+/// が使う。T28.20・T38.7)。
 fn array_within_budget(
     out: &mut String,
     items: impl IntoIterator<Item = String>,
@@ -123,6 +124,12 @@ pub(super) fn connections(ep: &Endpoint<'_>) -> (u16, &'static str, String) {
 /// 入らなかった (T25.99)。`offset` は `sort=` で並べたあとの列を何本飛ばすかで、`next_offset` が
 /// 次の頁の `offset` (`/hosts` と同じ読み方)。表は [`crate::dns`] の上限 4,096 件まで。
 pub(super) fn dns(query: Option<&str>) -> (u16, &'static str, String) {
+    dns_within(query, MAX_BODY)
+}
+
+/// [`dns`] の本体。`limit_bytes` は応答の上限 (ふだんは [`MAX_BODY`]、ディスクに書くスナップショットだけ
+/// 全体の上限。T38.7)。
+fn dns_within(query: Option<&str>, limit_bytes: usize) -> (u16, &'static str, String) {
     let sort = crate::dns::DnsSort::from_param(&str_param(query, "sort"));
     let limit = num_param(query, "limit", 300, 4096);
     let offset = offset_param(query, 4096);
@@ -131,9 +138,10 @@ pub(super) fn dns(query: Option<&str>) -> (u16, &'static str, String) {
     let mut out = String::with_capacity(8192);
     out.push_str(SCHEMA_HEAD);
     out.push_str("\"entries\":");
-    let (shown, cut) = array_within(
+    let (shown, cut) = array_within_budget(
         &mut out,
         rows.iter().skip(offset).take(limit).map(|r| r.to_json()),
+        limit_bytes,
     );
     // 新しい欄は**末尾**に足す (既存の鍵の順は変えない)
     let _ = write!(
@@ -258,6 +266,16 @@ fn log_line_json(line: &crate::log::Line) -> String {
 /// **`sort=` で並べたあとの列**を何本飛ばすかで、`next_offset` が次の頁の `offset`。
 /// `limit` の最大 1,000 と「200 を越えたら重い口」はそのまま。
 pub(super) fn hosts(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, String) {
+    hosts_within(ep, query, MAX_BODY)
+}
+
+/// [`hosts`] の本体。`limit_bytes` は応答の上限 (ふだんは [`MAX_BODY`]、ディスクに書くスナップショットだけ
+/// 全体の上限。T38.7)。
+fn hosts_within(
+    ep: &Endpoint<'_>,
+    query: Option<&str>,
+    limit_bytes: usize,
+) -> (u16, &'static str, String) {
     let sort = crate::metrics::HostSort::from_param(&str_param(query, "sort"));
     let limit = num_param(query, "limit", 200, crate::metrics::MAX_HOSTS);
     let offset = offset_param(query, crate::metrics::MAX_HOSTS);
@@ -273,7 +291,7 @@ pub(super) fn hosts(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static st
     let mut out = String::with_capacity(16384);
     out.push_str(SCHEMA_HEAD);
     out.push_str("\"hosts\":");
-    let (shown, cut) = array_within(
+    let (shown, cut) = array_within_budget(
         &mut out,
         all.iter().skip(offset).take(limit).map(|(h, s)| {
             format!(
@@ -282,6 +300,7 @@ pub(super) fn hosts(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static st
                 crate::metrics::stats_json(s, true)
             )
         }),
+        limit_bytes,
     );
     // 新しい欄は**末尾**に足す (既存の鍵の順は変えない)
     let _ = write!(

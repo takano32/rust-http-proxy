@@ -323,21 +323,21 @@ fn the_global_writer_records_and_reads_back() {
     assert_eq!(take_shutdown(&cache), None);
     assert_eq!(take_start_if_due(&cache, true), None);
     configure(Some(dir.clone()), DEFAULT_DAYS);
-    // 起動の 1 枚: 待ち時間の前は書かず、たったら 1 回だけ (`recent` は切る方)
+    // 起動の 1 枚: 待ち時間の前は書かず、たったら 1 回だけ (`recent` は全部入れる方。T38.7)
     assert_eq!(take_start_if_due(&cache, false), None);
     let start = take_start_if_due(&cache, true).expect("起動の 1 枚");
     assert_eq!(take_start_if_due(&cache, true), None, "起動ごとに 1 回");
     assert!(
         fs::read_to_string(&start)
             .unwrap()
-            .contains("\"recent_max\":null")
+            .contains("\"recent_max\":6291456")
     );
-    // 停止の 1 枚は `recent` を全部 (4 MiB まで) 入れる方で組む
+    // 停止の 1 枚も `recent` を全部 (6 MiB まで) 入れる方で組む
     let stop = take_shutdown(&cache).expect("停止の 1 枚");
     assert!(
         fs::read_to_string(&stop)
             .unwrap()
-            .contains("\"recent_max\":4194304")
+            .contains("\"recent_max\":6291456")
     );
     let l = list();
     assert!(l.files.is_empty(), "日次の一覧には混ぜない");

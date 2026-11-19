@@ -7,7 +7,7 @@
 //! - 書くのは **history スレッドだけ** ([`tick`] は 5 秒に 1 回、原子の読み 1 回で戻る)。
 //!   利用者の要求の経路には 1 命令も足していない (費用 0)。
 //! - **UTC の日付が変わった標本**で、**終わった日の名前** (`<YYYY-MM-DD>.json`) の
-//!   1 ファイルを書く (1 日 1 ファイル、[`MAX_FILE`] = `/snapshot` と同じ 4 MiB)。
+//!   1 ファイルを書く (1 日 1 ファイル、上限は [`DAILY_MAX_FILE`] = 6 MiB)。
 //! - 31 個目を書いたら最古を消す ([`DEFAULT_DAYS`] = 30、`PROXY_SNAPSHOT_DAYS`。**0 で止める**)。
 //! - 起動時に**いちばん新しいファイルの日付**を覚え ([`Writer::new`])、同じ日を 2 度書かない
 //!   (T14.20 の日次の要約と同じ作法)。
@@ -23,8 +23,10 @@
 //! 名前の時刻は撮った時刻 (UTC)。日次の 1 枚とは数え方を分け (`/snapshots` の `moments`)、
 //! 残すのは [`Moment`] の種類ごとに `PROXY_SNAPSHOT_DAYS` 日以内かつ新しい方から
 //! `PROXY_SNAPSHOT_DAYS` 枚まで (再起動を繰り返しても置き場所を埋めない)。
-//! **停止の 1 枚は `recent` を 256 KiB で切らずに全部入れ、日次の 1 枚は 1 MiB まで持つ**
-//! (T28.20・T28.46。組み方は上の層。呼ぶときに `recent` の部の上限を渡す)。
+//! **起動と停止の 1 枚は `recent` を 256 KiB で切らずに全部入れ、日次の 1 枚は 1 MiB まで持つ**
+//! (T28.20・T28.46・T38.7。組み方は上の層。呼ぶときに `recent` の部の上限を渡す)。
+//! ディスクに書く 3 つはどれも `dns`・`hosts`・`profile` も部の上限で切らず、全体の上限は
+//! 3 つとも [`DAILY_MAX_FILE`] (T38.7)。
 //!
 //! **`/snapshot` を組むのは `proxy-endpoints` の仕事**なので、ここは
 //! [`set_builder`] で預かった閉包を日付の変わり目に 1 回呼ぶだけにしてある
@@ -57,16 +59,21 @@ pub(crate) use names::{is_date, parse_moment};
 pub use store::{Saved, SavedMoment};
 pub use writer::Writer;
 
-/// 1 ファイルの上限 (4 MiB。`/snapshot` の上限 `endpoints::recent::MAX_SNAPSHOT` と同じ値)。
-/// 起動と停止の 1 枚 (T28.20) はこれ。**日次の 1 枚だけ** [`DAILY_MAX_FILE`] (T29.16)。
+/// `/snapshot` (要求で組む 1 枚) の上限 (4 MiB。`endpoints::recent::MAX_SNAPSHOT` と同じ値)。
+/// `/snapshots` の `max_bytes` に出す。ディスクに書く 1 枚 (日次・起動・停止) は 3 つとも
+/// [`DAILY_MAX_FILE`] (T29.16 で日次、T38.7 で起動と停止も)。
 pub const MAX_FILE: u64 = 4 * 1024 * 1024;
 
-/// **日次の 1 枚だけ**の上限 (6 MiB。T29.16)。
+/// **ディスクに書く 1 枚** (日次・起動・停止) の上限 (6 MiB。T29.16 で日次、T38.7 で起動と停止も)。
+///
+/// 名前は日次だけだった頃のまま (`/snapshots` の `daily_max_bytes` も)。0.36.34 の停止の 1 枚は 4 MiB の
+/// 94% で `dns`・`hosts`・`profile` の部が切れていた (部ごとの 256 KiB のため)。この 3 つも全部入れると
+/// 停止の 1 枚は 4.6 MB 前後になるので、起動と停止の 1 枚もこの上限にそろえた (T38.7)。
 ///
 /// 0.28.48 が書いた日次 `2026-10-26` は 3,692,328 B (4 MiB の 88%。`history` 1,550,971 B は T28.45 の 17 項目で
 /// 増え、`recent` 896,914 B は T28.46 の 2,000 行)。4 MiB を越えると `recent` を 256 KiB (約 580 行) に戻し、
 /// T28.18 の問題 (締めの「前」の接続のエラーの行が「判定できず」) に黙って戻るので、日次だけ上限を上げて
-/// 余白を作る (3.7 MB は 6 MiB の 59%)。`/snapshot` (要求で組む 1 枚) と起動・停止の 1 枚は 4 MiB のまま
+/// 余白を作る (3.7 MB は 6 MiB の 59%)。`/snapshot` (要求で組む 1 枚) は 4 MiB のまま
 pub const DAILY_MAX_FILE: u64 = 6 * 1024 * 1024;
 
 /// **日次の 1 枚だけ**の `recent` の部の上限 (1 MiB。T28.46、利用者の決定 10)。
@@ -74,11 +81,11 @@ pub const DAILY_MAX_FILE: u64 = 6 * 1024 * 1024;
 /// いつもの `/snapshot` は部ごと 256 KiB で切るので、日次の `recent` は約 580 行で環の
 /// 2,000 件を割り、締めの「前」に日次を使うと接続のエラーの行 (試行 1,000 本が下限) が
 /// 「判定できず」になった (T28.18)。1 MiB なら 1 件 400〜500 B の行で環が全部入る。
-/// 全体が 4 MiB ([`MAX_FILE`]) を越えるなら、停止の 1 枚 (T28.20) と同じく**切った `recent` に戻す**
+/// 全体が上限 ([`DAILY_MAX_FILE`]) を越えるなら、停止の 1 枚 (T28.20) と同じく**切った `recent` に戻す**
 pub const DAILY_RECENT_MAX: usize = 1024 * 1024;
 /// 残す日数の既定 (`PROXY_SNAPSHOT_DAYS`)。
 pub const DEFAULT_DAYS: usize = 30;
-/// 残す日数の上限 (書き間違いで `$HOME` を埋めないための歯止め。4 MiB × 365 = 1.4 GiB)。
+/// 残す日数の上限 (書き間違いで `$HOME` を埋めないための歯止め。6 MiB × 365 = 2.1 GiB)。
 pub const MAX_KEPT_DAYS: usize = 365;
 /// 置き場所 (`$HOME/.rust-http-proxy/snapshots/`)。状態ファイル (`$HOME/.rust-http-proxy.rrd`) と
 /// 違ってディレクトリなので、名前を分けてある。
@@ -95,10 +102,10 @@ pub fn default_dir() -> Option<PathBuf> {
 
 /// `/snapshot` を組む閉包 (預けるのは `proxy-endpoints`。[`set_builder`])。
 ///
-/// 1 つ目の引数は **`recent` の部の上限** (`None` = `/snapshot` と同じく部ごと 256 KiB で切る。起動の 1 枚)。
-/// 停止の 1 枚は [`MAX_FILE`] (= 2,000 件を全部。T28.20)、日次は [`DAILY_RECENT_MAX`] (T28.46)。
-/// 2 つ目は**全体の上限** (日次は [`DAILY_MAX_FILE`]、ほかは [`MAX_FILE`]。T29.16)。
-/// `Some` のときは、全体が上限を越えるなら切った `recent` に戻す。
+/// 1 つ目の引数は **`recent` の部の上限** (`None` = `/snapshot` と同じく部ごと 256 KiB で切る)。
+/// 起動と停止の 1 枚は [`DAILY_MAX_FILE`] (= 2,000 件を全部。T28.20・T38.7)、日次は [`DAILY_RECENT_MAX`] (T28.46)。
+/// 2 つ目は**全体の上限** (3 つとも [`DAILY_MAX_FILE`]。T29.16・T38.7)。
+/// 組む側は `dns`・`hosts`・`profile` も部の上限で切らず、全体が上限を越えるなら切った形に戻す (T38.7)。
 pub type Builder = Box<dyn Fn(Option<usize>, usize) -> String + Send + Sync>;
 
 static BUILDER: OnceLock<Mutex<Option<Builder>>> = OnceLock::new();
@@ -185,11 +192,12 @@ static START_TAKEN: AtomicBool = AtomicBool::new(false);
 ///
 /// `due` は「起動から `persist::baseline_after_secs` 秒たったか」(数えるのは呼ぶ側)。
 /// たっていて、まだ撮っていなければ `-start` を 1 枚書く。ふだんは原子の読み 1〜2 回で戻る。
+/// `recent` も停止の 1 枚と同じく切らずに全部入れる (T38.7)。
 pub fn take_start_if_due(cache: &Cache, due: bool) -> Option<PathBuf> {
     if !due || !ENABLED.load(Ordering::Relaxed) || START_TAKEN.swap(true, Ordering::Relaxed) {
         return None;
     }
-    take(cache, Moment::Start, None)
+    take(cache, Moment::Start)
 }
 
 /// **停止シグナルの後始末から 1 回だけ呼ぶ** (状態ファイルを書く前。T28.20)。
@@ -201,15 +209,16 @@ pub fn take_shutdown(cache: &Cache) -> Option<PathBuf> {
     if !ENABLED.load(Ordering::Relaxed) {
         return None;
     }
-    take(cache, Moment::Shutdown, Some(MAX_FILE as usize))
+    take(cache, Moment::Shutdown)
 }
 
-fn take(cache: &Cache, m: Moment, recent_max: Option<usize>) -> Option<PathBuf> {
+/// 起動と停止の 1 枚を組んで書く (`recent` の部の上限も全体の上限も [`DAILY_MAX_FILE`]。T38.7)。
+fn take(cache: &Cache, m: Moment) -> Option<PathBuf> {
     let t = crate::cache::now_epoch();
     writer().locked().write_moment(
         t,
         m,
-        || build(recent_max, MAX_FILE),
+        || build(Some(DAILY_MAX_FILE as usize), DAILY_MAX_FILE),
         |dir| (free_bytes(dir), cache.snapshot().disk_keep_free),
     )
 }
@@ -243,7 +252,7 @@ pub fn list() -> Listing {
 /// `/snapshots/<date>` と `/snapshots/<起動・停止の名前>` の中身 (そのままの JSON)。無ければ `None`。
 ///
 /// 読むのは `<YYYY-MM-DD>.json` と `<YYYY-MM-DDTHHMMSSZ>-start|shutdown.json` (T28.20) だけで、
-/// 上限 (日次は [`DAILY_MAX_FILE`]、起動・停止は [`MAX_FILE`]) を超えるファイル (手で置かれたもの) は読まない。
+/// 上限 ([`DAILY_MAX_FILE`]。T38.7 より前の起動・停止の 1 枚は 4 MiB 以下) を超えるファイル (手で置かれたもの) は読まない。
 pub fn read(date: &str) -> Option<String> {
     if !is_date(date) && parse_moment(date).is_none() {
         return None;
@@ -251,12 +260,7 @@ pub fn read(date: &str) -> Option<String> {
     let dir = writer().locked().dir().map(Path::to_path_buf)?;
     let path = dir.join(format!("{}{}", date, EXT));
     let len = fs::metadata(&path).ok()?.len();
-    let limit = if is_date(date) {
-        DAILY_MAX_FILE
-    } else {
-        MAX_FILE
-    };
-    if len > limit {
+    if len > DAILY_MAX_FILE {
         log_warn!(
             None,
             "snapshot {}: {} B is too big to serve",
