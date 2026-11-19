@@ -13,7 +13,8 @@
 #   `t35.py`     Phase 31 の行 (T35.9・T35.11)
 #   `t36.py`         T36 の行 (T36.1・T36.2・T36.3)
 #   `t37.py`         T37 の行 (T37.1)
-#   `rules.py`       閾の辞書 (`PHASE14`〜`T37_TH`)・`CRITERIA`・`FROZEN`・`RULES` (Phase の順に組む)
+#   `t38.py`         T38 の行 (T38.0)
+#   `rules.py`       閾の辞書 (`PHASE14`〜`T38_TH`)・`CRITERIA`・`FROZEN`・`RULES` (Phase の順に組む)
 # ここに残っているのは、`RULES` の行を順に呼ぶ `judge()` と、判定表の印字 (`render_criteria()`) だけ。
 #
 # 小物までこちら側にあるのは、`snapshot-diff.py` は名前に `-` があって `import` できないため
@@ -83,10 +84,13 @@ from criteria.t36 import (  # noqa: E402,F401
     _t36_machine_speed, dns_owned_range, machine_cost, resolved_error_rate,
 )
 from criteria.t37 import _t37_dns_slow  # noqa: E402,F401
+from criteria.t38 import (  # noqa: E402,F401
+    CONN_REQUEST_BAND, _t38_conn_per_resolved_request, conn_samples, request_volume_sides,
+)
 from criteria.rules import (  # noqa: E402,F401
     CRITERIA, FROZEN, PHASE14, PHASE15, PHASE17, PHASE18, PHASE20, PHASE21, PHASE22, PHASE23, PHASE24,
-    PHASE25, PHASE26, PHASE27, PHASE28, PHASE29, PHASE30, T35_TH, T36_TH, T37_TH, RULES, CRITERIA_ALIASES,
-    criteria_name,
+    PHASE25, PHASE26, PHASE27, PHASE28, PHASE29, PHASE30, T35_TH, T36_TH, T37_TH, T38_TH, RULES,
+    CRITERIA_ALIASES, criteria_name,
 )
 
 
@@ -307,6 +311,14 @@ INTRO = {
             "(前の版の値と倍率は表示だけ)。立った窓は 443・80 宛ての成功したミスが数回しかない小さい窓で、"
             "窓ごとの平均は 100〜900 ms とぶれるので、小さい母数どうしの比は閾を越えやすかった (0.36.34 の締めで "
             "139 → 225 ms の 1.62 倍)。名前解決の遅さは上流のリゾルバが決めます。ほかの 26 行は T36 と同じです。"),
+    # T38.0。T37 の 27 行のうち、`conn` 役の CPU の行を要求の量が前の版と大きく違うときは判定できずにする
+    "T38": ("1〜27 行の並びと材料は T37 と同じです。直したのは 1 行 (T38.0): 5 行目の `conn` 役の CPU ÷ 名前解決に成功した"
+            "要求を、**要求の量 (名前解決に成功した要求/時) が前の版の 0.8〜1.25 倍の中のときだけ**、T36 と同じく物差しで"
+            "割ってから前の版の 1.1 倍未満かで読み、外なら「判定できず」にして理由を書きます。`conn` 役の CPU には開いていた"
+            "トンネルの中継のように時間で払う分があり、要求の数で割ると 1 本あたりが要求の量で動きます (0.37.8 の締めで"
+            "要求が 0.63 倍に減り、CPU の合計は減ったのに 1 本あたりが 1.30 倍になった)。`/profile` の `conn` 役の CPU は "
+            "1 分ごとの和 1 つで、要求で払う分と時間で払う分に分ける材料はスナップショットにありません。要求の量と "
+            "`conn` 役の標本 (接続スレッド × 秒) の前後は表示だけで並べます。ほかの 26 行は T37 と同じです。"),
 }
 
 
