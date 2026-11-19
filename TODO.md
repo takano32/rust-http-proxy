@@ -18,6 +18,7 @@
 | [`docs/known-issues.md`](docs/known-issues.md) | 既知の小物 |
 | [`docs/task-index.md`](docs/task-index.md) | 済んだタスクの見出しと索引 (`## タスク N (…)` ごとの「済んだ N 本の本文は …」) と、やったこと |
 | [`docs/measurements.md`](docs/measurements.md) | 計測の記録 (時系列) と、デプロイ先の現在地の古い版 |
+| [`docs/spec-history.md`](docs/spec-history.md) | 仕様 (`SPECS.md`・`specs/Sn.md`) の経緯と、決めたときに測った数字 (仕様ごと。T38.4) |
 | [`docs/perf.md`](docs/perf.md) ほか `docs/*.md` | 性能の数字の読み方と道具の説明 (README から分けたもの) |
 
 ## 以前の章といまの文書
