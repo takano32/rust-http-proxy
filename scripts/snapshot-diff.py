@@ -1539,7 +1539,8 @@ def parser():
                         "出したもの。T36.1・T36.2・T36.3。"
                         "T37 = T36 の 27 行のうち `dns_slow` の行を、前の版との比ではなくいつも絶対値の 500 ms 未満で読むもの。T37.1。"
                         "T38 = T37 の 27 行のうち `conn` 役の CPU の行を、要求の量 (名前解決に成功した要求/時) が前の版の "
-                        "0.8〜1.25 倍の外なら判定できずにするもの。T38.0)")
+                        "0.8〜1.25 倍の外なら判定できずにし、接続のエラー (443・80) の行から窓の中で 1 本も確立できなかった"
+                        "宛先を外したもの。T38.0・T38.1)")
     p.add_argument("--out", choices=["md", "json"], default="md", help="出力の形 (既定 md)")
     p.add_argument("--top", type=int, default=20, metavar="N", help="各表に出す行数 (既定 20)")
     p.add_argument("--burst-median-k", type=int, default=None, metavar="K",

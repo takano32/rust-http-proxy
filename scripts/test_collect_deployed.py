@@ -272,9 +272,11 @@ class CollectBeforeZeroTest(unittest.TestCase):
         d, out, _ = self.run_collect(criteria=None)
         tail = self.judged(out)
         self.assertIn("## 完了の定義に対する判定 (snapshot-diff.py --criteria T38)", tail)
-        self.assertIn("1〜27 行の並びと材料は T37 と同じです。直したのは 1 行 (T38.0)", tail)
+        self.assertIn("1〜27 行の並びと材料は T37 と同じです。直したのは 2 行です。T38.0: ", tail)
         # T38.0: `conn` 役の CPU の行は、要求の量が前の版の 0.8〜1.25 倍の外なら判定できず
         self.assertIn("要求の量が前の版の 0.8〜1.25 倍の外なら判定できず。T38.0。", tail)
+        # T38.1: 接続のエラーの行は、窓の中で 1 本も確立できなかった宛先を外して読む
+        self.assertIn("(窓の中で 1 本も確立できなかった宛先を外す。T38.1。T36.3。", tail)
         # T36.2: CPU の 2 行は機械の速さの物差しで割ってから比べ、物差しの前後の比は表示だけの 27 行目
         self.assertIn("機械の速さの物差し: `history` 役の CPU ÷ その役の標本の数 (us/秒) の前後の比", tail)
         # T36.1: heap の行はキャッシュと名前解決の表の持ち物を引いた残りで読む (このスナップショットは

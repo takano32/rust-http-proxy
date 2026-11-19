@@ -31,7 +31,7 @@ from .phase29_30 import (
 )
 from .t35 import _t35_events, _t35_heap
 from .t37 import _t37_dns_slow
-from .t38 import CONN_REQUEST_BAND, _t38_conn_per_resolved_request
+from .t38 import CONN_REQUEST_BAND, _t38_conn_per_resolved_request, _t38_connect_errors
 from .t36 import (
     _t36_conn_per_resolved_request, _t36_connect_errors, _t36_dns_slow, _t36_heap, _t36_idle_cost,
     _t36_machine_speed,
@@ -315,8 +315,9 @@ T37_TH = dict(T36_TH)
 CRITERIA["T37"] = T37_TH
 
 # T38 = T37 の 27 行のうち 5 番目 (`conn` 役の CPU ÷ 名前解決に成功した要求) を、要求の量が前の版の 0.8〜1.25 倍の
-# 外なら判定できずにする行に差し替えたもの (T38.0)。並びは同じ。**T37 以前の並びと文面は 1 つも動かない**
-RULES["T38"] = replaced(RULES["T37"], {5: _t38_conn_per_resolved_request})
+# 外なら判定できずにする行に (T38.0)、13 番目 (接続のエラー (443・80)) を、窓の中で 1 本も確立できなかった宛先を
+# 分子と分母から外した率で読む行に (T38.1) 差し替えたもの。並びは同じ。**T37 以前の並びと文面は 1 つも動かない**
+RULES["T38"] = replaced(RULES["T37"], {5: _t38_conn_per_resolved_request, 13: _t38_connect_errors})
 T38_TH = dict(T37_TH, conn_request_band=CONN_REQUEST_BAND)
 CRITERIA["T38"] = T38_TH
 
