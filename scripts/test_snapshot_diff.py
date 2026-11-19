@@ -9,7 +9,8 @@
 デプロイ先の実出力 (リポジトリの `status/`) があるときだけ回るテストが最後に 1 本あり、
 **T.14.0 の表と同じ数字が出ること**を見る (実データはリポジトリに入れないので、無ければ飛ばす)。
 **判定表 (`--criteria`) のテストは `test_snapshot_criteria.py`** に割ってある (T.21.2。この
-ファイルの小物 `sd` `build` `run` `written` … をそちらが取り込む)。
+ファイルの小物 `sd` `build` `run` `written` … をそちらが取り込む)。T38.6 でさらに判定表ごとの
+`test_snapshot_criteria_*.py` に割り、小物は `_criteria_testing.py` を通して取り込む。
 """
 
 import contextlib

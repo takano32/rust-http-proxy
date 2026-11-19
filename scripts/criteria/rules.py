@@ -2,7 +2,8 @@
 #
 # Phase ごとの閾の辞書 (`PHASE14`〜`T37_TH`)・`--criteria` の名前から閾を引く `CRITERIA`・出力を
 # 変えない定義 `FROZEN`・名前から判定の関数の並びを引く `RULES` を、Phase の順に組む。判定の関数は
-# `criteria/phase*.py` にある。`RULES` の並びは `test_snapshot_criteria.py` の `RulesOrder` が固定している。
+# `criteria/phase*.py` にある。`RULES` の並びは `test_snapshot_criteria.py` の `RulesOrder` が固定している
+# (判定表ごとの試験は `test_snapshot_criteria_*.py`。T38.6)。
 
 from .phase14_18 import (
     _p14_connect_p50, _p14_dns_per_connect, _p14_major_hosts, _p14_overload, _p15_closed_shape,
