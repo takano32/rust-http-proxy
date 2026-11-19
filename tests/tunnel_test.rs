@@ -324,13 +324,9 @@ fn test_integration_reused_relay_pipe_never_leaks_bytes() {
 #[cfg(target_os = "linux")]
 #[test]
 fn test_integration_failed_connects_land_in_errors_by_cause() {
-    // 立てたそばから閉じたポート番号 (誰も待ち受けていないことが確かめられる)
-    let closed_port = {
-        let l = TcpListener::bind("127.0.0.1:0").unwrap();
-        let p = l.local_addr().unwrap().port();
-        drop(l);
-        p
-    };
+    // 誰も待ち受けていないポート番号 (束縛したまま `listen` しない。T38.3)
+    let closed = RefusedPort::reserve();
+    let closed_port = closed.port();
     let mut cfg = proxy_config();
     // TEST-NET-1 が「時間切れ」になるまでを短くする (既定 3 秒だとテストが遅い)。
     // 欄に直に代入するので `Config::new` の写し (T15.6) は効かない。CONNECT の

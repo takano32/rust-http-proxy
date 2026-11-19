@@ -169,9 +169,9 @@ fn unseen_hosts_try_ipv4_first_after_three_losses() {
     // (IPv6 の候補は残っているが起動されない = 負けた試行のスレッドと fd も残らない。T12.2)
 
     // IPv6 をやめたわけではない: IPv4 が死んでいれば IPv6 で拾い、勝った時点で IPv4 優先は解ける
-    let dead = TcpListener::bind("127.0.0.1:0").unwrap();
-    let dead_addr = dead.local_addr().unwrap();
-    drop(dead);
+    // 束縛したまま `listen` しない番号 (T38.3)
+    let dead = super::tests::RefusedPort::reserve();
+    let dead_addr = dead.addr();
     let v6 = TcpListener::bind("[::1]:0").unwrap();
     let stream = connect_resolved(
         "t121-v4dead.invalid",

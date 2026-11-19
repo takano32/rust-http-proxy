@@ -16,10 +16,9 @@ use super::*;
 #[cfg(target_os = "linux")]
 #[test]
 fn happy_eyeballs_launches_at_most_max_candidates() {
-    let port = {
-        let l = TcpListener::bind("127.0.0.1:0").unwrap();
-        l.local_addr().unwrap().port()
-    };
+    // `0.0.0.0` に束縛したまま `listen` しない番号 (`127.0.0.2`〜`127.0.0.21` のどれでも拒まれる。T38.3)
+    let refused = RefusedPort::reserve();
+    let port = refused.port();
     let addrs: Vec<SocketAddr> = (2..22u8)
         .map(|i| SocketAddr::from(([127, 0, 0, i], port)))
         .collect();
@@ -89,6 +88,72 @@ fn binds_with_an_explicit_backlog() {
     assert_eq!(big.len(), 1);
 }
 
+/// 誰も待っていない (`connect` が必ず `ECONNREFUSED` になる) ポートの持ち分 (T38.3)。
+///
+/// 「束縛してすぐ手放す」と、使うまでの間にカーネルが同じ番号をほかの待ち受けに配ることがある
+/// (`tests/common/net.rs` の `RefusedPort` と同じ理由。T20.2)。ここでは `0.0.0.0` に**束縛したまま
+/// `listen` しない**ソケットを持ち続ける: 番号はこの値が落ちるまでどの番地でも誰にも配られず、
+/// 待ち受けていないので `127.0.0.0/8` のどこへの接続も拒まれる。
+#[cfg(target_os = "linux")]
+pub(super) struct RefusedPort {
+    port: u16,
+    /// 番号を押さえているソケット (落とすと番号が空く)
+    _held: std::os::fd::OwnedFd,
+}
+
+#[cfg(target_os = "linux")]
+impl RefusedPort {
+    pub(super) fn reserve() -> RefusedPort {
+        use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+        /// `sockaddr_in` (16 B)。ポートだけはネットワークバイト順
+        #[repr(C)]
+        struct SockAddrIn {
+            family: u16,
+            port: u16,
+            addr: [u8; 4],
+            zero: [u8; 8],
+        }
+        // `libc` は使わない (仕様 S25)。`socket(2)`・`bind(2)`・`getsockname(2)` だけ直接宣言する
+        unsafe extern "C" {
+            fn socket(domain: i32, ty: i32, protocol: i32) -> i32;
+            fn bind(fd: i32, addr: *const SockAddrIn, len: u32) -> i32;
+            fn getsockname(fd: i32, addr: *mut SockAddrIn, len: *mut u32) -> i32;
+        }
+        const AF_INET: u16 = 2;
+        const SOCK_STREAM: i32 = 1;
+        let fd = unsafe { socket(AF_INET as i32, SOCK_STREAM, 0) };
+        assert!(fd >= 0, "socket: {}", io::Error::last_os_error());
+        // ここから先は失敗しても `OwnedFd` が閉じる
+        let held = unsafe { OwnedFd::from_raw_fd(fd) };
+        let mut addr = SockAddrIn {
+            family: AF_INET,
+            // 0 = 空いている番号をカーネルに選ばせる
+            port: 0,
+            addr: [0; 4],
+            zero: [0; 8],
+        };
+        let mut len = std::mem::size_of::<SockAddrIn>() as u32;
+        let ok = unsafe {
+            bind(held.as_raw_fd(), &addr, len) == 0
+                && getsockname(held.as_raw_fd(), &mut addr, &mut len) == 0
+        };
+        assert!(ok, "bind: {}", io::Error::last_os_error());
+        RefusedPort {
+            port: u16::from_be(addr.port),
+            _held: held,
+        }
+    }
+
+    pub(super) fn port(&self) -> u16 {
+        self.port
+    }
+
+    /// `127.0.0.1:<番号>` (拒まれる宛先)。
+    pub(super) fn addr(&self) -> SocketAddr {
+        SocketAddr::from(([127, 0, 0, 1], self.port))
+    }
+}
+
 /// `127.0.0.1` の黒穴だけ (`listen(fd, 0)` + 詰め物 1 本で受け入れ待ち行列を埋める)。
 ///
 /// 手本は [`blackhole_v6_and_live_v4`] だが、こちらは **IPv6 の全体状態
@@ -123,10 +188,9 @@ fn a_deadline_reports_timed_out_not_the_first_refusal() {
         eprintln!("cannot build a v4 blackhole; skipping");
         return;
     };
-    // 閉じたポート = 即 `ECONNREFUSED` (loopback なので確実に返る)
-    let closed = TcpListener::bind("127.0.0.1:0").unwrap();
-    let closed_addr = closed.local_addr().unwrap();
-    drop(closed);
+    // 閉じたポート = 即 `ECONNREFUSED` (loopback なので確実に返る。束縛したまま `listen` しない。T38.3)
+    let closed = RefusedPort::reserve();
+    let closed_addr = closed.addr();
 
     let started = Instant::now();
     let err = connect_resolved(
@@ -151,11 +215,11 @@ fn a_deadline_reports_timed_out_not_the_first_refusal() {
     );
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn connect_reports_error_when_all_fail() {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    drop(listener);
+    let refused = RefusedPort::reserve();
+    let port = refused.port();
     let err = connect(&format!("127.0.0.1:{}", port), Duration::from_secs(2)).unwrap_err();
     assert!(matches!(
         err.kind(),
