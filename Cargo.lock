@@ -98,7 +98,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-endpoints"
-version = "0.37.8"
+version = "0.38.7"
 dependencies = [
  "proxy-base",
  "proxy-blocklist",
@@ -194,7 +194,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-metrics-slo"
-version = "0.37.8"
+version = "0.38.7"
 dependencies = [
  "proxy-cache",
  "proxy-metrics-core",
@@ -240,7 +240,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-net-conn"
-version = "0.37.8"
+version = "0.38.3"
 dependencies = [
  "proxy-base",
  "proxy-net-dns",
