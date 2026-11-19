@@ -123,20 +123,21 @@ fn test_integration_background_304_rewrites_the_stored_head() {
     // 期限切れ直後: 古い表現をすぐ返し、裏で再検証する
     let second = get_via_proxy(proxy_port, &url, &host);
     assert!(second.contains("X-Cache: REFRESHING"), "{}", second);
+    // **裏の再検証が保存し終わるまで値で待つ** (T38.2)。オリジンが 304 を受けた (`counter` が 2) だけ
+    // では、まだ先頭を書き直していない。その間の要求は「同じキーが再検証中」なので同期の再検証に
+    // 回り (`refresh::spawn` の決まり)、`REVALIDATED` を返す (負荷の下で 1 回落ちた)。
+    // 書き直したあとで数が増える `background_revalidations` と、印が消えた `revalidating` を見る
     wait_until(
-        || counter.load(Ordering::SeqCst) == 2,
+        || {
+            let status = status_json(proxy_port);
+            json::uint(&status, "background_revalidations") == 1
+                && json::uint(&status, "revalidating") == 0
+        },
         "background revalidation",
     );
+    assert_eq!(counter.load(Ordering::SeqCst), 2);
     // 裏の 304 が書き直した先頭が配られる
-    let third = wait_for(
-        "裏の 304 が書き直した先頭 (X-Ver: 2) が配られる",
-        Duration::from_millis(20),
-        Limit::Tries(50),
-        || {
-            let third = get_via_proxy(proxy_port, &url, &host);
-            third.contains("X-Ver: 2").then_some(third)
-        },
-    );
+    let third = get_via_proxy(proxy_port, &url, &host);
     assert!(third.contains("X-Cache: HIT"), "{}", third);
     assert!(third.contains("Cache-Control: max-age=600"), "{}", third);
     assert!(third.contains("X-Ver: 2"), "{}", third);
