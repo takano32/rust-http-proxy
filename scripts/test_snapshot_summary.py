@@ -290,6 +290,15 @@ class Truncated(unittest.TestCase):
     def test_nothing_is_printed_when_no_part_is_cut(self):
         self.assertNotIn("応答が 256 KiB で切れている部", run([B]))
 
+    def test_the_dropped_line_names_the_limit_of_the_snapshot(self):
+        """落とした部の行は、その 1 枚の `limit_bytes` を書く (T39.8 で `/snapshot` も 6 MiB になった)。"""
+        b = read(B)
+        b["limit_bytes"] = 6 * 1024 * 1024
+        b["dropped"] = ["recent"]
+        with written(b=b) as paths:
+            md = run([paths["b"]])
+        self.assertIn("- **上限 6,291,456 B を越えたので落とした部分**: recent", md)
+
 
 class Recent(unittest.TestCase):
     """個票の「そろっている窓」(T14.99)。"""

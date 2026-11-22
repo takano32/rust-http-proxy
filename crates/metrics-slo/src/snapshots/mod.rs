@@ -59,10 +59,9 @@ pub(crate) use names::{is_date, parse_moment};
 pub use store::{Saved, SavedMoment};
 pub use writer::Writer;
 
-/// `/snapshot` (要求で組む 1 枚) の上限 (4 MiB。`endpoints::recent::MAX_SNAPSHOT` と同じ値)。
-/// `/snapshots` の `max_bytes` に出す。ディスクに書く 1 枚 (日次・起動・停止) は 3 つとも
-/// [`DAILY_MAX_FILE`] (T29.16 で日次、T38.7 で起動と停止も)。
-pub const MAX_FILE: u64 = 4 * 1024 * 1024;
+/// `/snapshot` (要求で組む 1 枚) の上限 (`endpoints::recent::MAX_SNAPSHOT` と同じ値)。`/snapshots` の
+/// `max_bytes` に出す。**T39.8 からディスクに書く 1 枚 ([`DAILY_MAX_FILE`]) と同じ 6 MiB** (前は 4 MiB)。
+pub const MAX_FILE: u64 = DAILY_MAX_FILE;
 
 /// **ディスクに書く 1 枚** (日次・起動・停止) の上限 (6 MiB。T29.16 で日次、T38.7 で起動と停止も)。
 ///
@@ -73,7 +72,7 @@ pub const MAX_FILE: u64 = 4 * 1024 * 1024;
 /// 0.28.48 が書いた日次 `2026-10-26` は 3,692,328 B (4 MiB の 88%。`history` 1,550,971 B は T28.45 の 17 項目で
 /// 増え、`recent` 896,914 B は T28.46 の 2,000 行)。4 MiB を越えると `recent` を 256 KiB (約 580 行) に戻し、
 /// T28.18 の問題 (締めの「前」の接続のエラーの行が「判定できず」) に黙って戻るので、日次だけ上限を上げて
-/// 余白を作る (3.7 MB は 6 MiB の 59%)。`/snapshot` (要求で組む 1 枚) は 4 MiB のまま
+/// 余白を作る (3.7 MB は 6 MiB の 59%)。`/snapshot` (要求で組む 1 枚) も T39.8 でこの上限にそろえた ([`MAX_FILE`])
 pub const DAILY_MAX_FILE: u64 = 6 * 1024 * 1024;
 
 /// **日次の 1 枚だけ**の `recent` の部の上限 (1 MiB。T28.46、利用者の決定 10)。
@@ -102,7 +101,7 @@ pub fn default_dir() -> Option<PathBuf> {
 
 /// `/snapshot` を組む閉包 (預けるのは `proxy-endpoints`。[`set_builder`])。
 ///
-/// 1 つ目の引数は **`recent` の部の上限** (`None` = `/snapshot` と同じく部ごと 256 KiB で切る)。
+/// 1 つ目の引数は **`recent` の部の上限** (`None` = 部ごと 256 KiB で切る)。
 /// 起動と停止の 1 枚は [`DAILY_MAX_FILE`] (= 2,000 件を全部。T28.20・T38.7)、日次は [`DAILY_RECENT_MAX`] (T28.46)。
 /// 2 つ目は**全体の上限** (3 つとも [`DAILY_MAX_FILE`]。T29.16・T38.7)。
 /// 組む側は `dns`・`hosts`・`profile` も部の上限で切らず、全体が上限を越えるなら切った形に戻す (T38.7)。

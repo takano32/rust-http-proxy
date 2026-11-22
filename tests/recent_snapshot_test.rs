@@ -45,7 +45,7 @@ fn json_is_balanced(s: &str) -> bool {
     depth == 0 && !in_str
 }
 
-/// (d) `/snapshot` が 1 要求で全部を含み、4 MiB 以下であること。
+/// (d) `/snapshot` が 1 要求で全部を含み、6 MiB 以下であること (T39.8 の前は 4 MiB)。
 #[test]
 fn test_integration_snapshot_has_every_part_in_one_request() {
     let (origin_port, _origin) = common::start_mock_origin();
@@ -70,10 +70,11 @@ fn test_integration_snapshot_has_every_part_in_one_request() {
     let json = endpoint_json(proxy_port, "/snapshot");
     assert!(json_is_balanced(&json), "JSON の括弧が合わない: {}", json);
     assert!(
-        json.len() <= 4 * 1024 * 1024,
-        "4 MiB を越えた: {} B",
+        json.len() <= 6 * 1024 * 1024,
+        "6 MiB を越えた: {} B",
         json.len()
     );
+    assert!(json.contains("\"limit_bytes\":6291456"), "{}", &json[..300]);
 
     // 頭 (いつ・どの版・どれが入っているか)
     assert!(json.contains("\"taken_at\":"), "{}", json);

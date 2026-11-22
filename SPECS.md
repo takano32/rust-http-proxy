@@ -286,7 +286,7 @@ CPU と統計の鍵の時間を食う。そこで**大きい応答を組む口�
 
 | 口 | 重いと見なす条件 |
 |---|---|
-| `/snapshot` | いつも (17 部・最大 4 MiB を組む) |
+| `/snapshot` | いつも (17 部・最大 6 MiB を組む。T39.8) |
 | `/profile` | `?summary=1` **以外**はいつも (段階・スレッドの CPU と状態・ロックの取り合いの窓。要約は標本を 1 本も組まないので軽い口。T15.0) |
 | `/explain` | いつも (ほかの口を横断して 1 枚に組む。S19) |
 | `/hosts` | `limit` が **200 より大きい**とき (`/hosts?limit=1000` など) |
@@ -603,7 +603,9 @@ DNS キャッシュの TTL、期限前の引き直し、keep-warm、serve-stale�
   デプロイ先の様子を見るのに 17 本の URL を手で叩かずに 1 回で済ませるための口
 - **組み立ては同じプロセス内の関数呼び出し** (自分へ HTTP で繋ぎ直さないので、接続を 17 本増やさず、
   上限に当たっている最中でも取れる)
-- 上限は **4 MiB** で、越えたら `recent` → `log` → `history.5` の順に
+- **組み方と上限は、ディスクに書く起動と停止の 1 枚と同じ** (T39.8): `recent` (2,000 件)・`dns`・`hosts`・`profile` を
+  部ごとの 256 KiB で切らずに入れ、全体の上限は **6 MiB** (`limit_bytes`)。越えるときは下の「日次・起動・停止の
+  スナップショット」と同じく、全部入れた部を切った形へ戻してから `recent` → `log` → `history.5` の順に
   `null` へ落として `dropped` に名前を出す。保存して読むのは `scripts/collect-deployed.sh`
 - 重い口なので同時に 1 本だけ組む (S4 の「重い口」)
 
@@ -611,8 +613,8 @@ DNS キャッシュの TTL、期限前の引き直し、keep-warm、serve-stale�
 
 - `/snapshots` は `$HOME/.rust-http-proxy/snapshots/` に残してある日付と大きさ (`files[]` の `date` / `bytes` /
   `t` (書いた時刻)、**古い順**) と、置き場所 (`dir`)・残す日数 (`days`)・上限
-  (`max_bytes` = 4 MiB は `/snapshot` の上限。**ディスクに書く 1 枚 (日次・起動・停止) の上限は末尾の `daily_max_bytes` = 6 MiB**。
-  T29.16 で日次、T38.7 で起動と停止も。鍵の名前は日次だけだった頃のまま)
+  (`max_bytes` は `/snapshot` の上限、**ディスクに書く 1 枚 (日次・起動・停止) の上限は末尾の `daily_max_bytes`**。
+  どちらも 6 MiB (T29.16 で日次、T38.7 で起動と停止、T39.8 で `/snapshot` も。鍵の名前は日次だけだった頃のまま))
   を返す (T14.34。既定 30 日ぶん)。`/snapshots/<YYYY-MM-DD>` はその日のファイルを
   **そのまま** (`/snapshot` の応答そのもの) 返すので、`scripts/snapshot-diff.py` や
   `scripts/status-diff.py`、1 週間ぶんを 1 枚にする `scripts/weekly-report.py` に
@@ -625,7 +627,7 @@ DNS キャッシュの TTL、期限前の引き直し、keep-warm、serve-stale�
 - **ディスクに書く 1 枚 (日次・起動・停止) は、部を部ごとの 256 KiB で切らずに入れる** (T38.7)。
   `dns`・`hosts`・`profile` は全体の上限まで全部入れ、`recent` は日次の 1 枚が 1 MiB まで (T28.46。環の 2,000 件が入る)、
   起動と停止の 1 枚は 2,000 件全部 (T28.20・T38.7)。全体の上限は 3 つとも 6 MiB (T29.16・T38.7。スナップショットの
-  `limit_bytes` に効いた上限が出る)。いつもの `/snapshot` と `/dns`・`/hosts`・`/profile`・`/recent` の口は部ごとの 256 KiB で切る
+  `limit_bytes` に効いた上限が出る)。いつもの `/snapshot` も起動と停止の 1 枚と同じ組み方 (T39.8)。`/dns`・`/hosts`・`/profile`・`/recent` の口は部ごとの 256 KiB で切る
 - **ディスクに書く 1 枚が全体の上限を越えるときは、全部入れた部を `profile` → `hosts` → `dns` → `recent` の順に 1 つずつ
   いつもの 256 KiB で切った形に戻し**、収まったらそこで止める。4 つとも戻しても越えるときに、いつもの順
   (`recent` → `log` → `history.5`) に `null` へ落とす (全部入れたせいで部ごと `null` にはしない。T38.7)

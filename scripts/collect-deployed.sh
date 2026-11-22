@@ -117,7 +117,7 @@
 #                         phase22 / phase21 の IPv6 の探りの行。phase24 は `memory.baseline` が無いスナップショットのときだけ
 #                         こちらで読む。無ければ「判定できず」)。
 #                         BEFORE も ZERO も、相対パスはリポジトリの根から (`DIR` と同じ)
-#   MAX_TIME (既定 30)  … `/snapshot` を取る上限 (秒)。4 MiB まであるので長めに
+#   MAX_TIME (既定 30)  … `/snapshot` を取る上限 (秒)。6 MiB まであるので長めに (T39.8)
 #   MAX_PAGES (既定 8)  … `--full` が 1 つの部について追う続きの枚数の上限。`/profile?res=60` と
 #                         既定で追う `recent`・`hosts`・`dns`・`profile` を繋ぐ枚数の上限 (1 枚目を含む) にも使う
 #                         (2,000 件の `recent` は 1 枚 576 件の今の tokyo で 4 枚)

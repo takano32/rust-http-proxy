@@ -563,7 +563,7 @@ def client_watch(snap, prev):
     events = [e for e in (part(snap, "events").get("events") or []) if e.get("kind") == "new_client"]
     events.sort(key=lambda e: -(e.get("at") or 0))
     c = part(snap, "clients")
-    # `/recent` は `/snapshot` が 4 MiB を越えると部ごと落ちる (`dropped`)。そのときの「窓」は 0 本ではなく不明
+    # `/recent` は `/snapshot` が上限 (`limit_bytes`) を越えると部ごと落ちる (`dropped`)。そのときの「窓」は 0 本ではなく不明
     has_recent = isinstance(part(snap, "recent").get("recent"), list)
     return {"rows": out, "since": since, "windowed": older is not None, "readers": readers,
             "has_recent": has_recent,
@@ -691,7 +691,8 @@ def head_lines(d, st, path, window):
     out.append("- 無言の再起動: " + silent_restart_text(silent_restarts(d)))
     out.append("- 大きさ: " + size_report(path, d)[0])
     if d.get("dropped"):
-        out.append(f"- **4 MiB を越えたので落とした部分**: {', '.join(d['dropped'])}")
+        limit = d.get("limit_bytes") or DEFAULT_LIMIT_BYTES
+        out.append(f"- **上限 {num(limit)} B を越えたので落とした部分**: {', '.join(d['dropped'])}")
     cut = truncated_parts(d)
     if cut:
         out.append("- **応答が 256 KiB で切れている部**: "

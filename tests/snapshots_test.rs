@@ -20,8 +20,8 @@ use common::{
 };
 use rust_http_proxy::snapshots;
 
-/// `/snapshot` の上限 (`endpoints::recent::MAX_SNAPSHOT`)。
-const MAX_SNAPSHOT: usize = 4 * 1024 * 1024;
+/// `/snapshot` の上限 (`endpoints::recent::MAX_SNAPSHOT`。T39.8 からディスクに書く 1 枚と同じ 6 MiB)。
+const MAX_SNAPSHOT: usize = 6 * 1024 * 1024;
 
 fn home(tag: &str) -> PathBuf {
     scratch_dir(&format!("rhp-t1434-{}", tag))
@@ -71,7 +71,7 @@ fn recent_number(body: &str, key: &str) -> u64 {
 /// **T28.46**: 日次の 1 枚は `recent` を 1 MiB まで持ち、環 (2,000 件) が全部入る。
 ///
 /// 実際に CONNECT を 2,100 本通して閉じ、環を満杯にしてから日付をまたがせる (組み立てから
-/// ファイルまでは本物の経路)。同じ瞬間のいつもの `/snapshot` (部ごと 256 KiB で切る) と
+/// ファイルまでは本物の経路)。同じ瞬間のいつもの `/snapshot` (T39.8 から `recent` を切らない) と
 /// 大きさを並べて出す (手元の lo の行なので、デプロイ先の行より短い)。
 #[test]
 fn test_integration_the_daily_snapshot_keeps_the_whole_recent_ring() {
@@ -104,7 +104,11 @@ fn test_integration_the_daily_snapshot_keeps_the_whole_recent_ring() {
         daily.len(),
         recent_number(&daily, "shown")
     );
-    assert!(recent_number(&usual, "shown") < 2_000, "いつもの雪像は切る");
+    assert_eq!(
+        recent_number(&usual, "shown"),
+        2_000,
+        "いつもの雪像も環を全部 (T39.8)"
+    );
     assert_eq!(recent_number(&daily, "shown"), 2_000, "日次は環を全部");
     assert!(daily.len() <= MAX_SNAPSHOT, "{} B", daily.len());
     assert!(daily.contains("\"dropped\":[]"), "{}", &daily[..300]);
@@ -208,8 +212,9 @@ fn test_integration_snapshots_lists_and_serves_saved_days() {
     assert!(list.contains("\"truncated\":false"), "{}", list);
     // `PROXY_SNAPSHOT_DAYS` がそのまま出る (設定の配線)
     assert!(list.contains("\"days\":7"), "{}", list);
-    assert!(list.contains("\"max_bytes\":4194304"), "{}", list);
-    // 日次の 1 枚だけの上限 (T29.16)
+    // `/snapshot` の上限は T39.8 からディスクに書く 1 枚と同じ 6 MiB
+    assert!(list.contains("\"max_bytes\":6291456"), "{}", list);
+    // ディスクに書く 1 枚の上限 (T29.16・T38.7)
     assert!(list.contains("\"daily_max_bytes\":6291456}"), "{}", list);
     assert!(list.contains(&snaps.display().to_string()), "{}", list);
     // 並びは**古い順**

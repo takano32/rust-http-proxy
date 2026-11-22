@@ -55,7 +55,7 @@ pub(in crate::endpoints) fn snapshots() -> (u16, &'static str, String) {
         moments_shown,
         l.moments_bytes,
         moments_cut,
-        // ディスクに書く 1 枚の上限 (T29.16 で日次、T38.7 で起動と停止も。`max_bytes` は `/snapshot` の 4 MiB)
+        // ディスクに書く 1 枚の上限 (T29.16 で日次、T38.7 で起動と停止も)。`max_bytes` (`/snapshot` の上限) も T39.8 で同じ値
         crate::snapshots::DAILY_MAX_FILE
     );
     (200, "application/json", out)
@@ -83,11 +83,14 @@ pub(in crate::endpoints) fn snapshot_file(date: &str) -> (u16, &'static str, Str
     }
 }
 
-/// `/snapshot` の上限 (4 MiB)。個票 1 本 1 本の上限 ([`MAX_BODY`]) とは別枠。
+/// `/snapshot` の上限 (6 MiB = ディスクに書く 1 枚と同じ `snapshots::DAILY_MAX_FILE`。T39.8)。
+/// 個票 1 本 1 本の上限 ([`MAX_BODY`]) とは別枠。
 ///
 /// デプロイ先から 1 日 1 回取って保存する大きさなので、回線を占めない・エディタで
-/// 開ける・`python -m json.tool` が通る、の 3 つが収まる値にしてある。
-pub(super) const MAX_SNAPSHOT: usize = 4 * 1024 * 1024;
+/// 開ける・`python -m json.tool` が通る、の 3 つが収まる値にしてある。T39.8 より前は 4 MiB で、
+/// 0.38.10 の締めの 1 枚は 3,400,448 B (81.1%) で `recent`・`hosts`・`dns`・`profile` が部ごとに切れ、
+/// `collect-deployed.sh` が続きを 7.4 秒かけて繋いでいた。
+pub(super) const MAX_SNAPSHOT: usize = crate::snapshots::DAILY_MAX_FILE as usize;
 
 /// `/snapshot` が越えたときに落とす順 (大きいものから)。落としたものは `"dropped"` に出る。
 const DROP_ORDER: [&str; 3] = ["recent", "log", "history.5"];
@@ -120,18 +123,22 @@ const PROFILE_QUERY: &str = "res=5";
 /// **`history.*` にはカーネルと cgroup の窓 (`kernel`) も一緒に入る** (T14.12。`/history` と同じ組み立て)。
 /// **T14.3 の `/profile` は、入ったらここに 1 行足す** (`parts` に名前が出るので、
 /// 読む側は「この版に何が入っていたか」を JSON だけで判別できる)。
+///
+/// **組み方はディスクに書く起動と停止の 1 枚と同じ** (T39.8): `recent`・`dns`・`hosts`・`profile` を部の
+/// 256 KiB で切らずに入れ、全体が [`MAX_SNAPSHOT`] を越えたら [`WHOLE_ORDER`] の順に切った形へ戻す。
 pub(in crate::endpoints) fn snapshot(ep: &Endpoint<'_>) -> (u16, &'static str, String) {
-    snapshot_with(ep, None, MAX_SNAPSHOT)
+    disk_snapshot(ep, Some(MAX_SNAPSHOT), MAX_SNAPSHOT)
 }
 
-/// **ディスクに書く 1 枚** (日次・起動・停止。`snapshots` の組み方として預ける。T38.7)。
+/// **ディスクに書く 1 枚** (日次・起動・停止。`snapshots` の組み方として預ける。T38.7)。いつもの
+/// `/snapshot` も同じ組み方 (T39.8)。
 ///
-/// [`snapshot_with`] に加えて、`dns`・`hosts`・`profile` も部の 256 KiB ([`MAX_BODY`]) で切らずに
+/// `recent` を `recent_max` まで入れ、`dns`・`hosts`・`profile` も部の 256 KiB ([`MAX_BODY`]) で切らずに
 /// 全体の上限 (`limit`) まで入れる。0.36.34 の停止の 1 枚は全体が 4 MiB の 94% で、この 3 つの部が
 /// 部ごとの上限で切れていた (`/dns` は 1,122 行のうち 694 行。締めの「前」の材料が欠けた)。
 /// 合計が `limit` を越えるときは [`WHOLE_ORDER`] の順に**切った形に戻してから**いつもの順
 /// ([`DROP_ORDER`]) に落とす (全部入れたせいで部ごと `null` にはしない)。
-/// いつもの `/snapshot` と `/dns`・`/hosts`・`/profile` の口は変えない。
+/// `/dns`・`/hosts`・`/profile` の口は変えない。
 pub(in crate::endpoints) fn disk_snapshot(
     ep: &Endpoint<'_>,
     recent_max: Option<usize>,
@@ -140,32 +147,13 @@ pub(in crate::endpoints) fn disk_snapshot(
     build_snapshot(ep, recent_max, true, limit)
 }
 
-/// [`snapshot`](fn@snapshot) の本体。`recent_max` が `Some(上限)` なら **`recent` を部の 256 KiB ([`MAX_BODY`]) で
-/// 切らずに、その上限まで入れる** (停止の雪像は [`MAX_SNAPSHOT`] = 2,000 件を全部。T28.20。
-/// 日次の雪像は `snapshots::DAILY_RECENT_MAX` = 1 MiB。T28.46)。`None` はいつもの `/snapshot`。
+/// [`disk_snapshot`] の本体。`recent_max` が `Some(上限)` なら **`recent` を部の 256 KiB ([`MAX_BODY`]) で
+/// 切らずに、その上限まで入れる** (起動と停止と `/snapshot` は 2,000 件を全部。T28.20・T39.8。日次は
+/// `snapshots::DAILY_RECENT_MAX` = 1 MiB。T28.46)。`whole` なら `dns`・`hosts`・`profile` も部の上限を外す
+/// (T38.7)。`false` は試験だけが使う (T39.8 より前のいつもの `/snapshot` の形)。
 ///
-/// 日次は部ごと 256 KiB で切っていたので `/recent` が約 580 行しか入らず、締めの「前」に日次を
-/// 使うと接続のエラーの行が「判定できず」になった (T28.18)。1 MiB なら 1 件 400〜500 B の
-/// 行で環の 2,000 件が入る。
-///
-/// 締めの「前」は `/recent` の窓が判定の分母 (phase25 の接続のエラーは試行 1,000 本が下限) になるのに、
-/// `collect-deployed.sh` が `offset=` で続きを追って繋ぐ形 (T22.5) は、`--from-server` で取り寄せた
-/// 1 枚にはできない (取り寄せたときにはもうプロセスが居ない)。全部入れても 2,000 件 × 1 件 500 B
-/// 前後 = 1 MB 前後で、合計が全体の上限を越えるときは**切った `recent` に戻してから**いつもの順に落とす
-/// (全部入れたせいで `recent` ごと `null` にはしない)。
-///
-/// `limit` は全体の上限 (いつもの `/snapshot` は [`MAX_SNAPSHOT`] = 4 MiB、ディスクに書く 1 枚は
-/// `snapshots::DAILY_MAX_FILE` = 6 MiB。T29.16・T38.7)。`limit_bytes` に出る。
-fn snapshot_with(
-    ep: &Endpoint<'_>,
-    recent_max: Option<usize>,
-    limit: usize,
-) -> (u16, &'static str, String) {
-    build_snapshot(ep, recent_max, false, limit)
-}
-
-/// [`snapshot_with`] と [`disk_snapshot`] の本体。`whole` なら `dns`・`hosts`・`profile` も
-/// 部の上限を外す (T38.7)。
+/// `limit` は全体の上限 (どれも `snapshots::DAILY_MAX_FILE` = 6 MiB。T29.16・T38.7・T39.8)。`limit_bytes` に出る。
+/// 合計が上限を越えるときは**切った形に戻してから**いつもの順に落とす (全部入れたせいで部ごと `null` にはしない)。
 fn build_snapshot(
     ep: &Endpoint<'_>,
     recent_max: Option<usize>,
@@ -192,10 +180,9 @@ fn build_snapshot(
     (200, "application/json", body)
 }
 
-/// 17 の部を、それぞれの口と同じ関数で組む (T34.91 で [`snapshot_with`] から出した)。
+/// 17 の部を、それぞれの口と同じ関数で組む (T34.91 で `/snapshot` の本体から出した)。
 ///
-/// 並びは `parts` に出る順そのもの。`recent_max` は [`snapshot_with`] と、`whole` は
-/// [`build_snapshot`] と同じ。
+/// 並びは `parts` に出る順そのもの。`recent_max` と `whole` は [`build_snapshot`] と同じ。
 fn collect_parts(
     ep: &Endpoint<'_>,
     recent_max: Option<usize>,
@@ -206,7 +193,7 @@ fn collect_parts(
     use crate::metrics::HostSort;
 
     // 個票はどれも 256 KiB 以下、`/status` は 64 KiB 以下、履歴は 3 本で最大 2 MiB。
-    // 先に全部組んでから、合計が 4 MiB を越えていたら順に落とす
+    // 先に全部組んでから、合計が上限を越えていたら切った形に戻し、それでも越えれば順に落とす
     // `status` の 3 通りは**今までどおり `hosts[]` も入れる** (軽い形は `/status?hosts=0`
     // だけの話で、`/snapshot` の `parts` は変えない。T25.1 段 2)
     vec![
@@ -446,6 +433,11 @@ mod tests {
         }
     }
 
+    /// T39.8 より前のいつもの `/snapshot` の形 (部ごと 256 KiB で切り、全体は 4 MiB)。
+    fn cut_snapshot(ep: &Endpoint<'_>) -> String {
+        build_snapshot(ep, None, false, 4 * 1024 * 1024).2
+    }
+
     /// 雪像の `recent` の部 (その部の閉じ括弧までではなく、部の始まりから最後まで)。
     fn part_of(body: &str) -> &str {
         let at = body
@@ -460,7 +452,7 @@ mod tests {
         p.find(",\"hosts\":").expect("hosts の部が無い")
     }
 
-    /// **T28.46 の受け入れ基準**: 日次の 1 枚 (`snapshot_with(.., Some(DAILY_RECENT_MAX))`) は
+    /// **T28.46 の受け入れ基準**: 日次の 1 枚 (`recent_max` = `DAILY_RECENT_MAX`) は
     /// `recent` を 1 MiB まで持ち、ありがちな行なら**環の 2,000 件が全部入る**
     /// (いつもの `/snapshot` は 256 KiB で切って 2,000 件を割る)。最悪の値の行は 1 MiB で切る。
     #[test]
@@ -471,8 +463,8 @@ mod tests {
         fill(&m, false);
         let (usual, day) = with_ep(&m, |ep| {
             (
-                snapshot(ep).2,
-                snapshot_with(ep, daily, crate::snapshots::DAILY_MAX_FILE as usize).2,
+                cut_snapshot(ep),
+                build_snapshot(ep, daily, false, crate::snapshots::DAILY_MAX_FILE as usize).2,
             )
         });
         println!(
@@ -493,7 +485,7 @@ mod tests {
         let m = Metrics::new();
         fill(&m, true);
         let day = with_ep(&m, |ep| {
-            snapshot_with(ep, daily, crate::snapshots::DAILY_MAX_FILE as usize).2
+            build_snapshot(ep, daily, false, crate::snapshots::DAILY_MAX_FILE as usize).2
         });
         let p = part_of(&day);
         assert!(p.contains("\"truncated\":true"), "{}", &p[..300]);
@@ -501,17 +493,17 @@ mod tests {
         assert!(recent_bytes(&day) > MAX_BODY, "256 KiB より多く持つ");
     }
 
-    /// 停止の雪像 (`snapshot_with(.., Some(MAX_SNAPSHOT))`) は `recent` の 2,000 件を切らずに全部入れ、
-    /// いつもの `/snapshot` は今までどおり 256 KiB で切る (T28.20)。行は最悪の値で埋める。
+    /// 停止の雪像 (`recent_max` = [`MAX_SNAPSHOT`]) は `recent` の 2,000 件を切らずに全部入れ、
+    /// 部ごとに切る形 (T39.8 より前のいつもの `/snapshot`) は 256 KiB で切る (T28.20)。行は最悪の値で埋める。
     #[test]
     fn the_shutdown_snapshot_keeps_every_recent_row() {
         let m = Metrics::new();
         fill(&m, true);
         let (usual, full, took) = with_ep(&m, |ep| {
-            let usual = snapshot(ep).2;
-            let full = snapshot_with(ep, Some(MAX_SNAPSHOT), MAX_SNAPSHOT).2;
+            let usual = cut_snapshot(ep);
+            let full = build_snapshot(ep, Some(MAX_SNAPSHOT), false, MAX_SNAPSHOT).2;
             let t = Instant::now();
-            let _ = snapshot_with(ep, Some(MAX_SNAPSHOT), MAX_SNAPSHOT);
+            let _ = build_snapshot(ep, Some(MAX_SNAPSHOT), false, MAX_SNAPSHOT);
             (usual, full, t.elapsed())
         });
         println!(
@@ -559,7 +551,7 @@ mod tests {
         let cut = |_: &str| "cut".to_string();
         let mut four = parts();
         assert_eq!(
-            fit_whole_parts(&mut four, MAX_SNAPSHOT, &["recent"], cut),
+            fit_whole_parts(&mut four, 4 * 1024 * 1024, &["recent"], cut),
             ["recent"]
         );
         let mut six = parts();
@@ -648,15 +640,19 @@ mod tests {
     ];
 
     /// **T38.7 の受け入れ基準**: 止めるときの 1 枚 (ディスクに書く 1 枚) は `recent`・`dns`・`hosts`・`profile` の
-    /// 4 つの部を `truncated` にせず全部入れ、全体の上限は 6 MiB。いつもの `/snapshot` は 4 つとも
-    /// 今までどおり 256 KiB で切る。
+    /// 4 つの部を `truncated` にせず全部入れ、全体の上限は 6 MiB。**T39.8 からいつもの `/snapshot` も同じ**
+    /// (前は 4 つとも 256 KiB で切っていた)。
     #[test]
     fn the_shutdown_snapshot_keeps_the_four_parts_whole() {
         let daily = crate::snapshots::DAILY_MAX_FILE as usize;
         let m = Metrics::new();
         fill_four_parts(&m);
-        let (usual, disk) = with_ep(&m, |ep| {
-            (snapshot(ep).2, disk_snapshot(ep, Some(daily), daily).2)
+        let (usual, disk, cut) = with_ep(&m, |ep| {
+            (
+                snapshot(ep).2,
+                disk_snapshot(ep, Some(daily), daily).2,
+                cut_snapshot(ep),
+            )
         });
         let sizes: Vec<String> = FOUR
             .iter()
@@ -676,12 +672,23 @@ mod tests {
             assert!(!cut_of(whole), "{} が切れている", name);
             assert!(whole.len() > MAX_BODY, "{} は 256 KiB を越えて入る", name);
             assert!(
-                cut_of(section(&usual, name, next)),
-                "いつもの {} は切る",
+                !cut_of(section(&usual, name, next)),
+                "いつもの /snapshot の {} も切らない (T39.8)",
+                name
+            );
+            assert!(
+                cut_of(section(&cut, name, next)),
+                "前の形の {} は切る",
                 name
             );
         }
         assert!(usual.len() <= MAX_SNAPSHOT, "{} B", usual.len());
+        assert_eq!(
+            MAX_SNAPSHOT, daily,
+            "/snapshot の上限はディスクの 1 枚と同じ (T39.8)"
+        );
+        assert!(usual.contains(&format!("\"limit_bytes\":{}", daily)));
+        assert!(usual.contains("\"dropped\":[]"), "{}", &usual[..300]);
     }
 
     /// 全部入れた 4 つの部で全体の上限を越えるなら、`profile` → `hosts` → `dns` → `recent` の順に

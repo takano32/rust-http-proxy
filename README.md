@@ -495,7 +495,7 @@ curl "http://127.0.0.1:8080/explain?client=198.51.100.7"    # 1 接続元を 1 �
 curl "http://127.0.0.1:8080/readers"                    # この口を読んでいる相手 (走査か、自分の監視か)
 curl "http://127.0.0.1:8080/daily?n=365"                # 1 日 1 行の要約 (永久に残る。古い順)
 curl "http://127.0.0.1:8080/slo?days=7"                 # SLO の達成率 (日ごと・時間ごと・外れた時間帯)
-curl -s http://127.0.0.1:8080/snapshot > snap.json      # 上の全部を 1 要求で (4 MiB まで)
+curl -s http://127.0.0.1:8080/snapshot > snap.json      # 上の全部を 1 要求で (6 MiB まで。S16)
 curl "http://127.0.0.1:8080/snapshots"                  # 日次で残した snapshot の一覧 (30 日ぶん)
 curl -s "http://127.0.0.1:8080/snapshots/2026-09-15" > day.json   # その日ぶんをそのまま
 curl -s "http://127.0.0.1:8080/snapshots/2026-10-25T203134Z-shutdown" > before.json   # 停止の 1 枚 (`moments[]` の `name`)
