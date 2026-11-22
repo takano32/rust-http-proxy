@@ -70,6 +70,10 @@ pub enum Refresh {
 /// 裏で再検証を始める。同じキーが既に裏で再検証中なら [`Refresh::InProgress`] (T38.10。
 /// 前は同期の再検証に回り、オリジンへもう 1 本出していた)、上限に達している、または
 /// 接続スレッドに空きが無ければ [`Refresh::NotStarted`]。
+///
+/// **`Started` と `InProgress` のときは、呼び出し元が古い表現を `REFRESHING` で返すので、ここで数える**
+/// (`Started` は `stale_served`、`InProgress` は `stale_during_revalidation`。T39.6)。どちらの道も
+/// 原子操作は 1 回で、呼び出し元で答えを見分ける分岐を足さないため。
 pub fn spawn(
     shared: &Shared<'_>,
     origin: &Origin,
@@ -80,7 +84,10 @@ pub fn spawn(
 ) -> Refresh {
     match shared.cache.begin_revalidation(key) {
         BeginRevalidation::Started => {}
-        BeginRevalidation::InProgress => return Refresh::InProgress,
+        BeginRevalidation::InProgress => {
+            shared.cache.note_stale_during_revalidation();
+            return Refresh::InProgress;
+        }
         BeginRevalidation::Full => return Refresh::NotStarted,
     }
     // 印はここから番人が持つ (以後どの道を通っても 1 回だけ消える)
@@ -127,7 +134,10 @@ pub fn spawn(
         // ここで ticket が落ち、「再検証中」の印が消える
     });
     match shared.workers.try_run(job) {
-        Ok(()) => Refresh::Started,
+        Ok(()) => {
+            shared.cache.note_stale_served();
+            Refresh::Started
+        }
         Err(_returned) => {
             // 生きているスレッドが上限。**待ち行列には積まない** (モジュール冒頭の理由)。
             // 戻ってきた仕事はここで落ち、番人が印を消す

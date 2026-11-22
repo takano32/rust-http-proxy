@@ -73,6 +73,19 @@ pub(super) fn cache_metrics(out: &mut String, c: &Cache) -> proxy_cache::budget:
         "",
         c.counters().stale_served(),
     );
+    // T39.6: 上の内訳。同じ URL を裏で再検証している間に古い表現を返した回数
+    header(
+        out,
+        "cache_stale_during_revalidation_total",
+        "counter",
+        "Expired entries served while the same key was being revalidated in the background",
+    );
+    line(
+        out,
+        "cache_stale_during_revalidation_total",
+        "",
+        c.counters().stale_during_revalidation(),
+    );
     header(
         out,
         "cache_revalidating",

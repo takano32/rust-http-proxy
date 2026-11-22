@@ -427,6 +427,15 @@ impl Cache {
         self.counters.stale_served.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// 同じ URL を裏で再検証している間に来た要求へ、古い表現を返した (T39.6)。
+    /// `stale_served` の代わりに数える (読み口 [`Counters::stale_served`] が足す)。
+    #[inline]
+    pub fn note_stale_during_revalidation(&self) {
+        self.counters
+            .stale_during_revalidation
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
     /// 同時ミスの合流で、オリジンへ行かずに済んだ。
     #[inline]
     pub fn note_coalesced(&self) {

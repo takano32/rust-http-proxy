@@ -1040,7 +1040,7 @@ function renderStatus(s){
   var dp=pct(d.used_bytes,d.limit_bytes);$('diskkpi').innerHTML=fmtBytes(d.used_bytes)+'<small>/ '+fmtBytes(d.limit_bytes)+'</small>';$('diskbar').style.width=dp+'%';$('diskbar').className=barClass(dp);
   $('diskhint').textContent=fmtNum(d.entries)+' 件 · 予約 '+fmtBytes(d.reserved_bytes)+' · 割当 '+(d.quota_mode||'')+(d.quota_bytes?' '+fmtBytes(d.quota_bytes):'')+(d.entry_limit_bytes&&d.entry_limit_bytes!==d.limit_bytes?' · 実データ上限 '+fmtBytes(d.entry_limit_bytes):'');
   var sys=c.system||{};
-  var rows=[['保存',c.stores],['追い出し',c.evictions],['再検証',c.revalidations],['裏側の再検証',c.background_revalidations+' (進行中 '+c.revalidating+')'],['期限切れをそのまま配信',c.stale_served],['同時ミスの合流',c.coalesced+' (進行中 '+c.inflight+')'],['入場制御で見送り (初回)',c.admission_rejected],['キャッシュから配信',fmtBytes(c.bytes_served)],
+  var rows=[['保存',c.stores],['追い出し',c.evictions],['再検証',c.revalidations],['裏側の再検証',c.background_revalidations+' (進行中 '+c.revalidating+')'],['期限切れをそのまま配信',c.stale_served+(c.stale_during_revalidation!=null?' (再検証中 '+c.stale_during_revalidation+')':'')],['同時ミスの合流',c.coalesced+' (進行中 '+c.inflight+')'],['入場制御で見送り (初回)',c.admission_rejected],['キャッシュから配信',fmtBytes(c.bytes_served)],
     ['RSS',fmtBytes(sys.process_rss_bytes)],['cgroup',sys.cgroup_limit_bytes?fmtBytes(sys.cgroup_usage_bytes)+' / '+fmtBytes(sys.cgroup_limit_bytes):'–'],['ホストのメモリ',sys.mem_total_bytes?(sys.mem_used_percent+'% 使用 / '+fmtBytes(sys.mem_total_bytes)):'–'],['メモリ圧迫',sys.mem_pressure?'あり':'なし']];
   // エラーの原因は `/status` のホスト別の内訳を足し上げて出す (図には秒あたりの本数だけ出る)
   var names=causes.length?causes:CAUSES;

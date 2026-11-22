@@ -201,6 +201,17 @@ fn test_integration_request_during_background_revalidation_gets_the_stale_copy()
     assert!(third.contains("X-Ver: 1"), "{}", third);
     assert_eq!(body_of(&third), BODY);
     assert_eq!(counter.load(Ordering::SeqCst), 2);
+    // 再検証中に返した 3 本目だけが `stale_during_revalidation` に出て、`stale_served` は
+    // 始めた 2 本目と合わせた 2 (T39.6)。`/status` の `dns` にも `stale_served` があるので `cache` の節で読む
+    let status = status_json(proxy_port);
+    let cache = &status[status.find("\"cache\":").expect("cache")..];
+    assert_eq!(json::uint(cache, "stale_served"), 2, "{}", cache);
+    assert_eq!(
+        json::uint(cache, "stale_during_revalidation"),
+        1,
+        "{}",
+        cache
+    );
 
     release.store(true, Ordering::SeqCst);
     wait_until(

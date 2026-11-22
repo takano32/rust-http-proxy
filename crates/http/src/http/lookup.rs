@@ -136,9 +136,10 @@ pub(super) fn consult<'c>(
             // クライアント自身の条件付き要求は、そのままオリジンに判断させる
             if !client_conditional {
                 // 期限切れ直後 (grace 内) なら、すぐ返して裏で再検証する (stale-while-revalidate)
+                // 数えるのは `refresh::spawn` (始めたら `stale_served`、進行中なら
+                // `stale_during_revalidation`。T39.6)
                 if !force_revalidate && try_refreshing(x, key, now, &entry, cfg.grace.as_secs()) {
                     body::drain(reader, req_framing)?;
-                    cache.note_stale_served();
                     return finished(serve_cached(
                         client,
                         entry,
