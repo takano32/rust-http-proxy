@@ -333,7 +333,7 @@ impl Config {
         }
     }
 
-    /// 統計の永続化・自己ベンチ・雪像・SLO と、追加の CA ファイル。
+    /// 統計の永続化・自己ベンチ・スナップショット・SLO と、追加の CA ファイル。
     fn read_statistics_and_ca(&mut self, src: &mut Sources, bad: &mut EnvProblems) {
         if let Some(on) = bad.flag("PROXY_STATS_PERSIST") {
             self.stats_persist = on;

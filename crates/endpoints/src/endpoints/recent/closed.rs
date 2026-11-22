@@ -1,7 +1,7 @@
 //! `/recent` — **閉じた接続**の個票 (T14.4)。T34.82 で recent.rs から分けた。
 //!
 //! 並べ替え ([`RecentSort`])・接続元の RTT での絞り ([`RttClient`]) と、口の本体
-//! ([`recent`] / 停止の雪像も使う [`recent_within`])。
+//! ([`recent`] / 停止のスナップショットも使う [`recent_within`])。
 
 use std::fmt::Write as _;
 
@@ -105,7 +105,7 @@ pub(in crate::endpoints) fn recent(
     recent_within(ep, query, MAX_BODY)
 }
 
-/// [`recent`] の本体。`limit` は応答の上限 (ふだんは [`MAX_BODY`]、停止の雪像だけ
+/// [`recent`] の本体。`limit` は応答の上限 (ふだんは [`MAX_BODY`]、停止のスナップショットだけ
 /// [`MAX_SNAPSHOT`](super::snapshot::MAX_SNAPSHOT)。T28.20)。
 pub(super) fn recent_within(
     ep: &Endpoint<'_>,

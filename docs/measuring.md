@@ -1,6 +1,6 @@
 # docs/measuring.md — 計測の作法
 
-> **雪像の置き場は 2026-09-26 に `~/rust-http-proxy-status/` からリポジトリの `status/` (`.gitignore` 済み) へ移した** (利用者の決定。`$HOME` には書かない)
+> **スナップショットの置き場は 2026-09-26 に `~/rust-http-proxy-status/` からリポジトリの `status/` (`.gitignore` 済み) へ移した** (利用者の決定。`$HOME` には書かない)
 > `scripts/collect-deployed.sh` の既定の `DIR` も `status/`。
 > **機械のロック `mx` は `scripts/mx`** (同じ日にリポジトリへ入れた。本文の `mx …` は `scripts/mx …` のこと)。済んだタスクの本文に出てくる `~/rust-http-proxy-status` は当時の置き場。
 > (T37.5 で `TODO.md` の冒頭から移した。)

@@ -60,7 +60,7 @@ pub fn stats_json(s: &HostStats, detail: bool) -> String {
         }
         // **後ろに足すだけ** (T25.0)。DNS の失敗の内訳 (`nxdomain` / `dns_temp`) を
         // 9・10 番目に置く。先頭 8 つの意味と並びは 1 つも変えていないので、過去の
-        // 雪像 (8 要素) を読む側はそのままでよい (名前は `/status` の README と
+        // スナップショット (8 要素) を読む側はそのままでよい (名前は `/status` の README と
         // `DNS_CAUSE_NAMES`、`/explain` は名前つきで出す)
         for c in s.dns_by_cause {
             out.push(',');

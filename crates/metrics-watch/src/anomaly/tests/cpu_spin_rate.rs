@@ -11,7 +11,7 @@ use super::*;
 fn cpu_throttling_fires_over_half_and_clears_under_a_quarter() {
     let h = History::default();
     let mut d = Detector::new();
-    // 起動より前から動いている累計 (0 時間の雪像にも 915 が乗っていた)
+    // 起動より前から動いている累計 (0 時間のスナップショットにも 915 が乗っていた)
     let (mut throttled, mut periods, mut used) = (915u64, 8_000u64, 0u64);
     let mut t = 0u64;
     let mut fired = Vec::new();

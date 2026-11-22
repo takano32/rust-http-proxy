@@ -1,4 +1,4 @@
-//! 1 回で全部の `/snapshot` と、残してある雪像の一覧・1 枚 (`/snapshots`。T14.34・T28.20)。
+//! 1 回で全部の `/snapshot` と、残してあるスナップショットの一覧・1 枚 (`/snapshots`。T14.34・T28.20)。
 
 use super::super::history::history_body;
 use super::super::profile;
@@ -438,7 +438,7 @@ mod tests {
         build_snapshot(ep, None, false, 4 * 1024 * 1024).2
     }
 
-    /// 雪像の `recent` の部 (その部の閉じ括弧までではなく、部の始まりから最後まで)。
+    /// スナップショットの `recent` の部 (その部の閉じ括弧までではなく、部の始まりから最後まで)。
     fn part_of(body: &str) -> &str {
         let at = body
             .find(",\"recent\":{\"schema\":")
@@ -446,7 +446,7 @@ mod tests {
         &body[at..]
     }
 
-    /// 雪像の `recent` の部の大きさ (`"hosts"` の部の手前まで)。
+    /// スナップショットの `recent` の部の大きさ (`"hosts"` の部の手前まで)。
     fn recent_bytes(body: &str) -> usize {
         let p = part_of(body);
         p.find(",\"hosts\":").expect("hosts の部が無い")
@@ -468,7 +468,7 @@ mod tests {
             )
         });
         println!(
-            "T28.46 recent 2,000 件 (ありがちな行): いつもの雪像 {} B (recent {} B) / 日次 {} B (recent {} B)",
+            "T28.46 recent 2,000 件 (ありがちな行): いつものスナップショット {} B (recent {} B) / 日次 {} B (recent {} B)",
             usual.len(),
             recent_bytes(&usual),
             day.len(),
@@ -493,7 +493,7 @@ mod tests {
         assert!(recent_bytes(&day) > MAX_BODY, "256 KiB より多く持つ");
     }
 
-    /// 停止の雪像 (`recent_max` = [`MAX_SNAPSHOT`]) は `recent` の 2,000 件を切らずに全部入れ、
+    /// 停止のスナップショット (`recent_max` = [`MAX_SNAPSHOT`]) は `recent` の 2,000 件を切らずに全部入れ、
     /// 部ごとに切る形 (T39.8 より前のいつもの `/snapshot`) は 256 KiB で切る (T28.20)。行は最悪の値で埋める。
     #[test]
     fn the_shutdown_snapshot_keeps_every_recent_row() {
@@ -507,7 +507,7 @@ mod tests {
             (usual, full, t.elapsed())
         });
         println!(
-            "T28.20 recent 2,000 件 (最悪の値): いつもの雪像 {} B / 停止の雪像 {} B、停止の 1 枚を組むのに {:.1} ms (debug ビルド)",
+            "T28.20 recent 2,000 件 (最悪の値): いつものスナップショット {} B / 停止のスナップショット {} B、停止の 1 枚を組むのに {:.1} ms (debug ビルド)",
             usual.len(),
             full.len(),
             took.as_secs_f64() * 1000.0

@@ -96,7 +96,7 @@ fn the_bounds_are_a_geometric_ladder() {
 // 下の層 `proxy-metrics-types` の `metrics::causes` へ移した (T34.1)
 
 /// 名前解決の失敗を `nxdomain` / `dns_temp` に割り、`errors_by_cause` の**うしろ**に
-/// 足すこと (T25.0)。**先頭 8 つの意味と並びは動かさない** (過去の雪像は 8 要素)。
+/// 足すこと (T25.0)。**先頭 8 つの意味と並びは動かさない** (過去のスナップショットは 8 要素)。
 #[test]
 fn dns_failures_are_split_after_the_eight_causes() {
     use std::io::{Error, ErrorKind};

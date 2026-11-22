@@ -88,7 +88,7 @@ pub const WARM: Duration = Duration::from_secs(3600);
 /// `PROXY_DNS_WARM_SECS` の既定 (T22.4)。**0 = keep-warm を止める** (裏の引き直しは、TTL の 3/4 を
 /// 過ぎた熱い名前の先回り (T13.1) と、serve-stale で古い答えを返したときの 1 回だけになる)。
 ///
-/// `scripts/dns-replay.py --grid` の再生で決めた (serve-stale 21,600 秒のもとで、雪像 3 枚 =
+/// `scripts/dns-replay.py --grid` の再生で決めた (serve-stale 21,600 秒のもとで、スナップショット 3 枚 =
 /// tokyo 2026-10-15・2026-10-17、nagoya 2026-10-08)。warm を止めると引き直しは今の 5〜27% になり、
 /// `expired` + `warm_stale` のミスは 3 枚とも増えなかった (目安「引き直し半分以下・ミスの増え 1 日
 /// 10 回以内」を満たしたのはこれだけ。枠 16 / 64 と窓 900 秒は届かない)。serve-stale では warm が
@@ -98,7 +98,7 @@ pub const WARM: Duration = Duration::from_secs(3600);
 pub const WARM_DEFAULT: Duration = Duration::ZERO;
 /// 期限切れの答えを同期で引かずに返してよい齢の既定 (`PROXY_DNS_STALE_SECS` で変える。0 で止める。T21.3)。
 ///
-/// `scripts/dns-replay.py --serve-stale` の再生で決めた (雪像 3 枚 × 3,600 / 21,600 / 86,400 秒)。
+/// `scripts/dns-replay.py --serve-stale` の再生で決めた (スナップショット 3 枚 × 3,600 / 21,600 / 86,400 秒)。
 /// 3,600 秒では tokyo (2026-10-15) の `expired` が 62%、nagoya (2026-10-01) が 79% しか減らず、
 /// **21,600 秒が 3 枚とも「`expired` が半分以下・引き直し +10% 以内」を満たすいちばん短い窓**だった
 /// (長いほど古い番地に繋ぎに行く見込みが増えるので、満たす中で短い方を採る)。

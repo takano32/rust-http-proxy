@@ -94,7 +94,7 @@ select,button{background:#0b0d13;border:1px solid var(--line);color:var(--fg);bo
   <section class="card">
     <h2>今週 <span class="r">/daily の 7 行をこのページの中で足したもの + /snapshots の一覧 (T14.40 / T14.34)</span></h2>
     <div class="kv" id="weekkv"></div>
-    <div style="overflow-x:auto"><table id="weekly"><thead><tr><th>日</th><th>要求</th><th>CONNECT</th><th>p50</th><th>p95</th><th title="名前解決のミス ÷ CONNECT">ミス率</th><th>エラー</th><th title="その日の同時接続の山">山</th><th title="その日の /snapshot がディスクにあるか (T14.34)">雪像</th></tr></thead><tbody></tbody></table></div>
+    <div style="overflow-x:auto"><table id="weekly"><thead><tr><th>日</th><th>要求</th><th>CONNECT</th><th>p50</th><th>p95</th><th title="名前解決のミス ÷ CONNECT">ミス率</th><th>エラー</th><th title="その日の同時接続の山">山</th><th title="その日の /snapshot がディスクにあるか (T14.34)">スナップショット</th></tr></thead><tbody></tbody></table></div>
     <div class="hint" id="weekhint"></div>
   </section>
 
@@ -203,7 +203,7 @@ function timeline(j,opts){
   opts=opts||{};
   var rows=(j&&j.recent)||[],by=opts.by==='target'?'target':'client';
   var span=+opts.span>0?+opts.span:3600,t1=+opts.now||0;
-  if(!t1){ // 「いま」が無ければ最後に閉じた時刻を右端にする (保存した雪像を読むとき)
+  if(!t1){ // 「いま」が無ければ最後に閉じた時刻を右端にする (保存したスナップショットを読むとき)
     for(var i=0;i<rows.length;i++)t1=Math.max(t1,(+rows[i].at||0)+(+rows[i].secs||0));
   }
   var t0=t1-span,lanes={},names=[],shown=0,hidden=0,bytes=0,tally={};
@@ -436,7 +436,7 @@ function dailyRows(j,n){
 // 名前解決のミス・山。**p50 / p95 は日をまたいで足せない** (区間ヒストグラムは `/daily` に
 // 無い) ので、日ごとの値をそのまま並べて幅 (最小〜最大) だけ出す (T14.40 と同じ判断)。
 // ミス 1 回の ms は**ミスの数で重みを付けた平均**なら日ごとの値から作れる。
-// `/snapshots` (T14.34) を渡せば、その日の雪像がディスクにあるかを行に足す。
+// `/snapshots` (T14.34) を渡せば、その日のスナップショットがディスクにあるかを行に足す。
 // 返す `rows` は**古い順** (週は左から右に読む)。
 function weeklyRows(dailyJson,snapsJson,n){
   var days=+n>0?+n:7,d=dailyRows(dailyJson,days),rows=d.rows.slice().reverse();
@@ -798,7 +798,7 @@ function renderWeekly(dailyJson,snapsJson){
     ['ミス 1 回',fmtMs(t.dns_miss_ms)],
     ['エラー',fmtNum(t.errors)+(t.error_rate==null?'':' ('+t.error_rate.toFixed(3)+' %)')],
     ['最大同時',fmtNum(t.active_max)],['山',fmtNum(t.bursts)],['RSS 最大',fmtBytes(t.rss_max)],
-    ['雪像',w.has_snapshots?fmtNum(w.snapshots)+' 枚 ('+fmtBytes(w.snapshot_bytes)+')':'–']]
+    ['スナップショット',w.has_snapshots?fmtNum(w.snapshots)+' 枚 ('+fmtBytes(w.snapshot_bytes)+')':'–']]
     .map(function(p){return '<div><b>'+p[0]+'</b>'+p[1]+'</div>'}).join('');
   $('weekly').tBodies[0].innerHTML=w.rows.map(function(r){
     return '<tr><td>'+esc(r.day)+'</td><td>'+fmtNum(r.requests)+'</td><td>'+fmtNum(r.connects)
@@ -817,7 +817,7 @@ function renderWeekly(dailyJson,snapsJson){
         +'(区間ヒストグラムは /daily に無い)、日ごとの値をそのまま並べています。'
         +(w.gaps?' 間で '+w.gaps+' 日ぶんが抜けています (その日は動いていませんでした)。':'')
         +(w.has_snapshots
-          ?' 雪像は '+(w.dir||'?')+' に '+fmtNum(w.snapshots)+' 枚 (残す日数 '+fmtNum(w.snapshot_days)
+          ?' スナップショットは '+(w.dir||'?')+' に '+fmtNum(w.snapshots)+' 枚 (残す日数 '+fmtNum(w.snapshot_days)
             +'、うちこの週は '+fmtNum(w.in_week)+' 枚)。'
           :' この版は /snapshots (T14.34) を持っていません。')
       :'週の要約を組む行がまだありません (--lite と PROXY_STATS_PERSIST=off では 1 行も記録していません)。');

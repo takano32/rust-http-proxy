@@ -1,4 +1,4 @@
-//! 窓を読んで要約するもの — SLO ([`slo`])、日次の要約 ([`daily`])、日次の雪像 ([`snapshots`])。
+//! 窓を読んで要約するもの — SLO ([`slo`])、日次の要約 ([`daily`])、日次のスナップショット ([`snapshots`])。
 //! 異常の検知と canary は上の層 (`proxy-metrics-watch`) に残してある。
 //!
 //! `proxy-metrics-watch` から割った (T17.11。いちばん重いクレートを 100 MB 未満の関門に

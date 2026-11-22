@@ -120,7 +120,7 @@ pub(super) fn connections(ep: &Endpoint<'_>) -> (u16, &'static str, String) {
 
 /// `/dns?sort=age|host|misses&limit=300&offset=0` — 名前解決の表の中身 (T13.1 の効きを見る口)。
 ///
-/// **`?offset=` (T27.1)**: 雪像は `limit=4096` で引くが、tokyo の 811 名前は 256 KiB に 678 件しか
+/// **`?offset=` (T27.1)**: スナップショットは `limit=4096` で引くが、tokyo の 811 名前は 256 KiB に 678 件しか
 /// 入らなかった (T25.99)。`offset` は `sort=` で並べたあとの列を何本飛ばすかで、`next_offset` が
 /// 次の頁の `offset` (`/hosts` と同じ読み方)。表は [`crate::dns`] の上限 4,096 件まで。
 pub(super) fn dns(query: Option<&str>) -> (u16, &'static str, String) {
@@ -262,7 +262,7 @@ fn log_line_json(line: &crate::log::Line) -> String {
 /// `scripts/status-diff.py` がそのまま読めるように窓の目印も同じ名前で出す。
 ///
 /// **`?offset=` (T15.0)**: 1,000 件 × 408 B = 398 KiB は [`MAX_BODY`] に入らず
-/// 639 件で切れていた (2 枚の雪像の差分から 8 ホストが黙って落ちた)。`offset` は
+/// 639 件で切れていた (2 枚のスナップショットの差分から 8 ホストが黙って落ちた)。`offset` は
 /// **`sort=` で並べたあとの列**を何本飛ばすかで、`next_offset` が次の頁の `offset`。
 /// `limit` の最大 1,000 と「200 を越えたら重い口」はそのまま。
 pub(super) fn hosts(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, String) {
@@ -447,7 +447,7 @@ pub(super) fn clients(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static 
 /// アクセスログが全員に乗る (T10.10 の 7.2 us/要求) のに対し、ここは 1 人ぶんだけ。
 ///
 /// **他の個票と違い URL のパスが入る**ので (T14.4〜T14.8 の共通の決まりの唯一の例外)、
-/// `/snapshot` には**入れない** (パスが雪像のファイルに残らないように)。リングは
+/// `/snapshot` には**入れない** (パスがスナップショットのファイルに残らないように)。リングは
 /// **メモリだけ**なので再起動で消える (T14.9 の永続化の対象ではない)。
 /// `--lite` は枠 (`ConnSlot`) を作らないので旗も立たず、1 行も残らない。
 pub(super) fn trace(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, String) {

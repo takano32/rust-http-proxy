@@ -1,4 +1,4 @@
-//! 雪像のファイル名の往復 (`snapshots` の一部。T34.2 で `snapshots.rs` から移した)。
+//! スナップショットのファイル名の往復 (`snapshots` の一部。T34.2 で `snapshots.rs` から移した)。
 //!
 //! 日次の 1 枚は `YYYY-MM-DD` ([`day_name`] ↔ [`day_of`])、起動と停止の 1 枚は
 //! `<YYYY-MM-DDTHHMMSSZ>-start|shutdown` ([`moment_name`] ↔ [`parse_moment`])。
@@ -74,7 +74,7 @@ impl Moment {
 
 /// 撮った時刻と種類から名前 (拡張子なし) を作る: `2026-10-25T203134Z-shutdown`。
 ///
-/// 時刻の書き方は `collect-deployed.sh` の雪像 (`<UTC 時刻>-snapshot.json`) と同じ。
+/// 時刻の書き方は `collect-deployed.sh` のスナップショット (`<UTC 時刻>-snapshot.json`) と同じ。
 pub(crate) fn moment_name(t: u64, m: Moment) -> String {
     let (y, mo, d, h, mi, s) = crate::log::civil_from_epoch(t);
     format!(

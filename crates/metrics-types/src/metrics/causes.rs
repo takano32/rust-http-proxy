@@ -75,7 +75,7 @@ pub const ERR_CAUSE_NAMES: [&str; ERR_CAUSES] = [
 
 /// `errors_by_cause` の**うしろに足す** DNS の内訳の数 (T25.0)。
 ///
-/// 先頭 8 つ ([`ERR_CAUSE_NAMES`]) の意味と並びは**変えない**: 過去の雪像 (`schema` 1) の
+/// 先頭 8 つ ([`ERR_CAUSE_NAMES`]) の意味と並びは**変えない**: 過去のスナップショット (`schema` 1) の
 /// `errors_by_cause` は 8 要素で、読む側は先頭 8 つをそのまま読む。`dns` (添字 0) は
 /// 今までどおり**名前解決の失敗の合計**で、9・10 番目がその内訳
 /// (`errors_by_cause[0] == 9 番目 + 10 番目`)。
@@ -86,7 +86,7 @@ pub const DNS_CAUSE_NAMES: [&str; DNS_CAUSES] = ["nxdomain", "dns_temp"];
 
 /// 名前解決の失敗の内訳 (T25.0)。**引き直せば変わるか**で 2 つに割る。
 ///
-/// 2026-10-23 の雪像では `/errors` の 500 件のうち 447 件が `dns` で、`/log` の文言で
+/// 2026-10-23 のスナップショットでは `/errors` の 500 件のうち 447 件が `dns` で、`/log` の文言で
 /// 割ると `Name or service not known` (`EAI_NONAME`) が大半、`Temporary failure in
 /// name resolution` (`EAI_AGAIN`) が 16 件だった。メール系の総当たりのように
 /// **名前が無い**のか、リゾルバが落ちているのかで次にやることが違うので分ける。

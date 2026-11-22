@@ -12,7 +12,7 @@ pub(super) struct State {
     /// 前回の生の値 (増分を出すため)。まだ 1 回も読んでいなければ `None`
     pub(super) last: Option<Latest>,
     /// **いちばん最初に読んだ生の値** (T15.0)。`/status` の `since_start` は
-    /// 「いまの累計 − これ」で出す。起動直後の雪像に `nr_throttled` 915 が
+    /// 「いまの累計 − これ」で出す。起動直後のスナップショットに `nr_throttled` 915 が
     /// 乗っていたのは、累計が**このプロセスより前から**動いている親の階層の値だから
     pub(super) first: Option<Latest>,
 }

@@ -198,7 +198,7 @@ fn dates_round_trip_and_bad_names_are_refused() {
 /// 起動と停止の名前は往復でき、読めない名前は入れない (T28.20)。
 #[test]
 fn moment_names_round_trip_and_bad_names_are_refused() {
-    // 2026-10-25T20:31:34Z (tokyo の T28 の雪像の時刻)
+    // 2026-10-25T20:31:34Z (tokyo の T28 のスナップショットの時刻)
     let t = 20_751 * DAY + 20 * 3600 + 31 * 60 + 34;
     assert_eq!(
         moment_name(t, Moment::Shutdown),

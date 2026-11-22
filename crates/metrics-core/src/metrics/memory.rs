@@ -274,7 +274,7 @@ pub(super) fn memory_json(
         // 起動時にリングを触ったか (T17.8)。**`memory` の鍵の末尾に足した**
         me.rings_touched(),
         // 起動 60 秒の heap の基準 (T24.4)。**この起動のぶんだけ**。これも末尾に足した
-        // (無ければ `null`。古い版の雪像と同じ形)
+        // (無ければ `null`。古い版のスナップショットと同じ形)
         baseline,
         // 1 時間に 1 回の `malloc_trim` の通算 (T30.1)。これも `memory` の末尾に足した。
         // `history` スレッドが動かない (`--lite` / `PROXY_STATS_PERSIST=off`) なら 0 / `null`

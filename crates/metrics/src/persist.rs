@@ -5,8 +5,8 @@
 //! - ブロックリストの上書き: 変更のたびにそのスロットだけ書く (`proxy_blocklist::blocklist` から)
 //! - **heap の基準**: 起動から [`BASELINE_AFTER_SECS`] 秒たった時点の
 //!   `heap_used + mmap − cache_memory` を**1 回だけ**書く (T24.4)。`/status` の
-//!   `memory.baseline` に出るので、後の雪像 1 枚で「この起動でどれだけ増えたか」が読める
-//!   (0 時間の雪像が要らない = ホストの管理者に再起動されても heap を判定できる)
+//!   `memory.baseline` に出るので、後のスナップショット 1 枚で「この起動でどれだけ増えたか」が読める
+//!   (0 時間のスナップショットが要らない = ホストの管理者に再起動されても heap を判定できる)
 //!
 //! 置き場所は `$HOME/.rust-http-proxy.rrd` (Pterodactyl で永続するのはそこだけ)。
 //! `PROXY_STATS_PERSIST=off` で無効。大きさは **8 MiB 固定** (版 3。T14.14) で、

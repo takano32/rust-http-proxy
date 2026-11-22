@@ -1,7 +1,7 @@
 //! 5 秒ごとに標本を取る記録スレッド (`history` スレッド)。
 //!
 //! **ここに置いてあるのは層の都合**: 1 周の中で状態ファイル ([`crate::persist`]) へ書き、
-//! 日次 ([`crate::daily`])・雪像 ([`crate::snapshots`])・異常 ([`crate::anomaly`])・
+//! 日次 ([`crate::daily`])・スナップショット ([`crate::snapshots`])・異常 ([`crate::anomaly`])・
 //! SLO ([`crate::slo`]) を呼ぶ = **いちばん上の層が全部要る**。窓そのもの
 //! ([`crate::history`]) は下の層 (`proxy-metrics-core`) にあり、そちらは何も知らない
 //! (T14.55 でクレートを割ったときに、この 1 関数だけを上へ出した)。
@@ -123,7 +123,7 @@ fn roll_windows(metrics: &Metrics, cache: &Cache) {
     metrics.roll_host_series();
 }
 
-/// 標本を履歴に積み、日次・雪像・異常・SLO に配る。戻り値は各解像度に加わった標本。
+/// 標本を履歴に積み、日次・スナップショット・異常・SLO に配る。戻り値は各解像度に加わった標本。
 fn publish(metrics: &Metrics, cache: &Cache, sample: Sample) -> crate::history::Pushed {
     // 日付が変わっていたら前日の要約を 1 行残す (T14.20)。書かない設定なら原子の読み 1 回
     crate::daily::tick(metrics, &sample);

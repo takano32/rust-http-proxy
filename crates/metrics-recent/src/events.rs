@@ -342,7 +342,7 @@ fn on_ballast(state: &AtomicU64, mem: u64, disk: u64) -> bool {
 /// 下の層 (`proxy-net` / `proxy-cache`) の状態の変わり目を見て 1 件書く。
 ///
 /// **履歴スレッドの周期から呼ぶ** (5 秒に 1 回。要求の経路からは呼ばない)。
-/// 読むのは原子 3 つとプローブが既に取ってある雪像だけで、システムコールは増えない。
+/// 読むのは原子 3 つとプローブが既に取ってあるスナップショットだけで、システムコールは増えない。
 pub fn poll(cache: &crate::cache::Cache) {
     // IPv4 優先の切替・解除 (T12.1)
     let v4_first = crate::net::ipv6_v4_first();
