@@ -279,9 +279,12 @@ impl Detector {
         let mut hits = [false; KINDS.len()];
         // 直近の窓は基準値の中にも入っているので、起動直後 (1 時間ぶんが全部この
         // 5 分) は倍率がちょうど 1 になり、立たない
-        hits[I_CONNECT_P95] = p95 >= CONNECT_MIN_MS
+        // 起動直後は基準の材料 (この起動の標本) が足りないので判定しない。基準値が底 (分位点の
+        // 細かさの下限) なら倍率に意味が無いので、絶対の差で見る (T39.3)
+        hits[I_CONNECT_P95] = r.uptime_secs >= CONNECT_WARMUP_SECS
+            && p95 >= CONNECT_MIN_MS
             && base.conn_excess.count > 0
-            && p95 >= CONNECT_RATIO * p95_ref
+            && connect_is_slow(p95, p95_ref)
             && w5.conn_excess.count >= CONNECT_MIN_SAMPLES;
         // (2) 名前解決に**成功した**ミスだけで読む (T32.16)。0.30.4 の 62 件は nxdomain の
         // 2 秒級の失敗 (`imap.froggy.com.au` の 2,151 ms など) で鳴っていた。失敗の遅さは
@@ -480,4 +483,21 @@ pub(super) fn dns_miss_limit(canary_p50_ms: Option<u64>) -> f64 {
         Some(b) => DNS_MISS_MS.max(DNS_CANARY_RATIO * b as f64),
         None => DNS_MISS_MS,
     }
+}
+
+/// `connect_p95` の遅さの判定 (T39.3): 基準値が底 ([`CONNECT_FLOOR_MS`] 以下) なら
+/// [`CONNECT_FLOOR_DELTA_MS`] 以上上回ったとき、底でなければ [`CONNECT_RATIO`] 倍以上のとき。
+///
+/// 50 ms 以上と 20 本以上は呼ぶ側が見る。説明の文面 ([`super::text`]) も同じ分かれ目で倍率か差かを書く。
+pub(super) fn connect_is_slow(p95: f64, p95_ref: f64) -> bool {
+    if connect_base_is_floor(p95_ref) {
+        p95 - p95_ref >= CONNECT_FLOOR_DELTA_MS
+    } else {
+        p95 >= CONNECT_RATIO * p95_ref
+    }
+}
+
+/// 基準値の p95 が底 (分位点の細かさの下限) に張りついているか (T39.3)。
+pub(super) fn connect_base_is_floor(p95_ref: f64) -> bool {
+    p95_ref <= CONNECT_FLOOR_MS
 }

@@ -42,6 +42,7 @@ fn connect_p95_needs_the_ratio_the_floor_and_twenty_samples() {
             conn_excess: base,
             ..Summary::default()
         },
+        uptime_secs: CONNECT_WARMUP_SECS,
         ..Reading::default()
     };
     assert!(
@@ -60,6 +61,45 @@ fn connect_p95_needs_the_ratio_the_floor_and_twenty_samples() {
     let mut fast = r(CONNECT_MIN_SAMPLES);
     fast.w5.conn_excess = excess(CONNECT_MIN_SAMPLES, 40);
     assert!(!only(&d, &fast, I_CONNECT_P95));
+    // 起動から 10 分 (直近 5 分の窓 2 つぶん) は判定しない (T39.3)
+    let mut young = r(CONNECT_MIN_SAMPLES);
+    young.uptime_secs = CONNECT_WARMUP_SECS - 1;
+    assert!(!only(&d, &young, I_CONNECT_P95), "起動直後は立たない");
+}
+
+/// 基準値が底 (1 ms 以下) なら倍率ではなく、上回った ms で見る (T39.3)。
+///
+/// 0.38.10 の締めでは `160.0x the 1h baseline 1.0 ms` のように、遅い 1〜2 本で倍率が
+/// 何百倍にもなって立っていた。
+#[test]
+fn connect_p95_reads_the_difference_when_the_baseline_is_at_the_floor() {
+    let d = Detector::new();
+    // 基準は 1 ms の確立が 1,000 本 (p95 は 1 ms のバケツの中 = 底)
+    let r = |ms: u64| Reading {
+        w5: Summary {
+            conn_excess: excess(CONNECT_MIN_SAMPLES, ms),
+            ..Summary::default()
+        },
+        base: Summary {
+            conn_excess: excess(1000, 1),
+            ..Summary::default()
+        },
+        uptime_secs: CONNECT_WARMUP_SECS,
+        ..Reading::default()
+    };
+    let base = r(0).base.conn_excess.quantile_ms(0.95);
+    assert!(base <= CONNECT_FLOOR_MS, "底の基準値: {}", base);
+    assert!(
+        !only(&d, &r(300), I_CONNECT_P95),
+        "300 ms は 300 倍でも 500 ms 上回らないので立たない"
+    );
+    assert!(only(&d, &r(1000), I_CONNECT_P95), "1,000 ms は立つ");
+    // 底の境目
+    assert!(super::detector::connect_is_slow(501.0, 1.0));
+    assert!(!super::detector::connect_is_slow(500.9, 1.0));
+    // 底でなければ今までどおり 3 倍
+    assert!(super::detector::connect_is_slow(60.0, 20.0));
+    assert!(!super::detector::connect_is_slow(59.0, 20.0));
 }
 
 #[test]
@@ -245,6 +285,7 @@ fn transition_keeps_the_baseline_of_the_moment_it_fired() {
             conn_excess: low_base,
             ..Summary::default()
         },
+        uptime_secs: CONNECT_WARMUP_SECS,
         ..Reading::default()
     };
     // 山が 1 時間続いて基準値そのものが山になった窓 (今の基準値と比べれば倍率は 1)
@@ -254,6 +295,7 @@ fn transition_keeps_the_baseline_of_the_moment_it_fired() {
             conn_excess: excess(20, 60),
             ..Summary::default()
         },
+        uptime_secs: CONNECT_WARMUP_SECS,
         ..Reading::default()
     };
     assert!(!d.hits(&later)[I_CONNECT_P95], "立つ前は今の基準値と比べる");

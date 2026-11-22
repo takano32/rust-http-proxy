@@ -547,7 +547,7 @@ DNS キャッシュの TTL、期限前の引き直し、keep-warm、serve-stale�
 
   | 種類 (説明の頭に出る) | 立つ条件 |
   |---|---|
-  | `connect_p95` | CONNECT 1 本ごとの**「確立 − オリジン側の RTT」(名前解決を除く。`/history` の `conn_excess_*`)** の p95 (直近 5 分) が**直近 1 時間の p95 の 3 倍以上**、かつ 50 ms 以上、かつ**その窓に 20 本以上**あるとき (T15.0。T29.11 で「確立 − RTT」にした。名前解決の遅れは `dns_slow` が見る) |
+  | `connect_p95` | CONNECT 1 本ごとの**「確立 − オリジン側の RTT」(名前解決を除く。`/history` の `conn_excess_*`)** の p95 (直近 5 分) が**直近 1 時間の p95 の 3 倍以上**、かつ 50 ms 以上、かつ**その窓に 20 本以上**あるとき (T15.0。T29.11 で「確立 − RTT」にした。名前解決の遅れは `dns_slow` が見る)。**直近 1 時間の p95 が 1 ms 以下 (分位点の細かさの下限 = 底) なら、倍率ではなく基準値を 500 ms 以上上回ったとき** (T39.3)。**起動から 10 分 (直近 5 分の窓 2 つぶん) は判定しない** (T39.3。`/history` は状態ファイルから読み戻すので、基準値の窓は起動直後でも前のプロセスの標本で埋まっている) |
   | `dns_slow` | **443・80 宛ての接続のための、名前解決に成功した**ミス (`/history` の `web_dns_misses` 回・`web_dns_ms_sum` ms。T32.16・T33.3。外したぶんがあれば説明に `, 10 not to 443/80, 3 failed not counted` のように入る。`/slo` の `error_rate` と同じく 443・80 だけを見るのは利用者の決定) 1 回の平均 (直近 5 分) が **100 ms と canary の名前解決の中央値 (直近 1 時間) の 3 倍の大きい方以上**、かつ**その窓にミスが 3 回以上**、かつ**その窓のミスの合計が 1,000 ms 以上**あるとき (canary が `off` なら 100 ms だけ。5 分に 1 回の重いミスだけでも、3〜5 回で合計の小さい初めての名前の引きだけでも立たない。3 回でも 1 回 334 ms 以上なら立つ。T17.1 / T22.2) |
   | `errors` | エラーが **5 分で 5 件以上** (原因の内訳も説明に入る)。**`/slo` の `error_rate` と同じ数え方で、名前解決の失敗 (原因 `dns` の全部。`nxdomain` も `dns_temp` も) と 443・80 以外の宛先のエラー (`/history` の `other_port_errors`。メール宛 `:993` の確立の時間切れなど) は数えない** — 外した数があれば `(threshold 5; 9 dns not counted; 3 not to 443/80)` のように説明に入る (内訳には外したものも入ったまま。T28.17 で `nxdomain` を外し、T32.36 で `/slo` に揃えた) |
   | `active_high` | 同時接続の山が **`PROXY_MAX_CONNS` の 50% 以上** (`/bursts` の写真と同じ閾。同じ周期で写真が撮れていればその `seq`) |
@@ -562,8 +562,10 @@ DNS キャッシュの TTL、期限前の引き直し、keep-warm、serve-stale�
   またがる窓は見えず、実機より少なめに出る)。表の `sum1000` がいまの条件 (T22.2) で、`current` はその前の条件
 - **同じ種類は収まるまで 1 回だけ**書く。条件を外れたまま 5 分続いたら
   `cleared: <種類>` で始まる解除の 1 件を書き、また立てるようになる。説明には必ず数字
-  (何が・いくつ・基準値) が入る (例: `connect_p95: connect-rtt p95 98 ms over 5m is 97.5x
-  the 1h baseline 1.0 ms (20 of 1336 connects)`、`cleared: errors after 11m (0 errors in 5m)`)
+  (何が・いくつ・基準値) が入る (例: `connect_p95: connect-rtt p95 136 ms over 5m is 13.9x
+  the 1h baseline 9.8 ms (122 of 1442 connects)`、`cleared: errors after 11m (0 errors in 5m)`)。
+  `connect_p95` の基準値が底のときは倍率の代わりに上回った ms を書く (例: `connect_p95: connect-rtt
+  p95 1038 ms over 5m is 1037 ms above the 1h baseline 1.0 ms (37 of 516 connects)`。T39.3)
 - `connect_p95` だけは**立っている間は「立った瞬間の基準値」と比べる** (基準値の窓は直近の
   5 分を含むので、山が 1 時間続くと基準値そのものが山になって倍率が 1 に戻り、**山の最中に
   解除を書いてしまう**ため)

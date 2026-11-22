@@ -65,6 +65,23 @@ fn feed_conns(
     s: Sample,
     c: Counters,
 ) -> Vec<Fired> {
+    // 試験の時計は起動から数える (`t` = 0 が起動)。`connect_p95` の暖機 (T39.3) を抜けるのに要る
+    let uptime_secs = if c.uptime_secs == 0 {
+        s.t
+    } else {
+        c.uptime_secs
+    };
+    push_and_observe(h, d, conns, s, Counters { uptime_secs, ..c })
+}
+
+/// 標本を積んでから判定する (`uptime_secs` は渡したまま)。
+fn push_and_observe(
+    h: &History,
+    d: &mut Detector,
+    conns: Option<&ConnTable>,
+    s: Sample,
+    c: Counters,
+) -> Vec<Fired> {
     h.push(s);
     d.observe(
         h,
@@ -77,12 +94,13 @@ fn feed_conns(
     )
 }
 
-/// **起動からの秒**を渡せる版 (T15.0)。[`feed`] は [`Counters::default`] を
-/// 渡すので `uptime_secs` が 0 のまま = 暖機中扱いになる。
+/// **起動からの秒**を渡せる版 (T15.0)。[`feed`] は標本の時刻 `t` を起動からの秒として渡す
+/// (試験は `t` = 0 から始まるので、6 時間より短い試験は `dns_miss_rate` の暖機中のまま)。
 fn feed_uptime(h: &History, d: &mut Detector, s: Sample, uptime: u64) -> Vec<Fired> {
-    feed_with(
+    push_and_observe(
         h,
         d,
+        None,
         s,
         Counters {
             uptime_secs: uptime,

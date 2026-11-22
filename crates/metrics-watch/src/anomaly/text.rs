@@ -79,12 +79,18 @@ pub(super) fn fired_text(kind: Kind, w5: &Summary, base: &Summary, f: &Facts<'_>
 fn connect_p95_text(head: &str, w5: &Summary, base: &Summary) -> String {
     let p95 = w5.conn_excess.quantile_ms(0.95);
     let p95_base = base.conn_excess.quantile_ms(0.95);
-    // `connect-rtt` = 名前解決を除いた「確立 − RTT」(T29.11)。倍率は基準値 1 ms を下限に割る
+    // `connect-rtt` = 名前解決を除いた「確立 − RTT」(T29.11)。基準値が底のときは倍率に意味が
+    // 無いので、上回った ms を書く (T39.3。判定の分かれ目と同じ)
+    let compared = if super::detector::connect_base_is_floor(p95_base) {
+        format!("{} ms above", ms(p95 - p95_base))
+    } else {
+        format!("{:.1}x", p95 / p95_base)
+    };
     format!(
-        "{}: connect-rtt p95 {} ms over 5m is {:.1}x the 1h baseline {} ms ({} of {} connects)",
+        "{}: connect-rtt p95 {} ms over 5m is {} the 1h baseline {} ms ({} of {} connects)",
         head,
         ms(p95),
-        p95 / p95_base.max(1.0),
+        compared,
         ms(p95_base),
         w5.conn_excess.count,
         base.conn_excess.count

@@ -66,7 +66,8 @@ fn connect_p95_needs_twenty_samples_in_the_window() {
 
 /// **T29.11**: `connect_p95` は「確立 − RTT」(名前解決を除く) で読む。遠い宛先の割合が動いて確立そのものの
 /// p95 が上がっても (0.28.48 の 00:25 の窓: 確立 p95 122 ms・`connect − RTT` の p95 1 ms) 立たず、
-/// RTT を引いても 100 ms 遅い確立が 20 本あれば立つ。基準値の p95 が 0 ms (全部 RTT ちょうど) でも立てる。
+/// RTT を引いても遅い確立が 20 本あれば立つ。基準値の p95 が 0 ms (全部 RTT ちょうど) でも立てる。
+/// 基準値が底 (1 ms 以下) なので、上回った ms で見る (T39.3。100 ms 遅いだけでは立たず、600 ms で立つ)。
 #[test]
 fn connect_p95_reads_the_excess_over_rtt() {
     // (a) 遠い宛先 (RTT 250 ms) の確立が増えただけ = 確立は 252 ms でも RTT を引けば 2 ms
@@ -96,18 +97,75 @@ fn connect_p95_reads_the_excess_over_rtt() {
         assert!(feed(&h, &mut d, point(t)).is_empty());
         t += 5;
     }
-    let mut p = connects_far(t, 19, 110, 10);
+    let mut slow = connects_far(t, 20, 110, 10);
+    slow.t = t;
+    assert!(
+        feed(&h, &mut d, slow).is_empty(),
+        "底の基準値を 100 ms 上回っても立たない (T39.3)"
+    );
+    t += 5;
+    // 5 分ぶん静かにして、直近の窓から 100 ms の確立を抜く
+    let quiet_until = t + WINDOW_SECS + 5;
+    while t < quiet_until {
+        assert!(feed(&h, &mut d, point(t)).is_empty());
+        t += 5;
+    }
+    let mut p = connects_far(t, 19, 610, 10);
     p.t = t;
     assert!(feed(&h, &mut d, p).is_empty(), "19 本では立たない");
     t += 5;
-    let fired = feed(&h, &mut d, connects_far(t, 1, 110, 10));
+    let fired = feed(&h, &mut d, connects_far(t, 1, 610, 10));
     assert_eq!(fired.len(), 1, "{:?}", fired);
     assert_eq!(fired[0].kind, Kind::ConnectP95);
     assert!(
-        fired[0]
-            .text
-            .starts_with("connect_p95: connect-rtt p95 98 ms over 5m"),
+        fired[0].text.starts_with(
+            "connect_p95: connect-rtt p95 600 ms over 5m is 599 ms above the 1h baseline 1.0 ms ("
+        ),
         "{}",
         fired[0].text
     );
+}
+
+/// 起動から 10 分は `connect_p95` を立てない (T39.3)。
+///
+/// `/history` のリングは状態ファイルから読み戻すので、起動直後でも基準値の窓には前のプロセスの
+/// 標本が入っている。そこへ繋ぎ直しの一山が来ると、0.38.10 のどちらの起動でも 1 分後に立っていた。
+#[test]
+fn connect_p95_waits_for_the_warmup_after_a_start() {
+    let h = History::default();
+    let mut d = Detector::new();
+    // 前のプロセスの 1 時間 (読み戻した基準値 = 10 ms)
+    let (mut t, quiet) = calm(&h, &mut d, 0, BASE_SECS);
+    assert!(quiet.is_empty(), "{:?}", quiet);
+    // ここで起動し直した。最初の 10 分は、繋ぎ直しの一山 (250 ms が 20 本) があっても立たない
+    let started = t;
+    let mut fired = Vec::new();
+    while t < started + CONNECT_WARMUP_SECS {
+        let up = t - started;
+        let p = if up < 100 {
+            with_one_slow(t)
+        } else {
+            connects(t, 2, 10)
+        };
+        fired.extend(feed_uptime(&h, &mut d, p, up));
+        t += 5;
+    }
+    assert!(fired.is_empty(), "暖機中に立った: {:?}", fired);
+    // 暖機を抜けたあとの同じ一山は立つ
+    let mut fired = Vec::new();
+    for _ in 0..20 {
+        fired.extend(feed_uptime(&h, &mut d, with_one_slow(t), t - started));
+        t += 5;
+    }
+    assert_eq!(fired.len(), 1, "{:?}", fired);
+    assert_eq!(fired[0].kind, Kind::ConnectP95);
+}
+
+/// 10 ms の確立 2 本と、250 ms の確立 1 本の標本。
+fn with_one_slow(t: u64) -> Sample {
+    let mut p = connects(t, 2, 10);
+    p.connect.observe(250);
+    p.excess.observe(250);
+    p.conn_excess.observe(250);
+    p
 }
