@@ -271,8 +271,15 @@ fn test_integration_the_env_file_takes_effect_on_the_next_connection() {
     // `memory.rings.trace` (容量の見積もり) は数字なので、見るのは `parts` と中身
     let snapshot = endpoint_json(proxy.port, "/snapshot");
     let parts = snapshot_parts(&snapshot);
-    assert!(!parts.contains("\"trace\""), "スナップショットに入っている: {}", parts);
-    assert!(!snapshot.contains("/after"), "スナップショットにパスが残った");
+    assert!(
+        !parts.contains("\"trace\""),
+        "スナップショットに入っている: {}",
+        parts
+    );
+    assert!(
+        !snapshot.contains("/after"),
+        "スナップショットにパスが残った"
+    );
 
     drop(proxy);
     let _ = std::fs::remove_dir_all(&dir);
