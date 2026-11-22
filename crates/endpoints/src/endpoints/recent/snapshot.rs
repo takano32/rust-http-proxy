@@ -698,10 +698,13 @@ mod tests {
         let daily = crate::snapshots::DAILY_MAX_FILE as usize;
         let m = Metrics::new();
         fill_four_parts(&m);
-        // 上限を、全部入れた 1 枚より 1 B だけ小さくする (`profile` を戻せば収まる)
+        // 上限を、全部入れた 1 枚より 100,000 B 小さくする (`profile` を戻せば約 37 万 B 減るので収まり、
+        // ほかの 3 つは全部のまま)。前は 1 B だけ小さくしていたが、名前解決の表はプロセスで 1 つなので、
+        // 並んで走るほかの試験が 2 回組むあいだに表を変えると 2 回目が数 B 縮み、`profile` を戻さずに
+        // 収まって CI で落ちた (T39.8)
         let (full, tight) = with_ep(&m, |ep| {
             let full = disk_snapshot(ep, Some(daily), daily).2;
-            let limit = full.len() - 1;
+            let limit = full.len() - 100_000;
             (full.len(), disk_snapshot(ep, Some(daily), limit).2)
         });
         assert!(tight.len() < full);
