@@ -1,6 +1,6 @@
 //! 名前解決の失敗を `nxdomain` / `dns_temp` に割ることの結合テスト (T25.0)。
 //!
-//! 2026-10-23 の雪像では `/errors` の 500 件のうち 447 件が `dns` で、`/log` の文言で
+//! 2026-10-23 のスナップショットでは `/errors` の 500 件のうち 447 件が `dns` で、`/log` の文言で
 //! 割ると `Name or service not known` (`EAI_NONAME`) が大半、`Temporary failure in
 //! name resolution` (`EAI_AGAIN`) が 16 件だった。1 つの `dns` にまとまっていると
 //! 「名前が無い (引き直しても変わらない)」のか「リゾルバが落ちている (引き直せば

@@ -30,7 +30,11 @@ ROOT = os.path.dirname(HERE)
 
 # 見るファイル (git ls-files の名前に当てる)
 GLOBS = ["scripts/*.py", "scripts/*/*.py", "scripts/*.sh", "scripts/*.js", "scripts/*/*.js", "scripts/mx",
-         ".github/workflows/*.yml", ".gitignore", "README.md"]
+         ".github/workflows/*.yml", ".gitignore", "README.md",
+         # T39.12 で本体・試験・仕様・docs にも広げた
+         "crates/*/src/*.rs", "crates/*/src/*/*.rs", "crates/*/src/*/*/*.rs", "crates/*/src/*/*/*/*.rs",
+         "crates/*/src/*.html", "crates/*/build.rs", "src/*.rs", "src/*/*.rs", "tests/*.rs", "tests/*/*.rs",
+         "SPECS.md", "specs/*.md", "docs/*.md", "TODO.md", "TASKS.md", "AGENTS.md"]
 
 # (使わない, 使う)
 WORDS = [("雪像", "スナップショット")]
@@ -42,6 +46,9 @@ STRINGS = "文字列"
 FROZEN = "過去の判定を同じ命令で出し直すために凍結した文面 (`AGENTS.md` の「当てはめ方」)"
 SKIP = [
     ("scripts/check-words.py", None, "この検査そのもの (使わない言葉を書いている)"),
+    ("docs/measurements.md", None,
+     "「デプロイ先の現在地の古い版」以下は、`TODO.md` の現在地から 1 文字も変えずに移した昔の記録 (T39.12 で残した 44 行はどれもこの節)"),
+    ("AGENTS.md", "| 雪像 | スナップショット |", "言葉の決まりの表そのもの (使わない言葉を書いている)"),
     ("scripts/test_check_words.py", None, "この検査の試験 (使わない言葉の見本を書いている)"),
     ("scripts/criteria/phase*.py", STRINGS, "判定表 phase14〜phase30 の行の文面。" + FROZEN),
     ("scripts/criteria/t3[5-8].py", STRINGS, "判定表 T35〜T38 の行の文面。" + FROZEN),

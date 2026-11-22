@@ -60,7 +60,7 @@ fn today() -> String {
 /// 書き手の大域 (`snapshots::configure` / `shift_days_for_test`) を触るテストを 1 本ずつにする。
 static WRITER: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// 雪像の `recent` の部の `"key":<数>` (部の中で最初に出るもの)。
+/// スナップショットの `recent` の部の `"key":<数>` (部の中で最初に出るもの)。
 fn recent_number(body: &str, key: &str) -> u64 {
     let at = body
         .find(",\"recent\":{\"schema\":")
@@ -107,7 +107,7 @@ fn test_integration_the_daily_snapshot_keeps_the_whole_recent_ring() {
     assert_eq!(
         recent_number(&usual, "shown"),
         2_000,
-        "いつもの雪像も環を全部 (T39.8)"
+        "いつものスナップショットも環を全部 (T39.8)"
     );
     assert_eq!(recent_number(&daily, "shown"), 2_000, "日次は環を全部");
     assert!(daily.len() <= MAX_SNAPSHOT, "{} B", daily.len());

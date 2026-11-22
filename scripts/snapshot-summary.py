@@ -411,7 +411,7 @@ def restart_between(a, b, wall):
 def truncated_parts(snap):
     """**応答が 256 KiB で切れている部**を (名前, 出た件数, 全件) で並べる。
 
-    スナップショットの top-level の `dropped` は「4 MiB を越えたので**部ごと**落とした」の意味で
+    スナップショットの top-level の `dropped` は「上限を越えたので**部ごと**落とした」の意味で
     (`crates/endpoints/src/endpoints/recent/snapshot.rs`)、部の中の打ち切りは載らない。
     2026-09-18 のスナップショットは `dropped` が空のまま `recent` / `hosts` / `profile` の 3 つが
     切れていて、要約からは「CPU は 1 日ぶんでなく 456 標本ぶん」が読めなかった。

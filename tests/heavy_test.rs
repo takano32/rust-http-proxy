@@ -264,7 +264,7 @@ fn test_integration_which_endpoints_are_heavy() {
 /// `/profile?summary=1` は**重い口が 1 本走っている最中でも 200** (T15.0)。
 ///
 /// `/profile` は標本を 256 KiB ぶん組むので無条件に重い口だが、`?summary=1` は
-/// 3 段に畳んだ数字だけで標本を 1 本も組まない。雪像を取っている最中でも
+/// 3 段に畳んだ数字だけで標本を 1 本も組まない。スナップショットを取っている最中でも
 /// 「この機械がいま 1 要求に何 us 使っているか」だけは読めるようにしておくための口。
 #[test]
 fn test_integration_profile_summary_is_not_a_heavy_endpoint() {

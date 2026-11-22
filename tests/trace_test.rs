@@ -201,7 +201,7 @@ fn test_only_the_configured_client_is_traced() {
 /// 受け入れ基準 (3): 実バイナリで `.env` を書き換えると**次の接続から**効くこと。
 ///
 /// あわせて `/config` に効いている値と出どころが出ること、`/` の案内に載ること、
-/// **`/snapshot` には入っていない**こと (パスが雪像に残らないように) も見る。
+/// **`/snapshot` には入っていない**こと (パスがスナップショットに残らないように) も見る。
 #[test]
 fn test_integration_the_env_file_takes_effect_on_the_next_connection() {
     let (origin_port, _origin) = start_mock_origin();
@@ -267,12 +267,12 @@ fn test_integration_the_env_file_takes_effect_on_the_next_connection() {
     );
     assert!(root.contains("/trace?n=200"), "{}", root);
 
-    // **`/snapshot` には入れない** (パスが雪像のファイルに残らないように)。
+    // **`/snapshot` には入れない** (パスがスナップショットのファイルに残らないように)。
     // `memory.rings.trace` (容量の見積もり) は数字なので、見るのは `parts` と中身
     let snapshot = endpoint_json(proxy.port, "/snapshot");
     let parts = snapshot_parts(&snapshot);
-    assert!(!parts.contains("\"trace\""), "雪像に入っている: {}", parts);
-    assert!(!snapshot.contains("/after"), "雪像にパスが残った");
+    assert!(!parts.contains("\"trace\""), "スナップショットに入っている: {}", parts);
+    assert!(!snapshot.contains("/after"), "スナップショットにパスが残った");
 
     drop(proxy);
     let _ = std::fs::remove_dir_all(&dir);

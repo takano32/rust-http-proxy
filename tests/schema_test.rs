@@ -279,7 +279,7 @@ fn test_integration_error_bodies_carry_the_schema_version_too() {
 /// 3. `/snapshot` は外側と**各部**の両方に版があること。
 ///
 /// 部はそれぞれの口の出力そのものなので、切り出して 1 本の応答として読める
-/// (`scripts/snapshot-diff.py` の `--from-files` は逆に、1 本ずつのファイルから雪像を組む)。
+/// (`scripts/snapshot-diff.py` の `--from-files` は逆に、1 本ずつのファイルからスナップショットを組む)。
 #[test]
 fn test_integration_snapshot_carries_the_version_on_every_part() {
     // `/snapshot` を引く ([`SERIAL`] の理由)

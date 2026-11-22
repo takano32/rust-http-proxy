@@ -257,7 +257,7 @@ fn test_integration_profile_is_off_in_lite_mode() {
 /// `?n=` と `?offset=` で **720 標本ぜんぶが 1 枚ずつ読める** (T15.0)。
 ///
 /// `/profile?res=5` はデプロイ先の実測で 720 標本のうち 456 しか返らない (T15.0 の行の形。
-/// 標本の JSON の行が 256 KiB に入り切らない。T16.0 で行が太ったので少し減るが未測定) ので、雪像 1 枚で全部読むには頁が要る。ここで縛るのは
+/// 標本の JSON の行が 256 KiB に入り切らない。T16.0 で行が太ったので少し減るが未測定) ので、スナップショット 1 枚で全部読むには頁が要る。ここで縛るのは
 /// 「頁を継ぐと落ちも重なりもしない」ことと、`next_offset` が最後だけ `null` になること。
 #[test]
 fn test_integration_profile_pages_the_samples_with_n_and_offset() {
@@ -334,7 +334,7 @@ fn test_integration_profile_summary_folds_three_spans() {
     }
     let json = endpoint_json(port, "/profile?summary=1");
     assert!(json.contains("\"summary\":true"), "{}", json);
-    // **標本は 1 本も返さない** (雪像に入り切らない部を出さないための口。
+    // **標本は 1 本も返さない** (スナップショットに入り切らない部を出さないための口。
     // 段の中の `"samples":60` は「畳んだ標本の数」なので、配列の方だけを見る)
     assert!(!json.contains("\"samples\":["), "{}", json);
     assert!(!json.contains("\"keys\""), "{}", json);

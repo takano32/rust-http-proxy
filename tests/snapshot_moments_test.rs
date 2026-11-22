@@ -1,9 +1,9 @@
-//! 起動と停止の雪像 (`snapshots/<時刻>-start.json` と `-shutdown.json`) の結合テスト (T28.20)。
+//! 起動と停止のスナップショット (`snapshots/<時刻>-start.json` と `-shutdown.json`) の結合テスト (T28.20)。
 //!
 //! 締めの判定の「前」(再デプロイの直前) と「0 時間」(直後) は、撮った機械にしか残らなかった
 //! (T25.99 は「前」が無く日次で代用、T27.99 はコンテナに置いた)。プロキシ自身が
 //! **停止シグナルで状態ファイルを書く前に 1 枚** (`-shutdown`)、**起動から 60 秒 (`memory.baseline`
-//! を書く所) で 1 枚** (`-start`) を日次の雪像の隣に残し、`/snapshots` の `moments` に並べて
+//! を書く所) で 1 枚** (`-start`) を日次のスナップショットの隣に残し、`/snapshots` の `moments` に並べて
 //! `/snapshots/<名前>` で返す。
 //!
 //! ここで見るのは:
@@ -79,7 +79,7 @@ fn test_integration_the_start_snapshot_is_written_once_after_the_wait() {
     }
     common::wait_until(
         || !moments(&snaps, "start").is_empty(),
-        "起動の雪像が書かれる",
+        "起動のスナップショットが書かれる",
     );
     assert!(
         started.elapsed() >= Duration::from_secs(1),
@@ -145,9 +145,9 @@ fn test_integration_sigterm_leaves_a_shutdown_snapshot() {
     let logged = lines
         .iter()
         .find(|l| l.contains("shutdown snapshot"))
-        .unwrap_or_else(|| panic!("停止の雪像の行が無い: {:#?}", lines));
+        .unwrap_or_else(|| panic!("停止のスナップショットの行が無い: {:#?}", lines));
     println!("T28.20 {}", logged);
-    // 後始末が終わったことの行 (状態ファイルも書けている = 雪像が後始末の時間を食い潰していない)
+    // 後始末が終わったことの行 (状態ファイルも書けている = スナップショットが後始末の時間を食い潰していない)
     assert!(
         lines.iter().any(|l| l.contains("statistics saved to")),
         "{:#?}",

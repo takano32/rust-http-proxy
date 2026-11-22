@@ -30,7 +30,7 @@
 | 以前の章 | いまの置き場 |
 |---|---|
 | 冒頭の「この文書の形式」 | [`docs/handoff.md`](docs/handoff.md) の「タスクの形式」 |
-| 冒頭の雪像の置き場と `mx` の注 | [`docs/measuring.md`](docs/measuring.md) の冒頭 |
+| 冒頭のスナップショットの置き場と `mx` の注 | [`docs/measuring.md`](docs/measuring.md) の冒頭 |
 | §0 ゴールと前提 | [`docs/goals.md`](docs/goals.md)。「守ること」のうち振る舞いとビルドの約束は仕様 S25 |
 | §1 計測の作法 | [`docs/measuring.md`](docs/measuring.md) |
 | §2 現在地 (「デプロイ先の現在地」を含む) | [`docs/status.md`](docs/status.md)。「完了の定義」は仕様 S24 |
