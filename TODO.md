@@ -6,10 +6,11 @@
 | どこ | 何が書いてあるか |
 |---|---|
 | [`AGENTS.md`](AGENTS.md) | エージェントが最初に読むもの (言葉の決まり・指し方・進め方の決まり) |
-| [`TASKS.md`](TASKS.md) | **未着手のタスクだけ**と、台帳の決まり。済んだらタスクごと `tasks/TNN.md` へ移す (番号は使い回さない) |
+| [`TASKS.md`](TASKS.md) | **未着手のタスクだけ**。済んだらタスクごと `tasks/TNN.md` へ移す (番号は使い回さない) |
 | [`tasks/`](tasks/README.md) | 済んだタスクの本文 (`tasks/TNN.md`。1 文字も変えずに移したもの)。どの番号がどのファイルかは `tasks/README.md` |
 | [`SPECS.md`](SPECS.md) | **仕様** `S1`〜 (振る舞いの決まり)。大きい仕様は `specs/Sn.md` に分ける。完了の定義は S24、守ること (認証なし・外部クレートなし・ビルドのメモリ) は S25 |
 | [`README.md`](README.md) | 使い方の説明 (起動・運用・道具) |
+| [`docs/ledger.md`](docs/ledger.md) | 台帳の決まり (済んだら `tasks/TNN.md` へ移す・番号・版・デプロイまでの進め方) と呼び方 (T39.1。`TASKS.md` から移した) |
 | [`docs/goals.md`](docs/goals.md) | ゴールと前提 (到達・作業の決まり・作業の進め方) |
 | [`docs/measuring.md`](docs/measuring.md) | 計測の作法 (速さ・デプロイ先に似せた条件・デプロイ先・ビルドのメモリの測り方) |
 | [`docs/status.md`](docs/status.md) | 現在地 (手元の loopback の表と読み方、**デプロイ先の現在地**) |
