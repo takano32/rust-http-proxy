@@ -32,6 +32,14 @@ def read(path):
         return json.load(f)
 
 
+def rebuilt(snap):
+    """`.rrd` を作り直した後の 1 枚にする (`other` の通算を前の 100 の半分未満に落とす。T39.4)。"""
+    for h in snap["hosts"]["hosts"]:
+        if h["host"] == "other":
+            h["requests"] = 10
+    return snap
+
+
 def run(argv):
     """Markdown を文字列で受け取る。"""
     return _testing.run_main(ss, argv)
@@ -86,12 +94,26 @@ class Errors(unittest.TestCase):
         self.assertIn("`/hosts` は **256 KiB で切れている** (7/1,000 件、6/1,000 件)", md)
 
     def test_a_rebuilt_rrd_says_it_cannot_subtract(self):
-        """ホスト 1 件の通算が**減って**いたら `.rrd` の作り直し (引き算しない)。"""
-        b = read(B)
+        """ホスト 1 件の通算が**減って**いて `other` も減っていたら `.rrd` の作り直し (引き算しない)。"""
+        b = rebuilt(read(B))
         b["hosts"]["hosts"][1]["errors"] = 1          # 前 (3) より小さい
         with written(b=b) as paths:
             md = run([paths["b"], "--prev", A])
         self.assertIn("- エラー: **引き算できない** (1 ホストで `/hosts` の通算が減っている", md)
+
+    def test_a_rotating_table_leaves_out_only_the_readded_host(self):
+        """`other` が減っていなければ、減ったホストは満杯の表から捨てて入れ直した行 (T39.4)。
+
+        0.38.10 の締めでは `hosts_evicted` 1,430 回の間に 2 ホストのエラーの通算が減り、
+        差分ごと「引き算できない」になっていた。
+        """
+        b = read(B)
+        b["hosts"]["hosts"][1]["errors"] = 1          # 前 (3) より小さい
+        with written(b=b) as paths:
+            md = run([paths["b"], "--prev", A])
+        self.assertNotIn("引き算できない", md)
+        self.assertIn("  - 満杯の表から捨てられてから入れ直したホスト 1 件 (通算のエラーが"
+                      "前より減った行) は差分から外した (作り直しではない。T39.4)", md)
 
     def test_the_records_have_a_readable_time(self):
         """`snapshot-diff.py` の「エラーの原因別」と同じ綴りにする (epoch のままだと時間帯が読めない)。"""
@@ -150,7 +172,7 @@ class Repeats(unittest.TestCase):
             self.assertEqual(body(run([paths["b"], "--prev", A])), body(run([B, "--prev", A])))
 
     def test_the_rebuilt_rrd_line_counts_the_same_way(self):
-        b = with_repeats(read(B), 1, 40, 1789070000)
+        b = rebuilt(with_repeats(read(B), 1, 40, 1789070000))
         b["hosts"]["hosts"][1]["errors"] = 1          # 前 (3) より小さい
         with written(b=b) as paths:
             md = run([paths["b"], "--prev", A])

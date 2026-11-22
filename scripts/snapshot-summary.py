@@ -47,7 +47,7 @@ import sys
 # 置き場は import できる側の `scripts/snapshot_criteria.py` (T20.1 の決まり。T23.2)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from proxydata import fmt_bytes as _fmt_bytes  # noqa: E402
-from proxydata import load_json, utc_stamp  # noqa: E402
+from proxydata import host_rotation, load_json, utc_stamp  # noqa: E402
 from snapshot_criteria import silent_restart_text, silent_restarts  # noqa: E402
 # `/events` の anomaly の数え方は判定表の T35 と同じ 1 つの関数 (`criteria/common.py`。T35.9)
 from snapshot_criteria import anomaly_rates_since_start as anomaly_rates  # noqa: E402
@@ -227,26 +227,33 @@ def error_delta(cur, prev):
     で `/errors` の個票 4 件と一致した。差は「後の表から消えた 8 ホスト (エラー 8 件)」で、
     どちらの `/hosts` も `truncated` (1,000 件中 643 / 639 件) なので下位は簡単に出入りする。
     ホスト 1 件の通算が**減っている**ときは `.rrd` の作り直しなので引き算しない。
+    ただし満杯の表の入れ替わり (前後の `other` が減っていない。[`host_rotation`]) なら、減ったのは
+    捨てられてから入れ直したホストなので、そのホストだけ外して引く (`readded`。T39.4)。
     """
     now = host_errors(cur)
     zero = (0, [0] * len(CAUSE_NAMES))
     if prev is None:
         causes = [sum(c[i] for _, c in now["rows"].values()) for i in range(len(CAUSE_NAMES))]
         return {"total": sum(e for e, _ in now["rows"].values()), "causes": causes,
-                "back": 0, "gone": 0, "gone_errors": 0, "truncated": now["truncated"],
+                "back": 0, "readded": 0, "gone": 0, "gone_errors": 0, "truncated": now["truncated"],
                 "shown": [now["shown"]], "count": [now["count"]], "windowed": False}
     old = host_errors(prev)
-    total, causes, back = 0, [0] * len(CAUSE_NAMES), 0
+    rotates = host_rotation(part(prev, "hosts").get("hosts"), part(cur, "hosts").get("hosts"),
+                            part(cur, "status").get("hosts_evicted"))["reset"] is False
+    total, causes, back, readded = 0, [0] * len(CAUSE_NAMES), 0, 0
     for key, (errs, cs) in now["rows"].items():
         oe, oc = old["rows"].get(key, zero)
         if errs < oe:
-            back += 1
+            if rotates:
+                readded += 1
+            else:
+                back += 1
             continue
         total += errs - oe
         for i in range(len(CAUSE_NAMES)):
             causes[i] += cs[i] - oc[i]
     gone = [k for k in old["rows"] if k not in now["rows"]]
-    return {"total": total, "causes": causes, "back": back, "gone": len(gone),
+    return {"total": total, "causes": causes, "back": back, "readded": readded, "gone": len(gone),
             "gone_errors": sum(old["rows"][k][0] for k in gone),
             "truncated": now["truncated"] or old["truncated"],
             "shown": [old["shown"], now["shown"]], "count": [old["count"], now["count"]],
@@ -842,6 +849,9 @@ def error_lines(d, prev):
         shown = " ".join(f"{CAUSE_NAMES[i]} {n}" for i, n in enumerate(ed["causes"]) if n) or "—"
         out.append(f"- エラー: {num(ed['total'])} 件 ({where}) / 原因 {shown}"
                    f" / 個票 {records_count(errors)}")
+    if ed.get("readded"):
+        out.append(f"  - 満杯の表から捨てられてから入れ直したホスト {ed['readded']} 件 (通算のエラーが"
+                   "前より減った行) は差分から外した (作り直しではない。T39.4)")
     if ed["windowed"] and ed["gone"]:
         out.append(f"  - 後の `/hosts` から消えたホスト {ed['gone']} 件 (通算のエラー"
                    f" {ed['gone_errors']} 件) は差分から外した")

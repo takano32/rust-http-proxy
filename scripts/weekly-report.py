@@ -294,8 +294,12 @@ def host_delta(snaps):
         older = {h["host"]: h for h in first}
     rows = [row_of(h["host"], older.get(h["host"]), h) if multi else row_of(h["host"], h, None)
             for h in newest]
+    reset = sd.rrd_reset(snaps[0], snaps[-1], rows) if multi else None
+    # 満杯の表から捨てられてから入れ直したホストは引き算できないので外す (T39.4)
+    readded = sd.readded_keys(snaps[0], snaps[-1], rows) if multi else set()
+    rows = [r for r in rows if r["key"] not in readded]
     return {"rows": rows, "windowed": multi, "truncated": cut_a or cut_b, "source": src_b,
-            "rrd_reset": sd.rrd_reset(snaps[0], snaps[-1], rows) if multi else None}
+            "rrd_reset": reset, "readded": len(readded)}
 
 
 def slow_hosts(rows, top):
@@ -700,6 +704,10 @@ def slow_host_lines(d, top):
             p(f"**`.rrd` が作り直されている** (`restored_since` "
               f"{sd.stamp(h['rrd_reset']['restored_since'])}、要求数が負になったホスト "
               f"{h['rrd_reset']['dropped_hosts']} 件) ので、この差は引き算できていない。")
+        if h.get("readded"):
+            p("")
+            p(f"満杯の表から捨てられてから入れ直したホスト {n(h['readded'])} 件 (要求数が前より減った行) は"
+              "外した (作り直しではない。T39.4)。")
         if h["truncated"]:
             p("")
             p("`/hosts` が 256 KiB で切れているので、裾のホストは落ちている。")

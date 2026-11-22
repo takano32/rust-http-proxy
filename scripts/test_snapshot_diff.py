@@ -305,11 +305,50 @@ class Hosts(unittest.TestCase):
         a = sd.load_source(A, False)
         b = read(B)
         b["hosts"]["restored_since"] = a["taken_at"] + 60   # A を取った後に作り直された
+        other(b)["requests"] = 10                           # `other` も前 (100) の半分未満
         b = sd.normalize(b, "b")
         hs = sd.host_diff(a, b, "none", {})
         self.assertIsNotNone(hs["rrd_reset"])
         self.assertTrue(hs["rrd_reset"]["after_a"])
-        self.assertIn("作り直されている", sd_render(a, b, hs))
+        self.assertEqual(hs["rrd_reset"]["other"], (100, 10))
+        md = sd_render(a, b, hs)
+        self.assertIn("作り直されている", md)
+        self.assertIn("`other` の要求数 100 → 10", md)
+
+    def test_a_rotating_table_is_not_a_rebuilt_rrd(self):
+        """満杯の表の入れ替わり (`other` が減っていない) は作り直しではない (T39.4)。
+
+        0.38.10 の締めでは `restored_since` (いちばん古い `last_seen`) が窓の中に進み、
+        捨ててから入れ直した 17 ホストの要求数が減って「作り直されている」と出ていた。
+        入れ直したホストだけを差分から外す。
+        """
+        a = sd.load_source(A, False)
+        b = read(B)
+        b["hosts"]["restored_since"] = a["taken_at"] + 60   # 古い行を捨てて前へ進んだ
+        b["status"]["hosts_evicted"] = 7
+        beta = next(h for h in b["hosts"]["hosts"] if h["host"].startswith("connect://beta."))
+        beta["requests"] = 5                                # 前 (400) より少ない = 入れ直した
+        b = sd.normalize(b, "b")
+        hs = sd.host_diff(a, b, "none", {})
+        self.assertIsNone(hs["rrd_reset"])
+        self.assertEqual(hs["readded"], 1)
+        self.assertNotIn("connect://beta.example.jp:443", [r["key"] for r in hs["rows"]])
+        md = sd_render(a, b, hs)
+        self.assertNotIn("作り直されている", md)
+        self.assertIn("入れ直したホスト 1 件", md)
+        self.assertIn("後の 1 枚の起動から捨てた行 7 回", md)
+
+    def test_host_rotation_needs_other_on_both_sides(self):
+        rot = pd.host_rotation([{"host": "x", "requests": 3}], [{"host": "other", "requests": 1}])
+        self.assertTrue(rot["rotates"])
+        self.assertIsNone(rot["reset"])                     # 前に `other` が無いと分からない
+        rot = pd.host_rotation([{"host": "other", "requests": 600_539}],
+                               [{"host": "other", "requests": 599_182}])
+        self.assertFalse(rot["reset"])                      # 再起動で落ちた最後の書き込みぶん
+
+
+def other(snap):
+    return next(h for h in snap["hosts"]["hosts"] if h["host"] == "other")
 
 
 def sd_render(a, b, hs):

@@ -89,6 +89,7 @@ from proxydata import (  # noqa: E402
     median,
     quantile_ms,
     resolve_aaaa,
+    host_rotation,
     row_of,
     schema_of,
     taken_at_from_name,
@@ -661,19 +662,44 @@ def restored_since(snap):
     return None
 
 
+def rotation(a, b):
+    """前後の `/hosts` が満杯の表の入れ替わりか、作り直しか ([`host_rotation`]。T39.4)。"""
+    return host_rotation(host_rows(a)[0], host_rows(b)[0],
+                         part(b, "status").get("hosts_evicted"))
+
+
 def rrd_reset(a, b, rows):
     """`.rrd` の通算が作り直されていないか (作り直されていたら差分は引き算できない)。
 
     ホスト別・接続元別は状態ファイルの通算なので、**ファイルを捨てて作り直すと数が減る**。
     2026-09-10 の実例: 05:37 のスナップショットの後 09:38 に `.rrd` が作り直され、09-10 → 09-12 の
     差分では AAAA ありのホストの Δ要求 が −1,529 と負になった。
+
+    **満杯の表の入れ替わりは作り直しではない** (T39.4)。前後に `other` があって減っていなければ、
+    要求数の減ったホストは捨てられてから入れ直した行で、`restored_since` が窓の中に進むのも
+    捨てたせい。そのときは `None` を返し、減ったホストは [`readded_keys`] が差分から外す。
     """
+    rot = rotation(a, b)
     since = restored_since(b)
     dropped = sum(1 for r in rows if r["requests"] < 0)
-    after_a = bool(since and a["taken_at"] and since > a["taken_at"])
-    if not dropped and not after_a:
+    if rot["reset"] is False:
         return None
-    return {"restored_since": since, "dropped_hosts": dropped, "after_a": after_a}
+    after_a = bool(since and a["taken_at"] and since > a["taken_at"])
+    if not dropped and not after_a and not rot["reset"]:
+        return None
+    return {"restored_since": since, "dropped_hosts": dropped, "after_a": after_a,
+            "other": rot["other"] if rot["reset"] else None}
+
+
+def readded_keys(a, b, rows):
+    """満杯の表から捨てられてから入れ直したホストの鍵 (要求数が減った行。T39.4)。
+
+    作り直しでない入れ替わり ([`rotation`] の `reset` が False) のときだけ返す。入れ直したあと
+    前の通算を越えたホストは見分けられない (差分に残る)。
+    """
+    if rotation(a, b)["reset"] is not False:
+        return set()
+    return {r["key"] for r in rows if r["requests"] < 0}
 
 
 def host_diff(a, b, aaaa_mode, aaaa_table, group="host"):
@@ -687,13 +713,16 @@ def host_diff(a, b, aaaa_mode, aaaa_table, group="host"):
         r["aaaa"] = flags.get(r["name"])
     # `.rrd` の作り直しはまとめる前のホストの数で数える (まとめると負の行が打ち消し合う)
     reset = rrd_reset(a, b, rows)
+    readded = readded_keys(a, b, rows)
+    rows = [r for r in rows if r["key"] not in readded]
     if group == "domain":
         rows = group_by_domain(rows)  # eTLD+1 でまとめる (T.14.54)
     rows.sort(key=lambda r: (-r["requests"], r["name"]))
     gone = [h for k, h in older.items() if k not in {x["host"] for x in b_rows}]
     return {"rows": rows, "truncated": a_cut or b_cut, "source": [a_src, b_src],
             "gone": len(gone), "aaaa": aaaa_mode != "none", "group": group,
-            "hosts": len(names), "rrd_reset": reset}
+            "hosts": len(names), "rrd_reset": reset, "readded": len(readded),
+            "evicted": part(b, "status").get("hosts_evicted")}
 
 
 def aaaa_groups(rows):
@@ -1241,8 +1270,15 @@ def render_hosts(d, top):
         rr = hs["rrd_reset"]
         p(f"**`.rrd` の通算が作り直されている** (通算は {stamp(rr['restored_since'])} から"
           + (f"、{rr['dropped_hosts']} ホストで要求数が減った" if rr["dropped_hosts"] else "")
+          + (f"、`other` の要求数 {n(rr['other'][0])} → {n(rr['other'][1])}" if rr.get("other") else "")
           + ")。**この差分は引き算できない** (下の Δ は当てにならない。"
             "新しいほうを 1 枚で読むこと: `scripts/status-diff.py B.json`)。")
+        p()
+    if hs.get("readded"):
+        ev = hs.get("evicted")
+        p(f"満杯の表から捨てられてから入れ直したホスト {n(hs['readded'])} 件 (要求数が前より減った行) は"
+          "差分から外した (作り直しではない。捨てた行の通算は `other` に入る"
+          + (f"。後の 1 枚の起動から捨てた行 {n(ev)} 回" if ev else "") + "。T39.4)。")
         p()
     if d["restart"]["restarted"]:
         # T14.0 の注意: `.rrd` の通算は再起動をまたぐので、差分の窓は「取得から取得まで」になる

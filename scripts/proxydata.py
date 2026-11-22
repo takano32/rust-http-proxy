@@ -42,6 +42,34 @@ def is_folded(row):
     """[`row_of`] の行が `other` (あふれたホストの畳み先) か。"""
     return row.get("key") == FOLDED_HOST
 
+
+def host_rotation(a_rows, b_rows, b_evicted=0):
+    """前後の `/hosts` の行から、**満杯の表の入れ替わり**と**`.rrd` の作り直し**を見分ける (T39.4)。
+
+    表が 1,000 行で満杯のとき、本体は `last_seen` のいちばん古い行を捨てて通算を `other` に足す
+    (T32.10)。捨てたホストがまた来ると 0 から数え直すので、**そのホストの要求数は前より減る**。
+    `restored_since` (いちばん古い `last_seen`) も捨てるたびに前へ進む。どちらも作り直しではない
+    (0.38.10 の締めで「通算は 00:49:20Z から、17 ホストで要求数が減った」と出たのはこれ。
+    その間に `hosts_evicted` が 1,430 回)。
+
+    `other` は捨てた行を足していくだけなので、作り直さない限り減らない (再起動で状態ファイルの
+    最後の書き込みぶんが落ちることはある。0.38.10 では 600,539 → 599,182)。そこで、前後の両方に
+    `other` があって**後が前の半分以上**なら作り直しではないと決める。
+
+    返すのは `{"rotates", "reset", "other"}`。`rotates` は後の表に `other` の行があるか
+    `hosts_evicted` > 0。`reset` は作り直したか (`other` が片方に無ければ `None` = この見方では
+    分からない)。`other` は前後の `other` の要求数。
+    """
+    def other(rows):
+        return next((r.get("requests", 0) for r in rows or [] if r.get("host") == FOLDED_HOST), None)
+
+    a_other, b_other = other(a_rows), other(b_rows)
+    reset = None
+    if a_other is not None and b_other is not None:
+        reset = b_other * 2 < a_other
+    return {"rotates": b_other is not None or (b_evicted or 0) > 0, "reset": reset,
+            "other": (a_other, b_other)}
+
 # この道具が知っている応答の形の版 (`crates/metrics/src/metrics.rs` の `SCHEMA`。T14.49)。
 # **版 0 = `schema` の無い古い出力** (2026-09-16 以前に取ったスナップショット) で、そちらは今までどおり
 # 鍵の有無から形を推測して読む。版が上がったらここも上げて、下の分岐に 1 本足す。
