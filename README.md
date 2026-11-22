@@ -620,7 +620,7 @@ CPU の絞りと PSI (`cgroup_cpu` / `cgroup_pressure`)・IPv6 (`ipv6_route`)・
 起動から **60 秒たってから** `scripts/collect-deployed.sh` で 1 枚 (0 時間の雪像) 撮り、`/status` の `version` と起動時刻 (UTC)、`boot.id` を `TASKS.md` のそのタスクの `Tn.99` の前提に書きます (T17.19)。**すぐ撮ると `memory.baseline` が `null` のまま**なので、heap の判定が「判定できず」になります (T24.4。baseline は起動 60 秒で 1 回だけ書かれる)。
 同じ 60 秒に**プロキシ自身も `<UTC 時刻>-start.json` を 1 枚残す**ので (T28.20)、撮り忘れたら `--from-server` で取り寄せて `ZERO` に渡せます
 (`BEFORE=… ZERO=…` の 1 行が出ます。0 時間は**いまの版の最初の起動**の 1 枚。T29.26)。
-前提の 1 行 (版・ビルド・起動時刻・`boot.id`・前の版の停止時刻) は、下の 4 の `--closeout` が要約の頭に組んで出します。
+前提の 1 行 (版・ビルド・起動時刻・`boot.id`・前の版の停止時刻・窓の途中の起動・後の期間の始まり) は、下の 4 の `--closeout` が要約の頭に組んで出します。
 
 ```bash
 # 起動ログの 2 行 (待ち受けと統計ファイル)
@@ -716,7 +716,7 @@ curl "http://127.0.0.1:8080/slo?days=7"   # しきい (PROXY_SLO) を満たし�
 `scripts/collect-deployed.sh --from-server <host>:<port>` でプロキシ側の雪像から埋められます。
 **`--closeout` は締めの手作業を 1 回にまとめます** (T29.26): `--from-server` で取り寄せ、いまの版 (`/status` の `version`) で
 「前」(系列の違う版の最後の停止) と「0 時間」(いまの版の最初の起動) を選んで `BEFORE` / `ZERO` に渡し、普段の 1 回を回して、
-要約の頭に**前提の 1 行** (版・ビルド・起動時刻・`boot.id`・前の版の停止時刻) と候補の一覧を置きます。`BEFORE` / `ZERO` を
+要約の頭に**前提の 1 行** (版・ビルド・起動時刻・`boot.id`・前の版の停止時刻、0 時間の起動より後の起動がホストの再起動かプロセスだけか、後の期間 (`/profile`・`/recent`・起動からの数) の始まりと長さ。T39.7) と候補の一覧を置きます。`BEFORE` / `ZERO` を
 自分で渡せばそちらを使います (選んだ方も並べて出します)。24 時間後の予約は今までどおり別です。
 **`--full` を付けると、雪像で `truncated` が立った部 (`recent` / `hosts` / `profile`) の続きを `offset=` で
 `next_offset` が `null` になるまで追い**、`<UTC 時刻>-page<何枚目>-<部>.json` に落とします (T15.0。

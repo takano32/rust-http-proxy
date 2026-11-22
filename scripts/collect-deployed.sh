@@ -41,7 +41,8 @@
 #   scripts/collect-deployed.sh --closeout HOST:PORT [DIR]
 #     締めを 1 コマンドで (T29.26): `--from-server` で取り寄せ → 上の決まりで「前」と「0 時間」を選ぶ →
 #     それを `BEFORE` / `ZERO` にして普段の 1 回 (本番) → 要約の頭に**前提の 1 行** (版・ビルド・起動時刻・
-#     `boot.id`・前の版の停止時刻) と取り寄せ・選択の箇条。`BEFORE` / `ZERO` を渡せばそちらを使う。
+#     `boot.id`・前の版の停止時刻・窓の途中の起動 (ホストの再起動かプロセスだけか)・後の期間の始まり。T39.7)
+#     と取り寄せ・選択の箇条。`BEFORE` / `ZERO` を渡せばそちらを使う。
 #
 #   scripts/collect-deployed.sh --full HOST:PORT [DIR]
 #     雪像で `truncated` が立った部 (`recent` / `hosts` / `profile`) の**続き**を `offset=` で
@@ -225,6 +226,8 @@ now_ms() {
 # --- 締めを 1 コマンドで (--closeout。T29.26) ----------------------------------
 # 取り寄せ (`--from-server`) → 「前」と「0 時間」を版で選ぶ (下の 0. の終わり) → 本番 (`BEFORE` / `ZERO` を
 # 付けた普段の 1 回) → 要約の頭に**前提の 1 行** (版・ビルド・起動時刻・`boot.id`・前の版の停止時刻) を出す。
+# 0 時間の起動より後の起動 (ホストの再起動か、プロセスだけか) と、後の期間の始まり・長さ (最初に取った
+# `/status` の `uptime_secs`) も前提に書く (T39.7。T38.99 では手で足した)。
 # 前は 2 枚を選び、前提を手で打っていた (T28.99)。`BEFORE` / `ZERO` を自分で渡したときはそちらを使う。
 # いまの版は `/status` の `version` (読めなければ手元の最後の起動の版)
 closeout() {
@@ -241,7 +244,7 @@ closeout() {
   CO_STATUS="$CO/status-before.json"
   curl -s --max-time "$MAX_TIME" "http://$PROXY/status" -o "$CO_STATUS" || { rm -f "$CO_STATUS"; CO_STATUS=; }
   CUR=$(python3 scripts/collect_follow.py status-version <"${CO_STATUS:-/dev/null}" 2>/dev/null) || CUR=
-  CURRENT_VERSION=$CUR CLOSEOUT_PICK="$CO/pick" "$SELF" --from-server "$PROXY" "$DIR" >"$CO/fetch.md"
+  CURRENT_VERSION=$CUR CURRENT_STATUS=$CO_STATUS CLOSEOUT_PICK="$CO/pick" "$SELF" --from-server "$PROXY" "$DIR" >"$CO/fetch.md"
   fetch_rc=$?
   touch "$CO/pick"
   pick_before=$(sed -n 's/^BEFORE=//p' "$CO/pick")
@@ -325,7 +328,7 @@ from_server() {
   # 候補は全部、選んだ / 外した理由つきで並べる。どの 1 枚にも版が無ければ (T28.20 より前の形) 今までどおり
   # 時刻だけで選ぶ。名前の先頭 18 文字 (`YYYY-MM-DDTHHMMSSZ`) は時刻なので、文字列の並びがそのまま時刻の並び。
   # `CLOSEOUT_PICK` があれば、選んだ 2 枚を `BEFORE=…` / `ZERO=…` の 2 行で、前提の 1 行を `PREMISE=…` で書く
-  CURRENT_VERSION=${CURRENT_VERSION:-} CLOSEOUT_PICK=${CLOSEOUT_PICK:-} python3 scripts/collect_follow.py pick "$DIR"
+  CURRENT_VERSION=${CURRENT_VERSION:-} CURRENT_STATUS=${CURRENT_STATUS:-} CLOSEOUT_PICK=${CLOSEOUT_PICK:-} python3 scripts/collect_follow.py pick "$DIR"
   [ "$failed" = 0 ] || exit 1
   exit 0
 }

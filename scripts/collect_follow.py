@@ -153,9 +153,79 @@ def pick(argv):
                 (", pid %s)" % zero["pid"] if zero["pid"] is not None else ")") if zero["boot"] else "")
         if before:
             premise = (premise + "・" if premise else "") + "前の版 `%s` の停止 %s" % (before["ver"] or "?", when(before))
+        if zero:
+            premise += "・" + later_period(ms, zero, started)
         with open(pick_out, "w", encoding="utf-8") as f:
             f.write("BEFORE=%s\nZERO=%s\nPREMISE=%s\n" % (before["path"] if before else "",
                                                          zero["path"] if zero else "", premise or ""))
+
+
+def restart_kind(prev, m):
+    """起動の 1 枚 `m` が、その 1 つ前の 1 枚 `prev` から見てどんな再起動か (T39.7)。
+
+    `boot.id` は OS の起動ごとの id なので、変わればホストの再起動、同じならプロセスだけの再起動。
+    どちらかに `boot.id` が無ければ分からない。前が停止の 1 枚でなければ、停止の 1 枚を書かずに止まった。
+    """
+    if m["boot"] and prev and prev["boot"]:
+        if m["boot"] != prev["boot"]:
+            kind = "ホストの再起動 (`boot.id` が `%s` に変わった" % m["boot"]
+        else:
+            kind = "プロセスだけの再起動 (`boot.id` は同じ `%s`" % m["boot"]
+    else:
+        kind = "再起動 (`boot.id` が読めず、ホストかプロセスだけかは分からない"
+    if m["pid"] is not None:
+        kind += "、pid %s" % m["pid"]
+    if prev is None or prev["kind"] != "shutdown":
+        kind += "。停止の 1 枚なし"
+    return kind + ")"
+
+
+def later_period(ms, zero, started):
+    """締めの前提に足す「窓の途中の起動」と「後の期間の始まり」(T39.7)。
+
+    0.38.10 の締め (T38.99) は前提に最初の起動しか書かず、11-20 18:54Z のホストの再起動と、後の期間の材料
+    (`/profile`・`/recent`・起動からの数) がその後の 25.3 時間だけなことを手で足した。0 時間の起動より後の
+    `start` の 1 枚を全部、ホストの再起動かプロセスだけかを添えて並べ、後の期間は最後の起動から数える。
+    `CURRENT_STATUS` (`--closeout` が最初に取った `/status`) があれば、その `uptime_secs` で長さを書き、
+    `boot` が最後の起動の 1 枚と違えば (起動の 1 枚の無い再起動) そう断る。
+    """
+    later = [m for m in ms if m["kind"] == "start" and m["at"] > zero["at"]]
+    parts = []
+    if later:
+        items = []
+        for m in later:
+            i = ms.index(m)
+            prev = ms[i - 1] if i > 0 else None
+            ver = " 版 `%s`" % m["ver"] if m["ver"] and m["ver"] != zero["ver"] else ""
+            items.append("%s%s に%s" % (started(m), ver, restart_kind(prev, m)))
+        parts.append("**窓の途中の起動 %d 回**: %s" % (len(later), "、".join(items)))
+    else:
+        parts.append("窓の途中の起動なし")
+    last = later[-1] if later else zero
+    status = None
+    path = os.environ.get("CURRENT_STATUS") or None
+    if path:
+        try:
+            with open(path, encoding="utf-8") as f:
+                status = json.load(f)
+        except (OSError, ValueError):
+            status = None
+    if not isinstance(status, dict):
+        status = {}
+    up = status.get("uptime_secs")
+    boot = status.get("boot") if isinstance(status.get("boot"), dict) else {}
+    hours = " %.1f 時間" % (up / 3600) if isinstance(up, (int, float)) and not isinstance(up, bool) else ""
+    origin = "0 時間の起動" if last is zero else "最後の起動"
+    if boot.get("id") and last["boot"] and (boot.get("id") != last["boot"] or
+                                            (boot.get("pid") is not None and last["pid"] is not None
+                                             and boot.get("pid") != last["pid"])):
+        parts.append("後の期間 (`/profile`・`/recent`・起動からの数) は `/status` の起動から%s "
+                     "(`boot.id` `%s`, pid %s。手元の最後の起動の 1 枚と違う: 起動の 1 枚の無い再起動がある)"
+                     % (hours, boot.get("id"), boot.get("pid")))
+    else:
+        parts.append("後の期間 (`/profile`・`/recent`・起動からの数) は %s %s から%s"
+                     % (origin, started(last), hours))
+    return "・".join(parts)
 
 
 def follow_plan(argv):

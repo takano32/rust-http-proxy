@@ -1055,7 +1055,9 @@ class CollectFromServerTest(unittest.TestCase):
         self.assertTrue(lines[0].startswith("# rust-http-proxy — 127.0.0.1:"), lines[:3])
         self.assertEqual(lines[2], "**締めの前提** (`--closeout`): 版 `0.28.48+c0ffee1` (`release`)・"
                                    "起動 2026-10-25T21:26:45Z (`boot.id` `B1`, pid 7)・"
-                                   "前の版 `0.27.8+a01dd0c` の停止 2026-10-25T20:31:34Z")
+                                   "前の版 `0.27.8+a01dd0c` の停止 2026-10-25T20:31:34Z・"
+                                   "窓の途中の起動なし・"
+                                   "後の期間 (`/profile`・`/recent`・起動からの数) は 0 時間の起動 2026-10-25T21:26:45Z から")
         # 取り寄せ (起動と停止 5 枚 + 日次 1 枚) と選択の箇条、選んだ 2 枚が本番の BEFORE / ZERO に渡っている
         self.assertIn("取り寄せ 6 件", out)
         self.assertIn("いまの版 `0.28.48+c0ffee1` (`/status`) で選んだ", out)
@@ -1072,6 +1074,40 @@ class CollectFromServerTest(unittest.TestCase):
         out = self.run_closeout(d, live, COLLECT_STAMP="2026-10-26T120000Z")
         self.assertEqual(self.fetched, [])
         self.assertIn("- 判定表の相手 (`BEFORE`): `%s`" % before, out)
+
+    def test_closeout_writes_a_restart_in_the_window_and_the_later_period(self):
+        # T39.7: 0.38.10 の締め (T38.99) と同じ形。0 時間の起動のあと、停止の 1 枚なしに `boot.id` の変わった
+        # 起動が 1 回 (ホストの再起動)。前提にそれと、後の期間がその起動から `/status` の `uptime_secs` だけなことを書く
+        d = tempfile.mkdtemp(prefix="t397-")
+        self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
+        reboot = "2026-10-26T183011Z-start"
+        self.T2899 = self.T2899 + [(reboot, "0.28.48+c0ffee1", "B2", 26)]
+        live = {"schema": 1, "version": "0.28.48+c0ffee1", "build": "release", "uptime_secs": 91080,
+                "boot": {"id": "B2", "pid": 26}}
+        out = self.run_closeout(d, live)
+        premise = out.splitlines()[2]
+        self.assertIn("・前の版 `0.27.8+a01dd0c` の停止 2026-10-25T20:31:34Z・"
+                      "**窓の途中の起動 1 回**: 2026-10-26T18:29:11Z にホストの再起動 "
+                      "(`boot.id` が `B2` に変わった、pid 26。停止の 1 枚なし)・"
+                      "後の期間 (`/profile`・`/recent`・起動からの数) は 最後の起動 2026-10-26T18:29:11Z から 25.3 時間",
+                      premise)
+        # 0 時間は最初の起動のまま
+        self.assertIn("- 0 時間の雪像 (`ZERO`): `%s/2026-10-25T212745Z-start-snapshot.json`" % d, out)
+
+    def test_closeout_tells_a_process_restart_and_a_restart_without_its_snapshot(self):
+        # T39.7: 停止の 1 枚を残した、`boot.id` の同じ起動 (プロセスだけの再起動)。`/status` の pid が
+        # 手元の最後の起動と違えば、起動の 1 枚の無い再起動があると断り、後の期間は `/status` の起動から数える
+        d = tempfile.mkdtemp(prefix="t397-")
+        self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
+        self.T2899 = self.T2899 + [("2026-10-26T100000Z-shutdown", "0.28.48+c0ffee1", "B1", 7),
+                                   ("2026-10-26T100130Z-start", "0.28.48+c0ffee1", "B1", 8)]
+        live = {"schema": 1, "version": "0.28.48+c0ffee1", "uptime_secs": 7200, "boot": {"id": "B1", "pid": 9}}
+        premise = self.run_closeout(d, live).splitlines()[2]
+        self.assertIn("**窓の途中の起動 1 回**: 2026-10-26T10:00:30Z にプロセスだけの再起動 "
+                      "(`boot.id` は同じ `B1`、pid 8)・"
+                      "後の期間 (`/profile`・`/recent`・起動からの数) は `/status` の起動から 2.0 時間 "
+                      "(`boot.id` `B1`, pid 9。手元の最後の起動の 1 枚と違う: 起動の 1 枚の無い再起動がある)",
+                      premise)
 
     def test_closeout_takes_the_status_first(self):
         # T32.31: 日次の雪像 (`/snapshots/<date>`。丸ごと `String` に読む) を引く前に `/status` を 1 本取り、
