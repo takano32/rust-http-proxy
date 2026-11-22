@@ -84,7 +84,7 @@ class Main(unittest.TestCase):
 
     def test_clean_repository_passes(self):
         cw.SKIP = [("scripts/a.py", cw.STRINGS, "凍結")]
-        d = self.repo({"scripts/a.py": "x = '雪像'\n", "README.md": "スナップショット\n", "docs/b.md": "雪像\n"})
+        d = self.repo({"scripts/a.py": "x = '雪像'\n", "README.md": "スナップショット\n", "tasks/T1.md": "雪像\n"})
         rc, out = self.run_main(d)
         self.assertEqual(rc, 0, out)
         self.assertIn("[言葉の決まり] 2 ファイルを見た (除外 1)", out)
