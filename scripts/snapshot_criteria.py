@@ -14,7 +14,8 @@
 #   `t36.py`         T36 の行 (T36.1・T36.2・T36.3)
 #   `t37.py`         T37 の行 (T37.1)
 #   `t38.py`         T38 の行 (T38.0・T38.1)
-#   `rules.py`       閾の辞書 (`PHASE14`〜`T38_TH`)・`CRITERIA`・`FROZEN`・`RULES` (Phase の順に組む)
+#   `t39.py`         T39 の行 (T39.9)
+#   `rules.py`       閾の辞書 (`PHASE14`〜`T39_TH`)・`CRITERIA`・`FROZEN`・`RULES` (Phase の順に組む)
 # ここに残っているのは、`RULES` の行を順に呼ぶ `judge()` と、判定表の印字 (`render_criteria()`) だけ。
 #
 # 小物までこちら側にあるのは、`snapshot-diff.py` は名前に `-` があって `import` できないため
@@ -88,9 +89,12 @@ from criteria.t38 import (  # noqa: E402,F401
     CONN_REQUEST_BAND, _t38_conn_per_resolved_request, _t38_connect_errors, conn_samples, dead_destinations,
     request_volume_sides, web_error_counts,
 )
+from criteria.t39 import (  # noqa: E402,F401
+    CONN_PRICE_MIN_HOURS, _t39_conn_priced, conn_hours, cross_index, fit_price, self_spread,
+)
 from criteria.rules import (  # noqa: E402,F401
     CRITERIA, FROZEN, PHASE14, PHASE15, PHASE17, PHASE18, PHASE20, PHASE21, PHASE22, PHASE23, PHASE24,
-    PHASE25, PHASE26, PHASE27, PHASE28, PHASE29, PHASE30, T35_TH, T36_TH, T37_TH, T38_TH, RULES,
+    PHASE25, PHASE26, PHASE27, PHASE28, PHASE29, PHASE30, T35_TH, T36_TH, T37_TH, T38_TH, T39_TH, RULES,
     CRITERIA_ALIASES, criteria_name,
 )
 
@@ -326,6 +330,17 @@ INTRO = {
             "起動より後に試され、通算で 1 本も確立していない宛先です (0.37.8 の締めでは、tokyo から繋がらない計測・追跡用の"
             "宛先に 1 つの接続元が繰り返し行った時間切れが 67 件のうち 63 件だった)。外した宛先の数と件数、外す前の率は"
             "表示だけです。ほかの 25 行は T37 と同じです。"),
+    # T39.9。T38 の 27 行のうち、`conn` 役の CPU の行を要求と中継の時間で値付けし合う形にする
+    "T39": ("1〜27 行の並びと材料は T38 と同じです。直したのは 1 行 (T39.9): 5 行目の `conn` 役の CPU を、要求の数で割る"
+            "代わりに**名前解決に成功した要求と中継の時間で値付けし合って**読みます。`/profile?res=60` を 1 時間ずつ束ね、"
+            "`conn` 役の CPU = 要求 1 本の値段 × 名前解決に成功した要求 + 中継 1 秒の値段 × connect の段の `relay` の秒 で、"
+            "前と後の値段を別々に決めます (原点を通る最小二乗)。前の値段で後の仕事を、後の値段で前の仕事を値付けした比の"
+            "幾何平均を機械の速さの物差しで割り、前の版の 1.1 倍未満なら満たしたです。越えても、前と後の 1 枚をそれぞれ"
+            "半分ずつ・1 時間おきに割って値付けし合った比のいちばん大きい外れの内なら「判定できず」にして理由を書きます"
+            "(同じ版の中でも 1.1 倍を越えることがある)。要求で払う分と時間で払う分を分ける材料はスナップショットにありません"
+            "が、値付けし合った比は要求の量が変わっても 2 つの向きがそろいます (0.37.8 の締めで 1.19・1.16、0.38.10 の締めで"
+            "0.65・0.61)。値段・決定係数・ぶれ・中継の秒/時と、T38 の読み方 (1 本あたりと要求の量) は表示だけです。"
+            "ほかの 26 行は T38 と同じです。"),
 }
 
 

@@ -17,6 +17,7 @@
     test_snapshot_criteria_t36.py          T36
     test_snapshot_criteria_t37.py          T37
     test_snapshot_criteria_t38.py          T38
+    test_snapshot_criteria_t39.py          T39
 
 どのファイルも使う作り物は `scripts/_criteria_testing.py` にある。`Deployed*` はデプロイ先のスナップショット
 (リポジトリの `status/`。リポジトリには入れない) があるときだけ回る。
@@ -168,6 +169,15 @@ class RulesOrder(unittest.TestCase):
         "T38": (
             "_p20_watch_host", "_p22_refresh_rate", "_p29_miss_band", "_p20_timeout",
             "_t38_conn_per_resolved_request", "_p20_warm_max", "_t35_events", "_p17_cgroup", "_t36_heap",
+            "_p21_request_probes", "_t37_dns_slow", "_p22_stale_retries", "_t38_connect_errors",
+            "_p22_connect_errors_shown", "_p30_refresh_per_name", "_p25_silent_restarts", "_p24_connect_tail",
+            "_p26_header_timeouts", "_p26_log_errors", "_p26_local_blocks", "_p26_connect_cut",
+            "_p26_rejected", "_p28_trim_works", "_p29_cgroup_cpu_shown", "_t36_idle_cost",
+            "_p26_origin_warn_per_minute", "_t36_machine_speed",
+        ),
+        "T39": (
+            "_p20_watch_host", "_p22_refresh_rate", "_p29_miss_band", "_p20_timeout",
+            "_t39_conn_priced", "_p20_warm_max", "_t35_events", "_p17_cgroup", "_t36_heap",
             "_p21_request_probes", "_t37_dns_slow", "_p22_stale_retries", "_t38_connect_errors",
             "_p22_connect_errors_shown", "_p30_refresh_per_name", "_p25_silent_restarts", "_p24_connect_tail",
             "_p26_header_timeouts", "_p26_log_errors", "_p26_local_blocks", "_p26_connect_cut",
