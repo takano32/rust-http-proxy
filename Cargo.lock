@@ -12,7 +12,7 @@ version = "0.37.8"
 
 [[package]]
 name = "proxy-blocklist"
-version = "0.34.165"
+version = "0.39.2"
 dependencies = [
  "proxy-base",
  "proxy-config",
@@ -46,7 +46,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-cachedisk"
-version = "0.34.165"
+version = "0.39.2"
 dependencies = [
  "proxy-base",
  "proxy-cachecfg",
@@ -72,7 +72,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-capacity"
-version = "0.34.165"
+version = "0.39.2"
 dependencies = [
  "proxy-base",
  "proxy-cachecfg",
@@ -233,7 +233,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-net"
-version = "0.34.165"
+version = "0.39.2"
 dependencies = [
  "proxy-net-conn",
 ]
@@ -256,7 +256,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-origin"
-version = "0.34.165"
+version = "0.39.2"
 dependencies = [
  "proxy-base",
  "proxy-net",
@@ -306,7 +306,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-server"
-version = "0.38.10"
+version = "0.39.2"
 dependencies = [
  "proxy-base",
  "proxy-blocklist",
@@ -343,7 +343,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-tls"
-version = "0.34.165"
+version = "0.39.2"
 
 [[package]]
 name = "proxy-tunnel"
@@ -368,7 +368,7 @@ dependencies = [
 
 [[package]]
 name = "rust-http-proxy"
-version = "0.38.10"
+version = "0.39.2"
 dependencies = [
  "proxy-endpoints",
  "proxy-run",

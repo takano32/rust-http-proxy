@@ -18,7 +18,8 @@
 変えてもビルドは変わるのに、前は数えずに「決まりに合う」と出た。T29.28)。
 
 `--check` の決まり (**コミットの文面には頼らない**。文面にタスク番号が無いコミットも、複数の番号が並ぶものもあるため):
-  [版の形] 版が `0.P.T` の形。
+  [版の形] 版が `0.P.T` の形。T は 2 桁まで (T39.2。小タスクは `Tn.98` までで、越えたら次のタスクへ繰り上げる。
+      タスク 34 の `0.34.165` が 6 クレートに残っていたのを 0.39.2 に上げた)。
   [本体が最大] `proxy-server` = 本体 = 全クレートの版の最大以上。
   [上げ忘れ] 各クレート (と本体) について、いまの `version` の行を書いたコミットより後に中身が変わっていたら落とす。
       「いまの行を書いたコミット」は blame と同じく、同じ値を持つ親へ辿って探す。ただしマージで両側とも
@@ -87,7 +88,9 @@ def ver_key(text):
 def task_version(tid):
     """`T21.3` → `0.21.3` (英字は落とす)。形が違えば None。"""
     m = TASK_RE.match(tid)
-    return "0.%d.%d" % (int(m.group(1)), int(m.group(2))) if m else None
+    if not m or int(m.group(2)) >= 100:  # 三桁の小タスクは版にしない (T39.2)
+        return None
+    return "0.%d.%d" % (int(m.group(1)), int(m.group(2)))
 
 
 # --- Cargo.toml を行で読む ---------------------------------------------------
@@ -341,6 +344,8 @@ def judge(repo):
     for u in repo.units():
         if ver_key(u.version) is None:
             bad.append((u.name, "版 %s が 0.<Phase>.<番号> の形でない (決まり [版の形])" % u.version))
+        elif ver_key(u.version)[1] >= 100:
+            bad.append((u.name, "版 %s の番号が三桁 (決まり [版の形]。小タスクは 2 桁まで。T39.2)" % u.version))
     # [本体が最大] proxy-server = 本体 = 全クレートの最大以上
     if server and server[0].version != repo.root.version:
         bad.append((SERVER, "本体 %s %s と版が違う: %s (決まり [本体が最大])"

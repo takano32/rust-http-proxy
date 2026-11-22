@@ -1,6 +1,6 @@
 [package]
 name = "proxy-tls"
-version = "0.34.165"
+version = "0.39.2"
 edition = "2024"
 
 [lib]

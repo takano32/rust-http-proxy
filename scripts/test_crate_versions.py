@@ -234,6 +234,15 @@ class CrateVersionsTest(unittest.TestCase):
         self.r.write("crates/beta/Cargo.toml", self.r.read("crates/beta/Cargo.toml") + "# メモ\n")
         self.check(1)
 
+    def test_three_digit_number(self):
+        # 版の番号は 2 桁まで (T39.2)。`--task` も三桁の小タスクを受け付けない
+        self.r.set_versions("0.34.165", beta="0.34.165", server="0.34.165")
+        self.r.commit("T34.165")
+        out = self.check(1)
+        self.assertIn("NG proxy-beta: 版 0.34.165 の番号が三桁", out)
+        code, out = self.r.run("--task", "T34.166", "--since", "HEAD")
+        self.assertEqual(code, 2, out)
+
     def test_server_must_follow_root(self):
         self.r.set_versions("0.2.3", server="0.2.2")
         self.r.commit("server drifts")
