@@ -14,6 +14,9 @@
   [番号] … タスクの番号 (`T24.10`) が台帳全体 (`TASKS.md` + `tasks/`) で 1 回だけ。**同じ番号が
       2 度出るのは、片方が `結果` だけの追記** (本文を持たない行) のときだけ許す。番号のタスクが
       置き場所と合うこと (`TASKS.md` のタスク 24 の節なら `T24.x`、`tasks/T17.md` なら `T17.x`)。
+  [三桁の番号] (T39.0) … 小タスクの番号は 2 桁まで (`Tn.0`〜`Tn.98`。`Tn.99` は締め)。99 本を越えるなら、
+      次のタスクの `T<n+1>.0` へ繰り上げる (2026-11-22、利用者の指示「35.0 が自然」)。タスク 34 の
+      `T34.100`〜`T34.165` と締めの `T34.999` は、決まりを作る前の済んだ記録なので除外表 (`THREE_DIGIT_OK`) に持つ。
   [1 行目] … `tasks/TNN.md` の 1 行目が `# タスク NN — …`。
   [済んだ本数] … 見出しの「済んだ N 本の本文は …」の N が、`tasks/TNN.md` のタスクの本数と合うこと
       (T24.9 が番号ごとに書いたので、片方だけ足したときにここで出る)。
@@ -126,6 +129,12 @@ class Ledger:
         self.notes = []       # 気づき (NG ではない)
         self.ngs = []         # NG の文面
         self.index = INDEX    # 索引の置き場 (印字用。古い木では `TODO.md のタスクの索引`)
+
+
+# [三桁の番号] (T39.0) の除外: 決まりを作る前に三桁を使ったタスク。タスク 34 は小タスクが 165 本になり、
+# 締めを `T34.999` にした (2026-11-05、利用者の指示「今回だけでいいよ、三桁はレアだろ」)。済んだ記録は変えない
+THREE_DIGIT_OK = {34: "小タスク 165 本と締めの T34.999 (2026-11-05。済んだ記録なので変えない)"}
+MINOR = re.compile(r"^T(\d+)\.(\d+)")
 
 
 def read_lines(path):
@@ -360,6 +369,18 @@ def check_numbers(led, t):
         elif len(tasks) > 1:
             led.notes.append("同じ番号が %d 回出る (%s)。1 行は `結果` だけの追記なので重複と数えない"
                              % (len(tasks), ", ".join(task.at() for task in tasks)))
+
+    # --- [三桁の番号] 小タスクは 2 桁まで (T39.0) ---------------------------------------
+    excused = {}
+    for ident in sorted(seen):
+        m = MINOR.match(ident)
+        if m and len(m.group(2)) >= 3 and int(m.group(1)) in THREE_DIGIT_OK:
+            excused[int(m.group(1))] = excused.get(int(m.group(1)), 0) + 1
+        elif m and len(m.group(2)) >= 3:
+            led.ngs.append("番号 %s が三桁 (小タスクは `Tn.98` まで。越えるなら `T%d.0` へ繰り上げる。%s)"
+                           % (ident, int(m.group(1)) + 1, seen[ident][0].at()))
+    for num in sorted(excused):
+        led.notes.append("三桁の番号 %d 本はタスク %d (除外: %s)" % (excused[num], num, THREE_DIGIT_OK[num]))
 
     # --- [済んだ本数] 見出しの「済んだ N 本」 ------------------------------------------
     for num in sorted(names):

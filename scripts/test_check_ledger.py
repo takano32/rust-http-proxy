@@ -10,6 +10,7 @@
   [移し忘れ] 全部 `- [x]` のタスクが索引に残る / 移したタスクにタスクの行が残る
   [リンク] リンクが無い / 指す先が無い / 見出しが無い / 番号が違う
   [番号] 番号が本文つきで 2 回出る (片方が `結果` だけの追記なら通る) / 番号と置き場所が違う
+  [三桁の番号] 小タスクの番号が三桁 (タスク 34 は除外。T39.0)
   [1 行目] 1 行目が `# タスク NN — …` でない
   [済んだ本数] 「済んだ N 本」がファイルの本数と合わない
 
@@ -243,6 +244,22 @@ class Numbers(LedgerCase):
             {"T23.md": ["# タスク 23 — 見本", ""] + task("T23.0")})
         self.assertEqual(code, 1)
         self.assert_ng(out, "番号 T23.0 が本文つきで 2 回出る")
+
+
+    def test_three_digit_subtask(self):
+        # 小タスクは 2 桁まで (T39.0)。99 本を越えるなら次のタスクの `T<n+1>.0` へ繰り上げる
+        code, out = self.build(
+            [phase(24, [task("T24.100", status=" ", body=())])],
+            {})
+        self.assertEqual(code, 1)
+        self.assert_ng(out, "番号 T24.100 が三桁 (小タスクは `Tn.98` まで。越えるなら `T25.0` へ繰り上げる。")
+
+    def test_three_digit_subtask_of_task_34_is_excused(self):
+        code, out = self.build(
+            [phase(35, [task("T35.0", status=" ", body=())])],
+            {"T34.md": ["# タスク 34 — 見本", ""] + task("T34.100") + task("T34.999")})
+        self.assertNotIn("が三桁", out)
+        self.assertIn("三桁の番号 2 本はタスク 34 (除外:", out)
 
 
 class Shape(LedgerCase):
