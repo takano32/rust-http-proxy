@@ -352,6 +352,11 @@ impl ConnSlot {
         self.tid.store(tid, Ordering::Relaxed);
     }
 
+    /// いま受け持っているスレッドの番号 (`0` = 預かり所にいる / 分からない)。
+    pub fn tid(&self) -> u32 {
+        self.tid.load(Ordering::Relaxed)
+    }
+
     /// 半閉じの向きを書く (**1 本につき多くて 1 回**。原子 1 回と時計 1 回。T15.0)。
     ///
     /// `side` は `0` = クライアント、`1` = オリジンで、中継の `Idle::first_eof` と同じ値。

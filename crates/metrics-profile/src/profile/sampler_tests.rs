@@ -92,7 +92,7 @@ fn the_sampler_accumulates_per_role_deltas() {
     assert_eq!(p.sampler(), SamplerState::Partial);
     assert!(s.pending[1].states[names.iter().position(|n| *n == "sleeping").unwrap()] >= 1);
     // 取り出したら 0 に戻る
-    let (taken, top, run_delay) = s.take();
+    let (taken, top, run_delay, _) = s.take();
     assert!(taken.iter().any(|r| r.samples > 0));
     assert!(s.pending.iter().all(|r| r.samples == 0));
     // 上位のスレッドは CPU の多い順 (conn の tid 2 が先)
@@ -206,7 +206,7 @@ fn sub_microsecond_run_delays_add_up_and_the_name_is_refreshed() {
     s.sample(&p);
     write("real-name", 1_800);
     s.sample(&p);
-    let (_, top, run_delay) = s.take();
+    let (_, top, run_delay, _) = s.take();
     let d = run_delay.expect("schedstat が読めている");
     assert_eq!(d[0], 1, "600 ns × 3 が丸ごと消えている: {:?}", d);
     assert_eq!(
@@ -248,7 +248,7 @@ fn the_user_time_is_split_per_role() {
     s.sample(&p);
     assert_eq!(s.pending[1].cpu_us, 30 * tick);
     assert_eq!(s.pending[1].user_us, 10 * tick, "user は utime の増分だけ");
-    let (threads, _, _) = s.take();
+    let (threads, _, _, _) = s.take();
     assert_eq!(threads[1].user_us, 10 * tick);
     assert!(s.pending.iter().all(|r| r.user_us == 0), "取り出したら 0");
     // 60 秒へ畳むと足し合わせ、行の末尾に役割の順で出る
@@ -266,7 +266,7 @@ fn the_user_time_is_split_per_role() {
     a.push_row(&mut row);
     assert!(
         row.ends_with(&format!(
-            ",null,[0,{},0,0,0,0,0,0,0],{}]",
+            ",null,[0,{},0,0,0,0,0,0,0],{},[0,0,0]]",
             20 * tick,
             20 * tick
         )),
@@ -290,7 +290,7 @@ fn the_run_delay_is_null_without_schedstat() {
     let p = Profile::default();
     let mut s = Sampler::new(dir.clone(), 1);
     s.sample(&p);
-    let (_, top, run_delay) = s.take();
+    let (_, top, run_delay, _) = s.take();
     assert_eq!(run_delay, None, "schedstat が無ければ null");
     assert_eq!(top[0].tid, 1, "上位のスレッドは読めている");
     // JSON も `null` で書かれること (dashboard は位置で開くので数を変えない)
@@ -301,7 +301,11 @@ fn the_run_delay_is_null_without_schedstat() {
         ..Sample::default()
     }
     .push_row(&mut row);
-    assert!(row.ends_with(",null,[0,0,0,0,0,0,0,0,0],0]"), "{}", row);
+    assert!(
+        row.ends_with(",null,[0,0,0,0,0,0,0,0,0],0,[0,0,0]]"),
+        "{}",
+        row
+    );
     assert!(row.contains("[[1,\"proxy\",0,"), "{}", row);
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -368,7 +372,7 @@ fn the_busiest_thread_comes_first_in_threads_top() {
     }
     s.sample(&p);
     stop.store(true, Ordering::Relaxed);
-    let (_, top, run_delay) = s.take();
+    let (_, top, run_delay, _) = s.take();
     assert_eq!(
         top[0].comm_str(),
         "t150-spin",
@@ -459,4 +463,59 @@ fn an_unreadable_proc_turns_the_sampler_off() {
     s.sample(&p);
     assert_eq!(p.sampler(), SamplerState::Off);
     assert_eq!(p.sampler().name(), "off");
+}
+
+/// `conn` 役の CPU は、そのスレッドがいま持つ接続の状態で要求・中継・空きに振り分ける (T39.11)。
+/// `conn` 以外の役は振り分けない。表を渡さなければ振り分けない。
+#[test]
+fn the_conn_cpu_is_split_by_the_state_of_the_connection_the_thread_holds() {
+    use crate::recent::{ConnState, ConnTable};
+    let dir = std::env::temp_dir().join(format!("t39-11-split-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let write = |tid: u32, comm: &str, ticks: u64| {
+        let d = dir.join(tid.to_string());
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(
+            d.join("stat"),
+            format!(
+                "{} ({}) R 1 1 0 0 -1 0 0 0 0 0 {} 0 0 0 20 0 8 0 100 0\n",
+                tid, comm, ticks
+            ),
+        )
+        .unwrap();
+    };
+    // 主 (accept)・要求を処理中・中継中・接続を持たないワーカーの 4 本。最初の読みは累計が増分になる
+    write(1, "proxy", 7);
+    write(2, "conn", 10);
+    write(3, "conn", 20);
+    write(4, "conn", 30);
+    let table = ConnTable::new();
+    let now = Instant::now();
+    let serving = table.register(1, "192.0.2.1", now).unwrap();
+    serving.set_tid(2);
+    let relaying = table.register(2, "192.0.2.1", now).unwrap();
+    relaying.begin_tunnel("example.com:443");
+    relaying.set_tid(3);
+    assert_eq!(relaying.state(), ConnState::Relaying);
+    let parked = table.register(3, "192.0.2.1", now).unwrap();
+    parked.set_state(ConnState::Parked);
+    let p = Profile::default();
+    let mut s = Sampler::new(dir.clone(), 1);
+    s.sample_unless_same_with(&p, None, Some(&table));
+    let tick = 1_000_000 / clock_tick();
+    let (threads, _, _, split) = s.take();
+    assert_eq!(split, [10 * tick, 20 * tick, 30 * tick]);
+    assert_eq!(
+        split.iter().sum::<u64>(),
+        threads[1].cpu_us,
+        "conn 役の CPU を割っただけ"
+    );
+    // 表を渡さなければ振り分けない
+    write(2, "conn", 15);
+    s.sample_unless_same_with(&p, None, None);
+    let (_, _, _, split) = s.take();
+    assert_eq!(split, [0, 0, 0]);
+    assert_eq!(super::split_slot(Some(ConnState::Queued)), 0);
+    assert_eq!(super::split_slot(Some(ConnState::Parked)), 2);
+    let _ = std::fs::remove_dir_all(&dir);
 }

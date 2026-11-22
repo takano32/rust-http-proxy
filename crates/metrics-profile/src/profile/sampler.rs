@@ -6,6 +6,9 @@ use super::threads::{
     READ_NR, ROLES, STATE_RUNNING, TOP_THREADS, Threads, TopThread, role_of, state_slot,
 };
 
+/// [`ROLES`] の `conn` の添字。
+const ROLE_CONN: usize = 1;
+
 /// スレッドの標本がどこまで取れているか (`/profile` の `sampler`)。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SamplerState {
@@ -87,6 +90,26 @@ pub(crate) struct Sampler {
     last_whole: Option<(u64, u64, u64)>,
     /// 全スレッドを読まずに済ませた回数 (試験用)
     skipped: u64,
+    /// `conn` 役の CPU を要求・中継・空きに振り分けた溜め (us。[`CONN_SPLIT`] の順。T39.11)
+    pending_split: ConnSplit,
+    /// 標本ごとに引き直す「スレッドの番号 → そのスレッドが持つ接続の状態」(使い回し。T39.11)
+    tid_states: std::collections::HashMap<u32, crate::recent::ConnState>,
+}
+
+/// `conn` 役の CPU の振り分け先の名前 (`/profile` の `conn_split` の順。T39.11)。
+pub const CONN_SPLIT: [&str; 3] = ["request", "relay", "idle"];
+
+/// `conn` 役の CPU を [`CONN_SPLIT`] の順に振り分けた us (T39.11)。
+pub type ConnSplit = [u64; CONN_SPLIT.len()];
+
+/// 接続の状態から振り分け先の添字を決める (接続を持たないスレッドは空き)。
+pub(crate) fn split_slot(state: Option<crate::recent::ConnState>) -> usize {
+    use crate::recent::ConnState;
+    match state {
+        Some(ConnState::Relaying) => 1,
+        Some(ConnState::Serving | ConnState::Reading | ConnState::Queued) => 0,
+        Some(ConnState::Parked) | None => 2,
+    }
 }
 
 /// スレッドの `stat` を開いたまま持つ本数の上限 (T32.21)。
@@ -111,6 +134,8 @@ impl Sampler {
             schedstat_readable: false,
             last_whole: None,
             skipped: 0,
+            pending_split: [0; CONN_SPLIT.len()],
+            tid_states: std::collections::HashMap::new(),
         }
     }
 
@@ -123,9 +148,16 @@ impl Sampler {
     /// これを省くと `profile-sample` の CPU がおよそ半分になる。スレッドが生まれた・消えた秒は
     /// スレッド数が変わるので必ず読み直す。`/proc/self/stat` を読むのは [`Sampler::for_self`] のときだけ
     /// (試験が差し替えた `root` はこのプロセスのものではない)。
-    pub(crate) fn sample_unless_idle(&mut self, profile: &Profile, requests: u64) {
+    ///
+    /// `conns` は `conn` 役の CPU を接続の状態で振り分けるための接続の表 (T39.11。`None` なら振り分けない)。
+    pub(crate) fn sample_unless_idle(
+        &mut self,
+        profile: &Profile,
+        requests: u64,
+        conns: Option<&crate::recent::ConnTable>,
+    ) {
         let whole = self.read_whole(requests);
-        self.sample_unless_same(profile, whole);
+        self.sample_unless_same_with(profile, whole, conns);
     }
 
     /// プロセス全体の (スレッド数, utime + stime の tick, 要求の累計) を読む (I/O はここだけ。T34.43)。
@@ -145,13 +177,29 @@ impl Sampler {
     }
 
     /// `whole` が前回と同じなら前回の状態を 1 標本ぶん積み、違えば全スレッドを読む (判断。T34.43)。
+    #[cfg(test)]
     pub(crate) fn sample_unless_same(&mut self, profile: &Profile, whole: Option<(u64, u64, u64)>) {
+        self.sample_unless_same_with(profile, whole, None);
+    }
+
+    /// `whole` が前回と同じなら前回の状態を 1 標本ぶん積み、違えば全スレッドを読む (接続の表を添える形。T39.11)。前回と同じ秒は CPU の増えが
+    /// 0 なので、接続の表も引かない。
+    pub(crate) fn sample_unless_same_with(
+        &mut self,
+        profile: &Profile,
+        whole: Option<(u64, u64, u64)>,
+        conns: Option<&crate::recent::ConnTable>,
+    ) {
         if whole.is_some() && whole == self.last_whole && !self.prev.is_empty() {
             self.repeat_last();
             return;
         }
         self.last_whole = whole;
-        self.sample(profile);
+        match conns {
+            Some(t) => t.tid_states(&mut self.tid_states),
+            None => self.tid_states.clear(),
+        }
+        self.sample_split(profile, conns.is_some());
     }
 
     /// 前回の状態をもう 1 標本ぶん積む (CPU と待ちの増えは 0。T32.37)。
@@ -184,8 +232,16 @@ impl Sampler {
         s
     }
 
-    /// 1 回ぶん取る。読めなければ [`SamplerState::Off`] を書いて何もしない。
+    /// 1 回ぶん取る (接続の表で振り分けない形。試験が使う)。
+    #[cfg(test)]
     pub(crate) fn sample(&mut self, profile: &Profile) {
+        self.tid_states.clear();
+        self.sample_split(profile, false);
+    }
+
+    /// 1 回ぶん取る。読めなければ [`SamplerState::Off`] を書いて何もしない。
+    /// `split` なら `conn` 役の CPU を `tid_states` で振り分ける (T39.11)。
+    fn sample_split(&mut self, profile: &Profile, split: bool) {
         // **休眠のまま ticks が前回と同じスレッドは `syscall` と `schedstat` を開かない**
         // (T29.21)。走っていないので待ちの増えは 0、居るシステムコールも前回のまま
         // (10 ms 未満だけ走って別の所で寝直したスレッドは 1 標本古く見える。待ちの増えは
@@ -214,7 +270,8 @@ impl Sampler {
         let mut next = std::collections::HashMap::with_capacity(scan.tasks.len());
         self.schedstat_readable |= scan.schedstat_readable;
         for t in &scan.tasks {
-            next.insert(t.tid, self.account(profile, t));
+            let p = self.account(profile, t, split);
+            next.insert(t.tid, p);
         }
         self.prev = next;
         profile.set_sampler(if scan.syscalls_readable {
@@ -225,13 +282,22 @@ impl Sampler {
     }
 
     /// スレッド 1 本の読みを溜めに積み、次の回に覚えておく値を返す (増分は前回との差)。
-    fn account(&mut self, profile: &Profile, t: &crate::sysinfo::proc::TaskSample) -> PrevTask {
+    fn account(
+        &mut self,
+        profile: &Profile,
+        t: &crate::sysinfo::proc::TaskSample,
+        split: bool,
+    ) -> PrevTask {
         let role = role_of(t.tid, self.main_tid, &t.comm);
         let (prev_ticks, prev_utime, prev_delay) = self.prev.get(&t.tid).map_or((0, 0, 0), |p| {
             (p.ticks, p.utime, p.run_delay_ns.unwrap_or(0))
         });
         let delay_ns = t.run_delay_ns.unwrap_or(0);
         let cpu_us = t.ticks.saturating_sub(prev_ticks) * self.tick_us;
+        if split && role == ROLE_CONN {
+            // そのスレッドがいま持つ接続の状態で、要求・中継・空きに振り分ける (T39.11)
+            self.pending_split[split_slot(self.tid_states.get(&t.tid).copied())] += cpu_us;
+        }
         let w = &mut self.pending[role];
         w.cpu_us += cpu_us;
         // ユーザー空間も同じ流儀の増分 (T16.0。同じ `stat` の 1 回の読みから取るので、
@@ -273,13 +339,14 @@ impl Sampler {
     /// 溜めた標本を取り出して 0 に戻す (5 秒の窓へ)。
     ///
     /// 返すのは (役割ごと, CPU の多い順の上位 [`TOP_THREADS`] 本, 役割ごとの
-    /// 走れずに待った時間 (`schedstat` が読めなければ `None`))。
+    /// 走れずに待った時間 (`schedstat` が読めなければ `None`), `conn` 役の CPU の振り分け (T39.11))。
     pub(super) fn take(
         &mut self,
     ) -> (
         Threads,
         [TopThread; TOP_THREADS],
         Option<[u64; ROLES.len()]>,
+        ConnSplit,
     ) {
         // **何もしなかったスレッドは残さない** (暇なとき 140 本のうち 8 本を
         // 「CPU 0 の役立たず」で埋めても読む人の助けにならない)
@@ -300,7 +367,12 @@ impl Sampler {
             *v /= 1_000;
         }
         let run_delay = self.schedstat_readable.then_some(run_delay);
-        (std::mem::take(&mut self.pending), top, run_delay)
+        (
+            std::mem::take(&mut self.pending),
+            top,
+            run_delay,
+            std::mem::take(&mut self.pending_split),
+        )
     }
 }
 

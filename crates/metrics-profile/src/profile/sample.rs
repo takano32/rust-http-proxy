@@ -33,6 +33,9 @@ pub struct Sample {
     /// その窓にプロセスが使った CPU のうち**ユーザー空間** (us。`/proc/self/stat` の utime の増分。T16.0)。
     /// カーネル側は `cpu_us - cpu_user_us` (sys は持たない)。役割ごとは [`RoleWindow::user_us`](super::RoleWindow::user_us)
     pub cpu_user_us: u64,
+    /// `conn` 役の CPU を、そのスレッドがいま持つ接続の状態で要求・中継・空きに振り分けた us
+    /// ([`CONN_SPLIT`](super::CONN_SPLIT) の順。T39.11)。標本を取らない・接続の表が無いときは 0
+    pub conn_split: super::ConnSplit,
 }
 
 impl Sample {
@@ -45,6 +48,9 @@ impl Sample {
         self.requests += o.requests;
         self.cpu_us += o.cpu_us;
         self.cpu_user_us += o.cpu_user_us;
+        for (a, b) in self.conn_split.iter_mut().zip(o.conn_split.iter()) {
+            *a += *b;
+        }
         self.stages.merge(&o.stages);
         for (a, b) in self.threads.iter_mut().zip(o.threads.iter()) {
             a.merge(b);
@@ -69,7 +75,8 @@ impl Sample {
     }
 
     /// `[t,requests,cpu_us,[connect...],[forward...],[roles...],[locks...],[queue...],`
-    /// `[threads_top...],[run_delay_us...],[user_us...],cpu_user_us]`。
+    /// `[threads_top...],[run_delay_us...],[user_us...],cpu_user_us,[conn_split...]]`
+    /// (`conn_split` は `[request,relay,idle]` の us。T39.11)。
     /// **件数 0 の段階と標本 0 の役割は `0` 1 文字**で書く (静かな窓を小さくするため)。
     /// 上位のスレッドが 1 本も無い窓も `0`、`schedstat` が読めなければ `run_delay_us` は `null`。
     /// `user_us` (役割ごとのユーザー空間。T16.0) は `roles` と同じ長さの配列で、いつも数を書く。
@@ -102,7 +109,9 @@ impl Sample {
             }
             let _ = write!(out, "{}", r.user_us);
         }
-        let _ = write!(out, "],{}]", self.cpu_user_us);
+        // T39.11 で末尾に足した列: `conn` 役の CPU の振り分け `[request,relay,idle]`
+        let [req, relay, idle] = self.conn_split;
+        let _ = write!(out, "],{},[{},{},{}]]", self.cpu_user_us, req, relay, idle);
     }
 
     /// 役割ごとの `[cpu_us,samples,[states...]]` (標本 0 の役割は `0`)。

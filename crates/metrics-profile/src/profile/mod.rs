@@ -42,6 +42,12 @@
 //! `running` に出る。カーネル時間が 93% でも同じ)。**CPU の行き先は役割ごとの CPU を、
 //! 待ちの行き先は状態の割合を**読むこと。
 //!
+//! `conn` 役の CPU は、標本を取るたびに**そのスレッドがいま持つ接続の状態**
+//! (`/connections` の `state` と `tid`) で **要求・中継・空き**に振り分けて `conn_split` に積む (T39.11)。
+//! `relaying` (CONNECT の中継) は開いている間ずっと時間で払う分、`serving` / `reading` / `queued` は
+//! 要求で払う分、接続を持たないスレッド (空き置き場で待つワーカー) は空き。振り分けは 1 秒の
+//! 終わりの姿で決めるので、その 1 秒の途中で接続を手放したスレッドの CPU は手放した後の側に入る。
+//!
 //! `conn` 役には**仕事を待っているワーカー**も入る (`Workers` の空き置き場で
 //! `recv_timeout` = `futex`)。短い仕事を大量にさばく経路 (`--only connect`) では
 //! こちらが標本の大半を占めるので、状態を読むときは `futex` を「待機列」と見ること。
@@ -72,7 +78,7 @@ pub use procstat::process_cpu_us;
 pub use rings::Profile;
 pub use sample::Sample;
 pub(crate) use sampler::Sampler;
-pub use sampler::SamplerState;
+pub use sampler::{CONN_SPLIT, ConnSplit, SamplerState};
 pub use stages::Stages;
 pub use threads::{NSTATES, ROLES, RoleWindow, TOP_THREADS, Threads, TopThread, state_names};
 
@@ -167,6 +173,11 @@ pub trait Source: Send + Sync + 'static {
     fn take_stages(&self) -> Stages;
     /// 段階とスレッドの窓 (`Metrics::profile`)。
     fn profile(&self) -> &Profile;
+    /// 接続の表 (`Metrics::conns`)。`conn` 役の CPU を、そのスレッドが持つ接続の状態で
+    /// 要求・中継・空きに振り分けるのに読む (T39.11)。無ければ振り分けない (`conn_split` は 0)。
+    fn conn_table(&self) -> Option<&crate::recent::ConnTable> {
+        None
+    }
 }
 
 /// 1 標本ぶんの「前回との差」を取るための覚え書き。
@@ -223,7 +234,11 @@ pub fn spawn<M: Source>(metrics: std::sync::Arc<M>, sample_ms: u64) -> JoinHandl
             loop {
                 thread::sleep(step);
                 if let Some(s) = sampler.as_mut() {
-                    s.sample_unless_idle(metrics.profile(), metrics.total_requests());
+                    s.sample_unless_idle(
+                        metrics.profile(),
+                        metrics.total_requests(),
+                        metrics.conn_table(),
+                    );
                 }
                 waited += step;
                 if waited >= TICK {
@@ -246,7 +261,8 @@ fn tick<M: Source>(metrics: &M, prev: &mut Tick, sampler: Option<&mut Sampler>) 
     {
         *o = a.saturating_sub(*b);
     }
-    let (threads, threads_top, run_delay_us) = sampler.map(Sampler::take).unwrap_or_default();
+    let (threads, threads_top, run_delay_us, conn_split) =
+        sampler.map(Sampler::take).unwrap_or_default();
     let s = Sample {
         t: now_epoch(),
         requests: now.requests.saturating_sub(prev.requests),
@@ -260,6 +276,7 @@ fn tick<M: Source>(metrics: &M, prev: &mut Tick, sampler: Option<&mut Sampler>) 
         threads_top,
         run_delay_us,
         cpu_user_us: now.cpu_user_us.saturating_sub(prev.cpu_user_us),
+        conn_split,
     };
     *prev = now;
     metrics.profile().push(s);

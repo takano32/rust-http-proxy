@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use super::ConnSlot;
+use super::{ConnSlot, ConnState};
 use crate::sync::LockExt;
 
 /// いま開いている接続の表 (`/connections`)。
@@ -227,6 +227,31 @@ impl ConnTable {
             self.inner.locked().slots.values().map(Arc::clone).collect();
         v.sort_by_key(|s| s.id);
         v
+    }
+
+    /// スレッドの番号ごとに、そのスレッドがいま持っている接続の状態を `out` に書く (T39.11)。
+    ///
+    /// 呼ぶのは `profile-sample` スレッドの 1 秒に 1 回だけ (`conn` 役の CPU を要求・中継・空きに
+    /// 振り分けるため)。接続の経路には 1 命令も増えない (状態と `tid` は今も接続の経路が原子で
+    /// 書いている)。`tid` が 0 (預かり所) の接続は入れない。同じスレッドに 2 本載っていたら
+    /// (受け持ちを書き換える前の一瞬) 中継より要求を残す。`out` は先に空にする。
+    pub fn tid_states(&self, out: &mut HashMap<u32, ConnState>) {
+        out.clear();
+        let g = self.inner.locked();
+        for s in g.slots.values() {
+            let tid = s.tid();
+            if tid == 0 {
+                continue;
+            }
+            let st = s.state();
+            out.entry(tid)
+                .and_modify(|e| {
+                    if *e == ConnState::Relaying {
+                        *e = st;
+                    }
+                })
+                .or_insert(st);
+        }
     }
 
     /// 全 slot の `bytes` を控え直して、直近 `ms` の転送速度を書く (T14.39)。

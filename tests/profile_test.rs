@@ -38,8 +38,10 @@ fn test_integration_profile_has_the_shape_the_dashboard_reads() {
         "\"sampler\":\"off\"",
         "\"bounds_ms\":[1,2,5,10,25,50,100,250,500,1000,2500,5000]",
         // 新しい欄は**末尾**に足す (画面は位置で開くので、古い読み手はそのまま動く。T15.0)
-        // T16.0 は `user_us` (役割ごと) と `cpu_user_us` (プロセス全体) を末尾に足した
-        "\"keys\":[\"t\",\"requests\",\"cpu_us\",\"connect\",\"forward\",\"threads\",\"locks\",\"queue\",\"threads_top\",\"run_delay_us\",\"user_us\",\"cpu_user_us\"]",
+        // T16.0 は `user_us` (役割ごと) と `cpu_user_us` (プロセス全体) を末尾に足した。
+        // T39.11 は `conn_split` (`conn` 役の CPU の要求・中継・空き) を末尾に足した
+        "\"keys\":[\"t\",\"requests\",\"cpu_us\",\"connect\",\"forward\",\"threads\",\"locks\",\"queue\",\"threads_top\",\"run_delay_us\",\"user_us\",\"cpu_user_us\",\"conn_split\"]",
+        "\"conn_split\":[\"request\",\"relay\",\"idle\"]",
         "\"lock_names\":[\"stats\",\"dns\",\"park\",\"workers\"]",
         "\"locks_total\":[",
         "\"queue_total\":[",
@@ -212,6 +214,8 @@ fn test_integration_profile_stays_under_256_kib() {
             threads_top,
             run_delay_us: Some([9_876_543; profile::ROLES.len()]),
             cpu_user_us: 3_456_789,
+            // 振り分けの 3 列も最悪の桁で埋める (T39.11)
+            conn_split: [1_234_567; profile::CONN_SPLIT.len()],
         });
     }
     let json = endpoint_json(port, "/profile");

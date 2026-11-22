@@ -301,7 +301,7 @@ impl Default for Metrics {
     }
 }
 
-/// 段階とスレッドの標本を取るスレッド ([`crate::profile::spawn`]) が読む 3 つ。
+/// 段階とスレッドの標本を取るスレッド ([`crate::profile::spawn`]) が読む 4 つ (接続の表は T39.11)。
 ///
 /// **下の層 (`proxy-metrics-window`) から `Metrics` を呼べない**ので、あちらが決めた
 /// 口をここで埋める (T14.55 でクレートを割ったときの形。中身は今までと同じ読み方)。
@@ -316,6 +316,10 @@ impl crate::profile::Source for Metrics {
 
     fn profile(&self) -> &crate::profile::Profile {
         &self.profile
+    }
+
+    fn conn_table(&self) -> Option<&crate::recent::ConnTable> {
+        Some(&self.conns)
     }
 }
 

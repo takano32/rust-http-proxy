@@ -37,7 +37,7 @@ const HEADER_ROOM: usize = 4096;
 const SPANS: [(&str, u64); 3] = [("5m", 300), ("1h", 3600), ("all", 0)];
 
 /// 1 標本の並び (`/history` の `keys` と同じ役。新しい欄は末尾にだけ足す)。
-const SAMPLE_KEYS: [&str; 12] = [
+const SAMPLE_KEYS: [&str; 13] = [
     "t",
     "requests",
     "cpu_us",
@@ -50,6 +50,8 @@ const SAMPLE_KEYS: [&str; 12] = [
     "run_delay_us",
     "user_us",
     "cpu_user_us",
+    // T39.11: `conn` 役の CPU を要求・中継・空きに振り分けた us (並びは頭の `conn_split`)
+    "conn_split",
 ];
 
 /// 1 枚の頁の位置 (`?n=` `?offset=` と、環の何本のうち何本を出したか)。
@@ -134,6 +136,9 @@ fn write_head(out: &mut String, p: &Profile, res: usize) {
     join(out, profile::state_names().iter(), quoted);
     out.push_str("],\"lock_names\":[");
     join(out, crate::sync::LOCK_NAMES.iter(), quoted);
+    // 標本の `conn_split` の並び (T39.11)
+    out.push_str("],\"conn_split\":[");
+    join(out, profile::CONN_SPLIT.iter(), quoted);
     // 1 標本の並び (`/history` の `keys` と同じ役)
     out.push_str("],\"keys\":[");
     join(out, SAMPLE_KEYS.iter(), quoted);
@@ -254,7 +259,7 @@ fn quoted(out: &mut String, s: &&str) {
 mod tests {
     use super::*;
 
-    /// 1 標本の並び 12 個は、この順のまま (読む側は添字で引く。T34.95)。
+    /// 1 標本の並び 13 個は、この順のまま (読む側は添字で引く。T34.95。末尾の `conn_split` は T39.11)。
     #[test]
     fn the_sample_keys_keep_their_order() {
         assert_eq!(
@@ -271,19 +276,21 @@ mod tests {
                 "threads_top",
                 "run_delay_us",
                 "user_us",
-                "cpu_user_us"
+                "cpu_user_us",
+                "conn_split"
             ]
         );
         let m = crate::metrics::Metrics::new();
         let mut out = String::new();
         write_head(&mut out, &m.profile, 0);
         assert!(out.starts_with(SCHEMA_HEAD), "{}", out);
-        // 前は 1 本の文字列で書いていた並びと 1 バイトも違わない
+        // 前は 1 本の文字列で書いていた並びに、T39.11 の `conn_split` を足した形
         assert!(
             out.ends_with(
-                "],\"keys\":[\"t\",\"requests\",\"cpu_us\",\"connect\",\"forward\",\"threads\",\
-                 \"locks\",\"queue\",\"threads_top\",\"run_delay_us\",\"user_us\",\"cpu_user_us\"],\
-                 \"samples\":["
+                "],\"conn_split\":[\"request\",\"relay\",\"idle\"],\
+                 \"keys\":[\"t\",\"requests\",\"cpu_us\",\"connect\",\"forward\",\"threads\",\
+                 \"locks\",\"queue\",\"threads_top\",\"run_delay_us\",\"user_us\",\"cpu_user_us\",\
+                 \"conn_split\"],\"samples\":["
             ),
             "{}",
             out
