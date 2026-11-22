@@ -21,7 +21,7 @@
 #   > proxy-config 73.0 > proxy-net-dns 72.2 > proxy-metrics-core 71.8 > proxy-metrics-types 71.1
 #   > proxy-metrics-watch 71.0 > … > proxy-metrics-profile 69.2 > proxy-metrics-window 67.7 > proxy-metrics-slo 63.3 > …
 #   (段 8 の前は proxy-metrics-watch 95.4 > proxy-metrics-window 91.1 がいちばん上で、通る最小は 105 MB。
-#    段 8 で watch から SLO・日次・雪像を proxy-metrics-slo へ、window から窓の土台と段階の標本を
+#    段 8 で watch から SLO・日次・スナップショットを proxy-metrics-slo へ、window から窓の土台と段階の標本を
 #    proxy-metrics-profile へ割った。段 7 の前 = 要求の経路のクレートが `codegen-units = 1` だった頃は
 #    proxy-metrics-window 107.8 MB がいちばん上で、通る最小は 120〜125 MB)
 # 行数の順ではない。効くのは「自分の行数 + 依存から単相化されてくる量」。

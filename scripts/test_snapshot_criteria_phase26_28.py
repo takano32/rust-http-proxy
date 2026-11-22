@@ -320,7 +320,7 @@ class Criteria28Rows(unittest.TestCase):
         # 量が同じで CPU/要求 が 1.2 倍なら届かず
         b2 = self.snap(int(124_000_000 * 1.2), 29.0 * 3600, 42_672)
         self.assertEqual(sc._p28_cgroup_cpu_per_request({"a": a, "b": b2}, sc.PHASE28)[3], sd.MISSED)
-        # 要求の数が無い雪像は判定できず
+        # 要求の数が無いスナップショットは判定できず
         nb = self.snap(113_000_000, 24.2 * 3600, None)
         self.assertEqual(sc._p28_cgroup_cpu_per_request({"a": a, "b": nb}, sc.PHASE28)[3], sd.UNKNOWN)
 

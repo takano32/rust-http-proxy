@@ -3,9 +3,9 @@
 
     python3 -m unittest discover -s scripts        # リポジトリの根から
 
-入力は `snapshot-diff.py` の試験と同じ**架空の**雪像 2 枚
+入力は `snapshot-diff.py` の試験と同じ**架空の**スナップショット 2 枚
 (`testdata/snapshot-a.json` / `snapshot-b.json`) と、その場で書き換えた写し。
-**本物の雪像 (利用者の閲覧先が並ぶ) は入れない**。
+**本物のスナップショット (利用者の閲覧先が並ぶ) は入れない**。
 """
 
 import contextlib
@@ -39,7 +39,7 @@ def run(argv):
 
 @contextlib.contextmanager
 def written(**snaps):
-    """書き換えた雪像を一時ディレクトリに置いて、そのパスを返す。"""
+    """書き換えたスナップショットを一時ディレクトリに置いて、そのパスを返す。"""
     with tempfile.TemporaryDirectory() as tmp:
         paths = {}
         for name, body in snaps.items():
@@ -204,7 +204,7 @@ class Restart(unittest.TestCase):
     """再起動をまたいだら `/status` の通算は引き算しない (T14.99)。"""
 
     def pair(self, same_version):
-        """後の雪像 (`/status` の通算 1,200 件) と、その 24 時間前の雪像。"""
+        """後のスナップショット (`/status` の通算 1,200 件) と、その 24 時間前のスナップショット。"""
         b = read(B)
         b["status"].update(uptime_secs=43200, total_requests=1200)
         b["uptime_secs"] = 43200
@@ -224,7 +224,7 @@ class Restart(unittest.TestCase):
         return a, b
 
     def test_a_restart_that_only_shows_in_the_version_is_caught(self):
-        """`uptime_secs` の大小だけだと、**再起動の直後に取った**雪像を見落とす。"""
+        """`uptime_secs` の大小だけだと、**再起動の直後に取った**スナップショットを見落とす。"""
         a, b = self.pair(same_version=False)
         with written(a=a, b=b) as paths:
             md = run([paths["b"], "--prev", paths["a"]])
@@ -370,7 +370,7 @@ class Cpu(unittest.TestCase):
         self.assertNotIn("| ユーザー / カーネル |", md)
 
     def test_a_snapshot_without_profile_or_kernel_has_no_cpu_table(self):
-        """古い雪像 (A) には `/profile` も `kernel` も無いので表ごと出さない。"""
+        """古いスナップショット (A) には `/profile` も `kernel` も無いので表ごと出さない。"""
         self.assertNotIn("| CPU | 値 |", run([A]))
 
     def test_the_kernel_alone_is_enough_for_the_throttling_row(self):
@@ -421,7 +421,7 @@ class Wait(unittest.TestCase):
             del row[i:i + 4]
         with written(b=b) as paths:
             md = run([paths["b"]])
-        self.assertIn("| 利用者が待つ `wait` (直近 1 日) | (この雪像にその列は無い) |", md)
+        self.assertIn("| 利用者が待つ `wait` (直近 1 日) | (このスナップショットにその列は無い) |", md)
 
     def test_a_dropped_part_is_not_a_missing_column(self):
         """`history.5` は `/snapshot` の `DROP_ORDER` に入っていて**落ちることがある**。
@@ -435,9 +435,9 @@ class Wait(unittest.TestCase):
         b["dropped"] = (b.get("dropped") or []) + ["history.5"]
         with written(b=b) as paths:
             md = run([paths["b"]])
-        self.assertIn("| CONNECT 確立 (直近 1 時間) | (この部は雪像に入っていない) |", md)
+        self.assertIn("| CONNECT 確立 (直近 1 時間) | (この部はスナップショットに入っていない) |", md)
         # 部が丸ごと無い A も同じ (`history.60` がそもそも入っていない)
-        self.assertIn("| 利用者が待つ `wait` (直近 1 日) | (この部は雪像に入っていない) |", run([A]))
+        self.assertIn("| 利用者が待つ `wait` (直近 1 日) | (この部はスナップショットに入っていない) |", run([A]))
 
     def test_a_real_zero_is_still_zero(self):
         b = read(B)
@@ -489,14 +489,14 @@ class StuckTunnels(unittest.TestCase):
 
 
 class StatusBefore(unittest.TestCase):
-    """RSS だけは雪像の**前**に取った `/status` を使う (T15.0)。"""
+    """RSS だけはスナップショットの**前**に取った `/status` を使う (T15.0)。"""
 
     def test_the_rss_comes_from_the_status_taken_before_the_snapshot(self):
-        # 雪像を配ること自体が RSS を約 1.0 MB 押し上げるので、雪像の中の 20.0 MiB とは違う値
+        # スナップショットを配ること自体が RSS を約 1.0 MB 押し上げるので、スナップショットの中の 20.0 MiB とは違う値
         st = {"status": "ok", "cache": {"system": {"process_rss_bytes": 19 << 20}}}
         with written(before=st) as paths:
             md = run([B, "--status-before", paths["before"]])
-        self.assertIn("| RSS | 19.0 MiB (**RSS は雪像の前に取った `/status` の値**) |", md)
+        self.assertIn("| RSS | 19.0 MiB (**RSS はスナップショットの前に取った `/status` の値**) |", md)
 
     def test_without_the_option_the_rss_is_the_one_in_the_snapshot(self):
         self.assertIn("| RSS | 20.0 MiB |\n", run([B]))
@@ -552,7 +552,7 @@ class Anomalies(unittest.TestCase):
 
     def test_a_full_ring_that_still_holds_older_events_does_not_warn(self):
         # T32.31: 起動より前の出来事が 1 件でも残っていれば (ここでは前の起動の `start`)、起動からのぶんは
-        # 落ちていない (0.30.4 の雪像は起動より前の 308 件と起動の `start` が残っているのに警告していた)
+        # 落ちていない (0.30.4 のスナップショットは起動より前の 308 件と起動の `start` が残っているのに警告していた)
         t = read(B)["taken_at"]
         b = self.snapshot([{"at": t - 60, "kind": "anomaly", "text": "active_high: 200 of 240"}])
         b["events"]["capacity"] = 3
@@ -594,7 +594,7 @@ class ClientWatch(unittest.TestCase):
         # B は `/recent` を部ごと落としているので「窓」は `—` (0 本と書かない)。
         # B の 192.0.2.10 の行には `nonstandard_ports` が無い (古い版の形) ので起動からも `—`
         self.assertIn("| `192.0.2.10` | 200 | 42 | 0 / — | — / — |", md)
-        self.assertIn("  - `/recent` はこの雪像に入っていない", md)
+        self.assertIn("  - `/recent` はこのスナップショットに入っていない", md)
         self.assertIn("  - 新しく現れた接続元: 1 件: `198.51.100.7` (300 要求)", md)
 
     def test_without_prev_new_means_first_seen_after_the_start(self):
@@ -623,7 +623,7 @@ class ClientWatch(unittest.TestCase):
             md = run([paths["b"]])
         self.assertIn("| `192.0.2.10` | 5,000 | 42 | 4 / 2 | 2 / 2 |", md)
         self.assertIn("IP リテラル宛て 2 本、443・80 以外の CONNECT 2 本", md)
-        self.assertNotIn("**この雪像は切れている**", md)
+        self.assertNotIn("**このスナップショットは切れている**", md)
 
     def test_new_client_events_and_endpoint_only_readers_are_listed(self):
         b = read(B)
@@ -753,7 +753,7 @@ class Anonymized(unittest.TestCase):
 
 
 class SnapshotSize(unittest.TestCase):
-    """T29.16: 雪像の大きさと上限 (`limit_bytes`) に対する割合・部の `truncated` を頭に 1 行。90% 以上は警告。"""
+    """T29.16: スナップショットの大きさと上限 (`limit_bytes`) に対する割合・部の `truncated` を頭に 1 行。90% 以上は警告。"""
 
     @staticmethod
     def snap(pad, limit=4 * 1024 * 1024, truncated=False):

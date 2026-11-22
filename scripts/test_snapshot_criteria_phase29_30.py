@@ -320,7 +320,7 @@ class Criteria30Refresh(unittest.TestCase):
         # 合計が前の 1.5 倍以上なら届かず
         self.assertEqual(self.row(sc._p30_refresh_per_name, a, self.snap(16_000, 891, 560, hours=36))[3],
                          sd.MISSED)
-        # `/dns` の部が無い雪像も合計で比べる。`dns.refreshes` が無ければ判定できず
+        # `/dns` の部が無いスナップショットも合計で比べる。`dns.refreshes` が無ければ判定できず
         nodns = {k: v for k, v in a.items() if k != "dns"}
         row = self.row(sc._p30_refresh_per_name, nodns, b)
         self.assertEqual(row[3], sd.MET)

@@ -5,7 +5,7 @@
 # **`--prev` を渡すと通算の指標は差分**になる (`/status` の数はどれも起動からの通算なので、
 # そのまま読むと「いつからの値か」が混ざる)。
 #
-# **T15.0 で足した欄** (どれも「無ければ出さない」ので、古い雪像もそのまま読める):
+# **T15.0 で足した欄** (どれも「無ければ出さない」ので、古いスナップショットもそのまま読める):
 #   - CPU の表 … `/profile` の CPU (割り当てに対する使用率)・`/status` の `kernel.cgroup_cpu`
 #     (絞られた周期の割合)・`threads_top` (上位スレッド)・`run_delay_us` (走れずに待った時間)
 #   - 名前解決 … `misses_by_kind` (ミスの種類別) と引き直しの失敗・遅れ・最大 ms
@@ -28,10 +28,10 @@
 #     切り分ける (変わっていればホストの再起動 = こちらでは防げない。同じならプロセスだけ =
 #     落ちたか外から止められた)。`boot` の無い行 (T24.0 より前の版) は「判定できない」と添える
 #
-# **T29.16 で足した行** (要点の頭): 雪像の**大きさと上限 (`limit_bytes`) に対する割合**・部の `truncated`。
+# **T29.16 で足した行** (要点の頭): スナップショットの**大きさと上限 (`limit_bytes`) に対する割合**・部の `truncated`。
 #   90% 以上なら警告する (日次の 1 枚が上限を越えると、プロキシは `recent` を 256 KiB に戻して黙って
 #   T28.18 の形に戻る。0.28.48 の日次 `2026-10-26` は 4 MiB の 88% だった)。`--size-check FILE...` は
-#   この 1 行だけを並べる (`collect-deployed.sh --from-server` が取り寄せた雪像に使う)
+#   この 1 行だけを並べる (`collect-deployed.sh --from-server` が取り寄せたスナップショットに使う)
 #
 # 使い方: scripts/snapshot-summary.py SNAP.json [--prev PREV.json] [--status-before STATUS.json]
 #         scripts/snapshot-summary.py --size-check FILE [FILE ...]
@@ -62,7 +62,7 @@ CAUSE_NAMES = ["dns", "refused", "unreachable", "timeout", "reset", "tls", "loop
 MISS_KINDS = ["cold", "expired", "warm_stale", "negative"]
 # 「動かないトンネル」と見なす秒 (T15.0 の画面と同じ固定の閾。見出しに書く)
 IDLE_TUNNEL_SECS = 300
-# 雪像の大きさの警告の割合 (T29.16)。上限は雪像の `limit_bytes` (無い古い版は 4 MiB)
+# スナップショットの大きさの警告の割合 (T29.16)。上限はスナップショットの `limit_bytes` (無い古い版は 4 MiB)
 SIZE_WARN = 0.90
 # キャッシュの命中率を出す母数の下限 (1 日あたりの命中 + ミス。T29.19)
 HIT_RATIO_MIN_PER_DAY = 100
@@ -155,15 +155,15 @@ def latency_line(label, history, prefix, last=None):
     count, buckets, top, total = merge(history, prefix, last)
     if not count:
         # **「0 本」と「その列が無い」と「部ごと入っていない」は 3 つとも別**。
-        # `wait` は T15.0 より前の雪像に無く、0 本と書くと「誰も待っていない」と
+        # `wait` は T15.0 より前のスナップショットに無く、0 本と書くと「誰も待っていない」と
         # 読まれる。`history.5` は `/snapshot` が大きいときに落とす 3 つのうちの 1 つ
         # (`crates/endpoints/src/endpoints/recent/snapshot.rs` の `DROP_ORDER`) なので、
         # 落ちたときに「その列は無い」と書くと「この版は測っていない」と読まれる (T15.0)
         keys = history.get("keys") or []
         if not keys:
-            return f"| {label} | (この部は雪像に入っていない) | — | — | — |"
+            return f"| {label} | (この部はスナップショットに入っていない) | — | — | — |"
         if prefix + "_buckets" not in keys:
-            return f"| {label} | (この雪像にその列は無い) | — | — | — |"
+            return f"| {label} | (このスナップショットにその列は無い) | — | — | — |"
         return f"| {label} | 0 本 | — | — | — |"
     bounds = history.get("bounds_ms") or []
     p50 = quantile(buckets, count, top, 0.5, bounds)
@@ -222,7 +222,7 @@ def host_errors(snap):
 def error_delta(cur, prev):
     """前後の `/hosts` を**ホストの鍵で突き合わせて**引く (`--prev` が無ければ後の合計)。
 
-    2026-09-18 の実測 (`2026-09-18T053213Z-snapshot.json` と 2 日前の雪像): 表ごとの
+    2026-09-18 の実測 (`2026-09-18T053213Z-snapshot.json` と 2 日前のスナップショット): 表ごとの
     合計は 52 → 48 で **−4 件**、鍵で突き合わせると **+4 件** (dns 1・refused 1・timeout 2)
     で `/errors` の個票 4 件と一致した。差は「後の表から消えた 8 ホスト (エラー 8 件)」で、
     どちらの `/hosts` も `truncated` (1,000 件中 643 / 639 件) なので下位は簡単に出入りする。
@@ -376,7 +376,7 @@ def conn_evidence(c):
 
 
 def part(snap, name):
-    """雪像の部を取り出す (`parts` の `history.5` のような入れ子の名前も辿る)。"""
+    """スナップショットの部を取り出す (`parts` の `history.5` のような入れ子の名前も辿る)。"""
     v = snap
     for key in name.split("."):
         v = v.get(key) if isinstance(v, dict) else None
@@ -386,8 +386,8 @@ def part(snap, name):
 def restart_between(a, b, wall):
     """2 枚の間に再起動があったか (`snapshot-diff.py` の `restart_info()` と同じ見方)。
 
-    `uptime_secs` の大小だけを見ると、**再起動の直後に取った雪像**が前のときに見落とす
-    (2026-09-16 の 0 時間の雪像は `uptime_secs` 61 秒で、後の 131,881 秒より小さい)。
+    `uptime_secs` の大小だけを見ると、**再起動の直後に取ったスナップショット**が前のときに見落とす
+    (2026-09-16 の 0 時間のスナップショットは `uptime_secs` 61 秒で、後の 131,881 秒より小さい)。
     版の違いと「`uptime_secs` の伸びが窓に足りない」も再起動として数える。
     """
     va, vb = a.get("version"), b.get("version")
@@ -404,9 +404,9 @@ def restart_between(a, b, wall):
 def truncated_parts(snap):
     """**応答が 256 KiB で切れている部**を (名前, 出た件数, 全件) で並べる。
 
-    雪像の top-level の `dropped` は「4 MiB を越えたので**部ごと**落とした」の意味で
+    スナップショットの top-level の `dropped` は「4 MiB を越えたので**部ごと**落とした」の意味で
     (`crates/endpoints/src/endpoints/recent/snapshot.rs`)、部の中の打ち切りは載らない。
-    2026-09-18 の雪像は `dropped` が空のまま `recent` / `hosts` / `profile` の 3 つが
+    2026-09-18 のスナップショットは `dropped` が空のまま `recent` / `hosts` / `profile` の 3 つが
     切れていて、要約からは「CPU は 1 日ぶんでなく 456 標本ぶん」が読めなかった。
     """
     out = []
@@ -418,7 +418,7 @@ def truncated_parts(snap):
 
 
 def size_report(path, snap):
-    """雪像の大きさと上限 (`limit_bytes`) に対する割合・部の `truncated`・`dropped` の 1 行と、警告するかを返す (T29.16)。"""
+    """スナップショットの大きさと上限 (`limit_bytes`) に対する割合・部の `truncated`・`dropped` の 1 行と、警告するかを返す (T29.16)。"""
     nbytes = os.path.getsize(path)
     limit = snap.get("limit_bytes") or DEFAULT_LIMIT_BYTES
     # `collect-deployed.sh` が切れた部の続きを繋いだ 1 枚 (`joined`。T30.2) は、繋いだあとの大きさでは
@@ -607,15 +607,15 @@ def print_client_watch(w):
     print(f"  - 新しく現れた接続元: {len(new)} 件"
           + (": " + "、".join(f"`{r['client']}` ({num(r['requests'])} 要求)" for r in new[:10])
              if new else "")
-          + (" (前の雪像に `/clients` が無いので差分は取れず、`first_seen` で見た)"
+          + (" (前のスナップショットに `/clients` が無いので差分は取れず、`first_seen` で見た)"
              if w["prev_without_clients"] else ""))
     if w["has_recent"]:
         print("  - `/recent` の窓の中 (256 KiB で切れることがある"
-              + ("。**この雪像は切れている**" if w["recent_truncated"] else "")
+              + ("。**このスナップショットは切れている**" if w["recent_truncated"] else "")
               + f"): IP リテラル宛て {num(w['recent_literal'])} 本、443・80 以外の CONNECT"
               f" {num(w['recent_nonstandard'])} 本")
     else:
-        print("  - `/recent` はこの雪像に入っていない (窓の中の数は出せない。表の「窓」は `—`)")
+        print("  - `/recent` はこのスナップショットに入っていない (窓の中の数は出せない。表の「窓」は `—`)")
     ev = w["events"]
     if ev:
         inside = [e for e in ev if w["since"] and (e.get("at") or 0) >= w["since"]]
@@ -657,7 +657,7 @@ def status_delta(st, pst, prev, restarted):
         """`status` の通算から前回を引く (`--prev` が無ければそのまま)。
 
         **再起動をまたいだら引き算しない**。`/status` の通算は再起動で 0 に戻るので、
-        前の雪像 (別のプロセス) の値を引くとその分だけ足りなくなる
+        前のスナップショット (別のプロセス) の値を引くとその分だけ足りなくなる
         (2026-09-16 の 2 枚では要求 3,312 − 11 = 3,301 と、前の版の 11 件を引いていた)。
         `snapshot-diff.py` の「再起動」と同じく「起動から」の値として読む。
         """
@@ -722,7 +722,7 @@ def overall_lines(d, st, before, delta, reqs, secs, restarted):
     if before:
         early = ((before.get("cache") or {}).get("system") or {}).get("process_rss_bytes")
         if early is not None:
-            rss, rss_note = early, " (**RSS は雪像の前に取った `/status` の値**)"
+            rss, rss_note = early, " (**RSS はスナップショットの前に取った `/status` の値**)"
     out.append(f"| RSS | {fmt_bytes(rss)}{rss_note} |")
     out.append("")
     return out
@@ -926,12 +926,12 @@ def main(argv=None):
     p = argparse.ArgumentParser(description="/snapshot を 1 枚の要点に畳む")
     p.add_argument("snapshot", nargs="?")
     p.add_argument("--size-check", nargs="+", metavar="FILE",
-                   help="雪像の大きさと上限に対する割合・部の truncated だけを 1 枚 1 行で並べる (T29.16)")
-    p.add_argument("--prev", metavar="PREV.json", help="前回の雪像 (通算の指標を差分にする)")
-    # 雪像を配ること自体が RSS を約 1.0 MB 押し上げるので、RSS だけは雪像の**前**に
+                   help="スナップショットの大きさと上限に対する割合・部の truncated だけを 1 枚 1 行で並べる (T29.16)")
+    p.add_argument("--prev", metavar="PREV.json", help="前回のスナップショット (通算の指標を差分にする)")
+    # スナップショットを配ること自体が RSS を約 1.0 MB 押し上げるので、RSS だけはスナップショットの**前**に
     # 取った `/status` を使う (T15.0。ほかの通算は 1 秒差で意味が変わらない)
     p.add_argument("--status-before", metavar="STATUS.json",
-                   help="雪像の前に取った /status (**RSS だけ**こちらの値を使う)")
+                   help="スナップショットの前に取った /status (**RSS だけ**こちらの値を使う)")
     args = p.parse_args(argv)
     if args.size_check:
         for path in args.size_check:
@@ -943,7 +943,7 @@ def main(argv=None):
             print(f"- `{path}`: " + size_report(path, snap)[0])
         return 0
     if not args.snapshot:
-        p.error("雪像 (SNAP.json) か --size-check が要る")
+        p.error("スナップショット (SNAP.json) か --size-check が要る")
     d = load(args.snapshot)
     prev = load(args.prev) if args.prev else None
     before = load(args.status_before) if args.status_before else None
@@ -975,7 +975,7 @@ def main(argv=None):
     emit(connection_lines(d))
 
     # T17.0c: `/events` の anomaly の種類別 件/時 と、接続元の見張り。
-    # **どちらも部が無い版では出さない** (古い雪像もそのまま読める)
+    # **どちらも部が無い版では出さない** (古いスナップショットもそのまま読める)
     rates = anomaly_rates(d)
     if rates is not None:
         print()

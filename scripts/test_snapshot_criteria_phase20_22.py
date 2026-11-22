@@ -139,7 +139,7 @@ class Criteria20(unittest.TestCase):
     def test_a_version_without_cache_memory_is_not_read_as_zero(self):
         with written(z=zero_snapshot(), full=cached(zero_snapshot(), 0),
                      b=cached(read(B), None)) as p:
-            zero = self.row(8, extra=("--zero", p["z"]))     # 0 時間の雪像に欄が無い
+            zero = self.row(8, extra=("--zero", p["z"]))     # 0 時間のスナップショットに欄が無い
             after = self.row(8, b=p["b"], extra=("--zero", p["full"]))
         self.assertEqual(zero[3], sd.UNKNOWN)
         self.assertIn("0 時間の `cache_memory` が無い", zero[4])
@@ -177,7 +177,7 @@ class Criteria21(unittest.TestCase):
     """`--criteria phase21` (T21.2): phase20 の 10 行のうち、T20.99 で届かなかった 3 行の読み方を直したもの。
 
     平常時のミスは表示だけ (日ごとの幅と `misses_by_kind` の内訳)、conn 役の CPU/要求 は前か後の
-    `/profile` が 12 時間に満たなければ「参考」、`ipv6.request_probes` は 0 時間の雪像から 3 時間以内なら
+    `/profile` が 12 時間に満たなければ「参考」、`ipv6.request_probes` は 0 時間のスナップショットから 3 時間以内なら
     「満たした」。B の起動は `Criteria17Parts.START`、`zero_snapshot()` はその 2 分後に撮った 1 枚。
     """
 

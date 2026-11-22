@@ -2,12 +2,12 @@
 // 前の節の `const` を使うので、`check-dashboard.js` が名前の順につないで 1 つの本文として回す)
 // 14. **応答の形の版 (`schema`。T14.49)**。
 // プロキシの応答は先頭に `"schema":1` を持つようになった。ここで見るのは 2 つ:
-//   (a) **版の無い古い出力 (版 0) が今までどおり読めること** — 手元に残っている雪像
+//   (a) **版の無い古い出力 (版 0) が今までどおり読めること** — 手元に残っているスナップショット
 //       (`scripts/testdata/snapshot-local.json`、匿名化した実データ) はどれも版を
 //       持たない形なので、そちらが読めなくなったら過去のデータを描けない
 //   (b) **版 1 の出力も同じ関数で読めること** — 版を足しただけで形は変わっていないので、
 //       版の無い古い出力と**同じ結果**にならなければならない (版の分岐が読み方を変えていない証拠)
-// 版 1 の入力は、版の無い雪像に `schema` を足して作る (新しいプロキシの出力と同じ形)。
+// 版 1 の入力は、版の無いスナップショットに `schema` を足して作る (新しいプロキシの出力と同じ形)。
 const SCHEMA = 1;
 
 /** この JSON の形の版 (`schema` が無い古い出力は 0 = 推測で読む)。 */
@@ -16,7 +16,7 @@ function schemaOf(x) {
   return Number.isInteger(v) ? v : 0;
 }
 
-/** 版の無い雪像を版 1 の形にする (外側と、object の部の全部に `schema` を足す)。 */
+/** 版の無いスナップショットを版 1 の形にする (外側と、object の部の全部に `schema` を足す)。 */
 function withSchema(snapshot) {
   const out = { schema: SCHEMA };
   for (const k of Object.keys(snapshot)) {
@@ -75,7 +75,7 @@ if (schemaOf({ schema: true }) !== 0 || schemaOf({ schema: '1' }) !== 0) {
 }
 console.log(
   versioned.length === 0
-    ? '(版 (schema) を確かめる雪像が無い)'
+    ? '(版 (schema) を確かめるスナップショットが無い)'
     : 'OK: 応答の形の版 (schema。T14.49) で分岐しても読み方が変わらない: ' + versioned.join('、') +
         '。版の無い古い出力は版 0 として今までどおり読める'
 );

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-# `/events` の `dns_slow` (T14.23 / T17.1) を雪像の `/history?res=60` から作り直し、閾の案を並べる (T22.2)。
+# `/events` の `dns_slow` (T14.23 / T17.1) をスナップショットの `/history?res=60` から作り直し、閾の案を並べる (T22.2)。
 #
-# 材料は雪像 (`/snapshot`) 1 枚の `history["60"]` (1 分 × 1,440 行 = 24 時間) と、その `canary`
+# 材料はスナップショット (`/snapshot`) 1 枚の `history["60"]` (1 分 × 1,440 行 = 24 時間) と、その `canary`
 # (canary の名前解決の ms)。判定の規則は `crates/metrics-watch/src/anomaly/detector.rs` の `Detector::hits` を写した:
 #   - 窓は直近 5 分 (`WINDOW_SECS`)。**1 分の行 5 本**を 1 つの窓にし、1 分ごとに判定する
 #     (実機は 5 秒の標本を 5 秒ごとに畳むので、立つ瞬間は最大 1 分ずれ、5 秒の境目にまたがる窓は見えない)
@@ -17,7 +17,7 @@
 # 標本にミスの最大を足す要がある (`/history` の列が増える)。
 #
 # 実機の `/events` の `dns_slow` (履歴の範囲の中で立ったもの) と、T22.2 の前の条件 (`current`) と今の条件 (`sum1000`)
-# の件数・時刻を突き合わせる (雪像の版がどちらの条件で走っていたかで、組める方が変わる)。
+# の件数・時刻を突き合わせる (スナップショットの版がどちらの条件で走っていたかで、組める方が変わる)。
 #
 # 使い方: scripts/dns-slow-replay.py SNAP.json [SNAP.json ...] [--json]
 # 依存は Python 3 の標準ライブラリだけ (このリポジトリの方針どおり外部パッケージを使わない)。
@@ -114,7 +114,7 @@ def trim1(w):
 
 # 案: 名前 -> (説明, 立つ条件)。`current` は T22.2 より前の `anomaly.rs` (比べる基準として名前を残す)。
 # **`sum1000` が T22.2 で入れた今の条件** (`DNS_MIN_MISSES` 3 回以上・平均が閾以上・`DNS_MIN_SUM_MS`
-# 1,000 ms 以上) と同じものを数える。T22.2 のあとの雪像では、実機の `/events` と組めるのは `sum1000` の方
+# 1,000 ms 以上) と同じものを数える。T22.2 のあとのスナップショットでは、実機の `/events` と組めるのは `sum1000` の方
 PROPOSALS = {
     "current": ("min 3, avg >= limit (T22.2 の前)",
                 lambda w: w["misses"] >= DNS_MIN_MISSES and avg(w) >= w["limit"]),

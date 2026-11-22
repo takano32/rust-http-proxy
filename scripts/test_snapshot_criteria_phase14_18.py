@@ -314,7 +314,7 @@ class Criteria15(unittest.TestCase):
 class Criteria17(Criteria17Parts, unittest.TestCase):
     """`--criteria phase17` の 8 行 (T17.0a。前の 4 行は phase15 の関数、後ろの 4 行が T16.99 の判定)。
 
-    雪像は `testdata/snapshot-{a,b}.json` に**作り物の欄を足して**使う (ファイルは書き換えない)。
+    スナップショットは `testdata/snapshot-{a,b}.json` に**作り物の欄を足して**使う (ファイルは書き換えない)。
     B の起動は 1789086400 − 43200 = 1789043200 (12 時間前)。
     """
 
@@ -379,7 +379,7 @@ class Criteria17(Criteria17Parts, unittest.TestCase):
     # --- conn 役の CPU/要求 (`--profile`)
 
     def test_without_a_profile_before_the_ratio_cannot_be_judged(self):
-        """A には `/profile` が無い。後は B の雪像の部 (80,000 us/要求) で「参考」。"""
+        """A には `/profile` が無い。後は B のスナップショットの部 (80,000 us/要求) で「参考」。"""
         row = self.row(4)
         self.assertEqual(row[3], sd.UNKNOWN)
         self.assertIn("80,000 us/要求", row[2])
@@ -537,7 +537,7 @@ class Criteria17(Criteria17Parts, unittest.TestCase):
 class Criteria18(unittest.TestCase):
     """`--criteria phase18` の 10 行 (T18.2。前の 8 行は phase17 の関数、後ろの 2 行が T18.0 の `heap_used + mmap` と IPv6 の探り)。
 
-    雪像は `testdata/snapshot-{a,b}.json` に**作り物の欄を足して**使う (T18.1 の欄は名前だけ同じ)。
+    スナップショットは `testdata/snapshot-{a,b}.json` に**作り物の欄を足して**使う (T18.1 の欄は名前だけ同じ)。
     """
 
     def judge(self, a=None, b=None, extra=()):
@@ -611,7 +611,7 @@ class Criteria18(unittest.TestCase):
         self.assertIn("`--zero` (0 時間の雪像) が渡されていない", row[4])
 
     def test_a_zero_snapshot_of_another_start_cannot_be_judged(self):
-        """版が違う 1 枚と、同じ版でも後の雪像より後に起動した 1 枚 (`uptime_secs` が減る) は使わない。"""
+        """版が違う 1 枚と、同じ版でも後のスナップショットより後に起動した 1 枚 (`uptime_secs` が減る) は使わない。"""
         with written(other=zero_snapshot(version="0.1.0+aaaaaaa"),
                      later=zero_snapshot(uptime=50_000)) as p:
             other = self.row(8, extra=("--zero", p["other"]))
@@ -680,7 +680,7 @@ class Criteria18(unittest.TestCase):
 
 
 class DailySnapshots(unittest.TestCase):
-    """`--daily-snapshots DIR` (T18.2): 同じ版の日次の雪像を撮った時刻の順に並べる。"""
+    """`--daily-snapshots DIR` (T18.2): 同じ版の日次のスナップショットを撮った時刻の順に並べる。"""
 
     @staticmethod
     def daily(uptime, version="0.1.0+bbbbbbb", **memory):

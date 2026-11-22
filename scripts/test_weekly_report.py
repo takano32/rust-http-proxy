@@ -5,7 +5,7 @@
     cd scripts && python3 -m unittest              # scripts の中から
 
 受け入れ基準の本体は `SevenDays`: **匿名化した実データ (T14.35) の 1 日ぶんを 7 日に複製**
-(日付をずらして 7 枚の雪像にする) して回し、表 8 つが出て、**日別の数字が
+(日付をずらして 7 枚のスナップショットにする) して回し、表 8 つが出て、**日別の数字が
 `snapshot-diff.py` (T14.17) の `aggregate()` の値と 1 つ残らず一致する**ことを見る。
 実データそのもの (`testdata/deployed-2026-09-16.anon.json`) は `/history?res=3600` に
 7 日ぶん (2026-09-10 〜 09-16) 入っているので、1 枚でも 7 日の表が出る。
@@ -65,9 +65,9 @@ def grow(row, times):
 
 
 def one_day(base, k, drop_host=None, drop_client=None):
-    """匿名化した実データの `SRC_DAY` 1 日ぶんを `k` 日ずらした雪像にする。
+    """匿名化した実データの `SRC_DAY` 1 日ぶんを `k` 日ずらしたスナップショットにする。
 
-    T14.34 の日次の雪像と同じ形 (その 1 日を写したものが翌日 00:00 UTC に残る) にしたい
+    T14.34 の日次のスナップショットと同じ形 (その 1 日を写したものが翌日 00:00 UTC に残る) にしたい
     ので、`taken_at` は**翌日の 00:00**。`/history?res=3600` はその日の 24 標本だけで、
     `/hosts` と `/status` の `clients[]` は `.rrd` の通算なので `k + 1` 日ぶんに増やす。
     """
@@ -89,7 +89,7 @@ def one_day(base, k, drop_host=None, drop_client=None):
 
 
 def week_of(tmp, count=7, drop_host=None, drop_client=None):
-    """`SRC_DAY` を `count` 日に複製した雪像を `tmp` に書く (名前は T14.34 の流儀)。
+    """`SRC_DAY` を `count` 日に複製したスナップショットを `tmp` に書く (名前は T14.34 の流儀)。
 
     `drop_host` は**いちばん古い 1 枚だけ**から外す (2 枚目で「新しく見たホスト」になる)、
     `drop_client` は**2 枚目から**外す (1 日目で「来なくなった」になる)。
@@ -191,7 +191,7 @@ class SevenDays(unittest.TestCase):
         self.assertEqual(self.d["days"][0], SRC_DAY)
         self.assertEqual(self.d["missing"], [])
         self.assertEqual(len(self.d["snaps"]), 7)
-        self.assertIn("**雪像 7 枚、7 日ぶん**", self.md)
+        self.assertIn("**スナップショット 7 枚、7 日ぶん**", self.md)
 
     def test_all_eight_tables_are_there(self):
         for head in ("## 要求数", "## CONNECT 確立", "## 名前解決のミス率",
@@ -268,7 +268,7 @@ class SevenDays(unittest.TestCase):
 
     def test_the_hosts_table_is_a_difference_because_there_are_seven_snapshots(self):
         self.assertTrue(self.d["hosts"]["windowed"])
-        self.assertIn("いちばん古い雪像といちばん新しい雪像", self.md)
+        self.assertIn("いちばん古いスナップショットといちばん新しいスナップショット", self.md)
 
 
 class OneSnapshot(unittest.TestCase):
@@ -283,7 +283,7 @@ class OneSnapshot(unittest.TestCase):
         self.assertEqual(self.d["days"], ["2026-09-10", "2026-09-11", "2026-09-12",
                                           "2026-09-13", "2026-09-14", "2026-09-15",
                                           "2026-09-16"])
-        self.assertIn("**雪像 1 枚、7 日ぶん**", self.md)
+        self.assertIn("**スナップショット 1 枚、7 日ぶん**", self.md)
 
     def test_the_day_numbers_match_snapshot_diff(self):
         snap = sd.load_source(ANON, False)
@@ -314,16 +314,16 @@ class OneSnapshot(unittest.TestCase):
 
     def test_new_hosts_need_a_second_snapshot(self):
         self.assertEqual(self.d["new_hosts"]["pairs"], 0)
-        self.assertIn("雪像が 1 枚しか無いので「前の雪像」が無い", self.md)
+        self.assertIn("スナップショットが 1 枚しか無いので「前のスナップショット」が無い", self.md)
 
     def test_the_hosts_table_says_it_could_not_subtract(self):
         self.assertFalse(self.d["hosts"]["windowed"])
-        self.assertIn("雪像が 1 枚なので引き算できない", self.md)
+        self.assertIn("スナップショットが 1 枚なので引き算できない", self.md)
         self.assertIn("`/hosts` が 256 KiB で切れている", self.md)   # 817 / 1,000 件
 
     def test_fewer_days_than_asked_is_said_at_the_head(self):
         md = run([ANON, "--days", "30"])
-        self.assertIn("**雪像 1 枚、7 日ぶん** (求めたのは 30 日、足りない 23 日", md)
+        self.assertIn("**スナップショット 1 枚、7 日ぶん** (求めたのは 30 日、足りない 23 日", md)
 
     def test_days_zero_means_everything_there_is(self):
         self.assertEqual(len(build([ANON, "--days", "0"])["days"]), 7)
@@ -402,7 +402,7 @@ class FromDaily(unittest.TestCase):
 
 
 class LocalSnapshot(unittest.TestCase):
-    """`/bursts` `/clients` の**ある**雪像 (T14.8 の `snapshot-local.json`) で表 5 と 6 を見る。"""
+    """`/bursts` `/clients` の**ある**スナップショット (T14.8 の `snapshot-local.json`) で表 5 と 6 を見る。"""
 
     @classmethod
     def setUpClass(cls):
@@ -416,7 +416,7 @@ class LocalSnapshot(unittest.TestCase):
         self.assertIn("| 日 | 写真 | 最大同時 | いちばん多かった時刻 | 接続元 |", self.md)
 
     def test_a_fine_resolution_warns_that_the_normal_threshold_is_one(self):
-        # `res=3600` の標本が無い雪像なので `res=5` に落ち、平常時の閾が 1 本になる
+        # `res=3600` の標本が無いスナップショットなので `res=5` に落ち、平常時の閾が 1 本になる
         self.assertEqual((self.d["res"], self.d["limit"]), ("5", 1))
         self.assertIn("平常時の閾が 1 標本 1 本になっている", self.md)
 
@@ -431,7 +431,7 @@ class LocalSnapshot(unittest.TestCase):
     def test_clients_come_from_the_clients_endpoint(self):
         self.assertTrue(self.d["has_clients_part"])
         self.assertTrue(all(e["arrived_exact"] for e in self.d["clients"].values()))
-        # `/clients` には `first_seen` があるので、いちばん古い雪像の日でも「新しく来た」
+        # `/clients` には `first_seen` があるので、いちばん古いスナップショットの日でも「新しく来た」
         self.assertTrue(any(mv["in"] for mv in self.d["moves"].values()))
 
 

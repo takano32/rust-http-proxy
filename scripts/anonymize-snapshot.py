@@ -14,7 +14,7 @@
     scripts/anonymize-snapshot.py status/2026-09-16T0106Z-* \
                                   -o scripts/testdata/deployed-2026-09-16.anon.json
     scripts/anonymize-snapshot.py a-snapshot.json -o -        # 標準出力へ
-    # 雪像に入らない口 (`collect-deployed.sh` が隣に置く `-daily.json` `-profile_res_60.json` など) も
+    # スナップショットに入らない口 (`collect-deployed.sh` が隣に置く `-daily.json` `-profile_res_60.json` など) も
     # **同じ表で**置き換える (T17.16)。既定の出力は隣の `<名前>.anon.json`、`IN=OUT` で置き場を指せる
     scripts/anonymize-snapshot.py status/2026-09-26T114602Z-snapshot.json \
         -o status/2026-09-26T114602Z-snapshot.anon.json \
@@ -604,7 +604,7 @@ def load_inputs(paths):
     return snap
 
 
-# 匿名化した出力の名前の終わり (`collect-deployed.sh` が雪像の隣に置く形。T17.16)
+# 匿名化した出力の名前の終わり (`collect-deployed.sh` がスナップショットの隣に置く形。T17.16)
 ANON_SUFFIX = ".anon.json"
 
 
@@ -636,15 +636,15 @@ def main(argv=None):
     p.add_argument("-o", "--out", required=True, metavar="OUT",
                    help="書き出し先 (`-` で標準出力)")
     p.add_argument("--side", action="append", default=[], metavar="IN[=OUT]",
-                   help="雪像に入らない口の JSON (`-daily.json` `-profile_res_60.json` など) を"
-                        "**雪像と同じ表で**置き換える (何回でも)。既定の出力は隣の `<名前>.anon.json`")
+                   help="スナップショットに入らない口の JSON (`-daily.json` `-profile_res_60.json` など) を"
+                        "**スナップショットと同じ表で**置き換える (何回でも)。既定の出力は隣の `<名前>.anon.json`")
     p.add_argument("-q", "--quiet", action="store_true", help="件数を出さない")
     args = p.parse_args(argv)
 
     snap = load_inputs(args.inputs)
     anon = Anonymizer()
-    # 雪像を先に通す (隣の口を足しても雪像の番号は変わらない = `--side` 無しの出力と同じ)。
-    # 隣の口は同じ `Anonymizer` に続けて通すので、雪像に出た名前は同じ番号になる
+    # スナップショットを先に通す (隣の口を足してもスナップショットの番号は変わらない = `--side` 無しの出力と同じ)。
+    # 隣の口は同じ `Anonymizer` に続けて通すので、スナップショットに出た名前は同じ番号になる
     size = write_json(args.out, anon.run(snap))
     sides = []
     for spec in args.side:

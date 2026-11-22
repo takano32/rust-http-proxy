@@ -3,7 +3,7 @@
 
     python3 -m unittest discover -s scripts        # リポジトリの根から
 
-入力は**その場で組んだ架空の**雪像 (`history["60"]` と `events` だけ)。本物の雪像は入れない。
+入力は**その場で組んだ架空の**スナップショット (`history["60"]` と `events` だけ)。本物のスナップショットは入れない。
 """
 
 import contextlib

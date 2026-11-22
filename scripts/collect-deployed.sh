@@ -1,23 +1,23 @@
 #!/bin/bash
 # デプロイ先の様子を **1 回で取って 1 枚に読む** (TODO.md T14.4)。
 #
-# `/snapshot` (T14.4) を保存し、前回の雪像との差分 (`snapshot-diff.py` と `status-diff.py`)、
+# `/snapshot` (T14.4) を保存し、前回のスナップショットとの差分 (`snapshot-diff.py` と `status-diff.py`)、
 # ダッシュボードの読み方の確認 (`check-dashboard.js`)、手元から見た待ち (`probe-deployed.sh`) を
 # 続けて回して、**Markdown 1 枚**を標準出力に出す。T14.0 で 17 本の URL を手で叩いていた作業の代わり。
-# **前回の雪像があれば `snapshot-diff.py` (T14.17) を呼ぶ** (再起動で切った平常時の前後・ホスト別・
+# **前回のスナップショットがあれば `snapshot-diff.py` (T14.17) を呼ぶ** (再起動で切った平常時の前後・ホスト別・
 # 接続元別・名前解決・エラー・バースト)。**完了の定義に対する判定表は要約のいちばん最後**に置く。
-# 判定表の相手は既定では前回の雪像で、`BEFORE=<再デプロイ直前の雪像>` を渡すとそちらになる (T18.2)。
+# 判定表の相手は既定では前回のスナップショットで、`BEFORE=<再デプロイ直前のスナップショット>` を渡すとそちらになる (T18.2)。
 #
 # 使い方:
 #   scripts/collect-deployed.sh HOST:PORT [DIR]
 #     例: scripts/collect-deployed.sh tokyo.sorahost.net:60357
 #         scripts/collect-deployed.sh 127.0.0.1:8080 /tmp/snaps      # 手元のプロキシで試す
 #   保存先の既定はリポジトリの `status/` (`<UTC 時刻>-snapshot.json`、秒まで)。
-#   同じ時刻の名前で、要約 (`-collect.md`)・道具の文句 (`-collect.err`、空なら残さない)・雪像に入らない口
+#   同じ時刻の名前で、要約 (`-collect.md`)・道具の文句 (`-collect.err`、空なら残さない)・スナップショットに入らない口
 #   (`-daily.json` `-healthz.json` `-slo.json` `-config.json` `-profile_res_60.json`) も隣に置く。
 #   `-profile_res_60.json` は 1 枚 (256 KiB) で切れるので、`--full` が無くても `offset=` で追って
 #   24 時間ぶんを 1 つに繋ぐ (T17.0b。`samples` を連結して `truncated` は `false`)。
-#   **雪像の `recent` と `hosts` も、切れていれば既定で `offset=` で追って雪像の同じ部に繋ぐ** (T22.5。
+#   **スナップショットの `recent` と `hosts` も、切れていれば既定で `offset=` で追ってスナップショットの同じ部に繋ぐ** (T22.5。
 #   T27.1 から `dns` と `profile` も。形は `/snapshot` のまま。上限は部ごとに `MAX_PAGES` 枚、続きを引く時間の合計 `FOLLOW_SECS` 秒で、
 #   越えたら止めて要約に書く)。`FULL=0` か `--no-follow` で T22.5 より前のとおり追わない。
 #   **`status/` は .gitignore 済みでコミットしない** (個票には接続元 IP と宛先ホストが並ぶため)。
@@ -45,18 +45,18 @@
 #     と取り寄せ・選択の箇条。`BEFORE` / `ZERO` を渡せばそちらを使う。
 #
 #   scripts/collect-deployed.sh --full HOST:PORT [DIR]
-#     雪像で `truncated` が立った部 (`recent` / `hosts` / `profile`) の**続き**を `offset=` で
-#     追って `<UTC 時刻>-page<何枚目>-<部>.json` に落とす (T15.0)。雪像 1 枚には `/recent` は
+#     スナップショットで `truncated` が立った部 (`recent` / `hosts` / `profile`) の**続き**を `offset=` で
+#     追って `<UTC 時刻>-page<何枚目>-<部>.json` に落とす (T15.0)。スナップショット 1 枚には `/recent` は
 #     2,000 件中 615 件、`/hosts` は 1,000 件中 639 件、`/profile?res=5` は 720 標本中 456 (T15.0 の実測) しか
 #     入らないので、全部を残したい日だけ付ける。`recent` と `hosts` は T22.5 から、`profile` は T27.1 から
-#     既定で雪像に繋ぐので、別ファイルに落ちるのはそのあとも切れている部だけ (上限で止めた残り)。
+#     既定でスナップショットに繋ぐので、別ファイルに落ちるのはそのあとも切れている部だけ (上限で止めた残り)。
 #     `--full --no-follow` で T22.5 より前の `--full` (3 つとも別ファイル) になる。
-#     `snapshot-summary.py` に渡す雪像の形は変わらない (落とすのは別ファイル)。
+#     `snapshot-summary.py` に渡すスナップショットの形は変わらない (落とすのは別ファイル)。
 #     **名前が `page<N>-<部>` の順なのはわざと**: `<部>-<N>` にすると
 #     `snapshot-diff.py --from-files` と `anonymize-snapshot.py` の `classify()` が
 #     「`<UTC 時刻>-` の後ろが部の名前で始まれば 1 口 1 ファイル」と見分けるので、
 #     続きの 1 枚を部そのものと取り違える (`page2-hosts.json` はどちらも読み飛ばす)。
-#     `--from-server` とは併用できない (あちらは保存済みの雪像を取り寄せるだけ)。
+#     `--from-server` とは併用できない (あちらは保存済みのスナップショットを取り寄せるだけ)。
 #
 # 環境変数:
 #   VIA (無指定)        … デプロイ先への curl を全部 `-x "$VIA" -p` (CONNECT のトンネル) で通す (T27.2)。
@@ -78,7 +78,7 @@
 #                         「起動から 60 秒の基準 (`/status` の `memory.baseline`) からの増え」に、無言の
 #                         再起動の行を「こちらが原因 (同じ `boot` のまま起動し直した回) が 0 回」に
 #                         読み替えたもの (T24.2)、phase25 は phase24 の 17 行を持ち越し、接続のエラーの行に
-#                         試行 1,000 本の下限、引き直しの行を「1 名前あたり」、無言の再起動の行を「前の雪像より
+#                         試行 1,000 本の下限、引き直しの行を「1 名前あたり」、無言の再起動の行を「前のスナップショットより
 #                         後の `start` だけ」に読み替えたもの (T27.0)、phase26 は phase25 の 17 行に、T28.99 で
 #                         手で読んだ 408・`/log` の error・`/errors` の `local`・3 秒で切った確立・
 #                         `rejected_requests` と、T29.99 の RSS・CPU・`/log` の 502 の 9 行を足したもの (T29.10)、
@@ -105,14 +105,14 @@
 #                         前の版の 0.8〜1.25 倍の外なら判定できずにし (T38.0)、接続のエラーの行から窓の中で
 #                         1 本も確立できなかった宛先を外したもの (T38.1)。
 #                         `off` で判定表を出さない
-#   BEFORE (無指定)     … **判定表の相手**にする雪像 (再デプロイの直前に撮った「前」。T18.2)。
-#                         無ければ今までどおり直前の 1 枚 (再デプロイのあとは 0 時間の雪像になるので、
+#   BEFORE (無指定)     … **判定表の相手**にするスナップショット (再デプロイの直前に撮った「前」。T18.2)。
+#                         無ければ今までどおり直前の 1 枚 (再デプロイのあとは 0 時間のスナップショットになるので、
 #                         T17.99 では手で `snapshot-diff.py` を回した)。隣に同じ時刻の
 #                         `-profile_res_60.json` があれば `--profile-before` で渡す。
 #                         「2. 前回との差分」とホスト別の相手は変わらない (直前の 1 枚のまま)
-#   ZERO (無指定)       … 0 時間の雪像 (再デプロイの直後に撮った 1 枚)。`snapshot-diff.py --zero` に
+#   ZERO (無指定)       … 0 時間のスナップショット (再デプロイの直後に撮った 1 枚)。`snapshot-diff.py --zero` に
 #                         渡す (phase25 / phase24 / phase22 / phase21 / phase20 / phase18 の `heap_used + mmap` の増えの行と、
-#                         phase22 / phase21 の IPv6 の探りの行。phase24 は `memory.baseline` が無い雪像のときだけ
+#                         phase22 / phase21 の IPv6 の探りの行。phase24 は `memory.baseline` が無いスナップショットのときだけ
 #                         こちらで読む。無ければ「判定できず」)。
 #                         BEFORE も ZERO も、相対パスはリポジトリの根から (`DIR` と同じ)
 #   MAX_TIME (既定 30)  … `/snapshot` を取る上限 (秒)。4 MiB まであるので長めに
@@ -125,7 +125,7 @@
 #   AAAA (無指定)       … `status-diff.py --aaaa FILE` に渡す表 (数字を残すときは固定する。`docs/measuring.md`)
 #   ANON (既定 1)       … 0 で匿名化した写し (`<時刻>-snapshot.anon.json` ほか) を置かない
 #
-# 出口: 雪像が取れなければ 1 (それ以外は、途中の道具が失敗しても 1 枚は出す)。
+# 出口: スナップショットが取れなければ 1 (それ以外は、途中の道具が失敗しても 1 枚は出す)。
 set -u
 # 要約をファイルにも残すため、自分をもう 1 回呼ぶ (下の「1. 取る」の手前)。`cd` の前に絶対パスにしておく
 SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
@@ -133,7 +133,7 @@ ORIG_ARGS=("$@")
 cd "$(dirname "$0")/.." || exit 1
 FROM_SERVER=0
 CLOSEOUT=0
-# 切れた部の追い方は 3 段 (T22.5): `FOLLOW=1` (既定) は `recent`・`hosts`・`dns`・`profile` を追って雪像に繋ぐ、
+# 切れた部の追い方は 3 段 (T22.5): `FOLLOW=1` (既定) は `recent`・`hosts`・`dns`・`profile` を追ってスナップショットに繋ぐ、
 # `FULL=1` (`--full`) はそのうえで残りの部 (`profile` ほか) も別ファイルに落とす、
 # `FULL=0` (`--no-follow`) は T22.5 より前の既定 (どれも追わない) に戻す
 FOLLOW=1
@@ -166,7 +166,7 @@ while :; do
 done
 PROXY=${1:-}
 if [ -z "$PROXY" ]; then
-  # **2 つの旗は排他** (`--from-server` は保存済みの雪像を取り寄せるだけで、続きを引く相手が居ない)
+  # **2 つの旗は排他** (`--from-server` は保存済みのスナップショットを取り寄せるだけで、続きを引く相手が居ない)
   echo "usage: $0 [--full] [--no-follow] HOST:PORT [DIR]   (例: $0 tokyo.sorahost.net:60357)" >&2
   echo "       $0 --from-server HOST:PORT [DIR]   (回し忘れた日を取り寄せる。--full は効きません)" >&2
   echo "       $0 --closeout HOST:PORT [DIR]      (締め: 取り寄せ → 前と 0 時間を版で選ぶ → 本番 → 要約の頭に前提)" >&2
@@ -187,7 +187,7 @@ fi
 DASHBOARD=${DASHBOARD:-1}
 DIFF=${DIFF:-1}
 CRITERIA=${CRITERIA:-T38}
-# 判定表の相手 (「前」の雪像) と 0 時間の雪像 (T18.2)。どちらも無指定なら今までどおり
+# 判定表の相手 (「前」のスナップショット) と 0 時間のスナップショット (T18.2)。どちらも無指定なら今までどおり
 JUDGE_BEFORE=${BEFORE:-}
 ZERO=${ZERO:-}
 MAX_TIME=${MAX_TIME:-30}
@@ -238,7 +238,7 @@ closeout() {
   CO=$(mktemp -d) || exit 1
   # shellcheck disable=SC2064  # いまの $CO で張る
   trap "rm -rf '$CO'" EXIT
-  # **最初の 1 本は `/status`** (T32.31): 下の取り寄せは日次の雪像 (3.9 MB。`/snapshots/<date>` はファイルを
+  # **最初の 1 本は `/status`** (T32.31): 下の取り寄せは日次のスナップショット (3.9 MB。`/snapshots/<date>` はファイルを
   # 丸ごと `String` に読む) を引くので、そのあとに取ると RSS が押し上がって見える。いまの版もここで読む。
   # 取った 1 本は本番の 1 回の `STATUS_BEFORE` (要約の RSS) にそのまま使う
   CO_STATUS="$CO/status-before.json"
@@ -272,10 +272,10 @@ fi
 
 # 保存済みの日次と起動・停止の 1 枚を取り寄せ、締めの「前」と「0 時間」を版で選ぶ
 from_server() {
-  # `--full` はこの枝では効かない (取り寄せるのは保存済みの雪像そのもので、
+  # `--full` はこの枝では効かない (取り寄せるのは保存済みのスナップショットそのもので、
   # `offset=` で続きを引く相手が居ない)。黙って無視しないで 1 行断る
   if [ "$FULL" = 1 ]; then
-    echo "note: --full は --from-server では効きません (保存済みの雪像をそのまま取り寄せます)" >&2
+    echo "note: --full は --from-server では効きません (保存済みのスナップショットをそのまま取り寄せます)" >&2
   fi
   LIST=$(curl -s --max-time "$MAX_TIME" "http://$PROXY/snapshots") || LIST=
   if [ -z "$LIST" ]; then
@@ -312,7 +312,7 @@ from_server() {
     fi
   done <<<"$DAYS"
   printf -- '- 取り寄せ %d 件、手元にあった %d 件、失敗 %d 件\n' "$got" "$skipped" "$failed"
-  # 取り寄せた雪像の大きさと上限 (`limit_bytes`) の割合・部の `truncated`。90% 以上は警告 (T29.16。
+  # 取り寄せたスナップショットの大きさと上限 (`limit_bytes`) の割合・部の `truncated`。90% 以上は警告 (T29.16。
   # 日次の 1 枚が上限を越えると、プロキシは `recent` を 256 KiB に戻して黙って T28.18 の形に戻る)
   if [ "${#fetched[@]}" -gt 0 ]; then
     printf -- '- 大きさ (上限の 90%% 以上は警告。T29.16):\n'
@@ -359,10 +359,10 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
 # --- 取る --------------------------------------------------------------------
-# **雪像の前に `/status` を 1 本** (T15.0)。要約が使うのは **RSS だけ**で、
-# `/snapshot` は 17 部・最大 4 MiB を 1 つの文字列に組むので、**雪像を配ること自体が
-# RSS を約 1.0 MB 押し上げる**。ほかの通算は 1 秒差で意味が変わらないのでそのまま雪像を使う。
-# 取れなくても続ける (そのときは雪像の中の `/status` の RSS になる)。
+# **スナップショットの前に `/status` を 1 本** (T15.0)。要約が使うのは **RSS だけ**で、
+# `/snapshot` は 17 部・最大 4 MiB を 1 つの文字列に組むので、**スナップショットを配ること自体が
+# RSS を約 1.0 MB 押し上げる**。ほかの通算は 1 秒差で意味が変わらないのでそのままスナップショットを使う。
+# 取れなくても続ける (そのときはスナップショットの中の `/status` の RSS になる)。
 # (変数の名前は `STATUS_BEFORE`。`BEFORE` は判定表の相手を渡す環境変数。T18.2)
 fetch_snapshot() {
   STATUS_BEFORE="$work/status-before.json"
@@ -388,16 +388,16 @@ fetch_snapshot() {
 }
 fetch_snapshot
 
-# --- 続きを追う: 切れた `recent`・`hosts`・`dns`・`profile` の続きを既定で追って雪像に繋ぐ (T22.5・T27.1) ---
-# 量が 12 倍になった tokyo (T21.99) では、雪像の `recent` は 2,000 件中 576 件 (33 分ぶん)、
+# --- 続きを追う: 切れた `recent`・`hosts`・`dns`・`profile` の続きを既定で追ってスナップショットに繋ぐ (T22.5・T27.1) ---
+# 量が 12 倍になった tokyo (T21.99) では、スナップショットの `recent` は 2,000 件中 576 件 (33 分ぶん)、
 # `hosts` は 1,001 件中 574 件で 256 KiB に切れる。**`--full` を付けなくても**、この 2 つの部 (T27.1 からは
 # `dns` (T25.99 で 811 件中 678 件) と `profile` (720 標本中 348) も) は
-# `next_offset` が `null` になるまで `offset=` で追い、**雪像の同じ部に行を足して** `/snapshot` の形の
+# `next_offset` が `null` になるまで `offset=` で追い、**スナップショットの同じ部に行を足して** `/snapshot` の形の
 # まま置き直す (`/profile?res=60` を繋ぐ T17.0b と同じ流儀。鍵は足さない・消さない)。
 # 読む道具 (`snapshot-summary.py`・`snapshot-diff.py`・`status-diff.py`・`anonymize-snapshot.py`) は
 # 隣のファイルを知らないので、繋いでおけばそのまま全部を読む。
-# **`/recent?since=<前の雪像の取得時刻>` にしないのはわざと**: `since` は「**開いた**時刻がこれ以降」で
-# 絞るので、前の雪像より前に開いて後に閉じた長生きのトンネルが前の雪像にも今回にも入らない。
+# **`/recent?since=<前のスナップショットの取得時刻>` にしないのはわざと**: `since` は「**開いた**時刻がこれ以降」で
+# 絞るので、前のスナップショットより前に開いて後に閉じた長生きのトンネルが前のスナップショットにも今回にも入らない。
 # それにリングは 2,000 件 (`MAX_RECENT`) しか持たないので、`since` を付けても取れる窓は広がらない。
 # 頁の間に新しく閉じた接続があると並びがずれて同じ行が 2 枚に出る (欠けはしない) ので `id` で、
 # `hosts` は `host` で重ねを落とす (`hosts` は要求数の順なので、頁の間に順位が入れ替わった
@@ -454,17 +454,17 @@ follow_parts() {
     done <<<"$FOLLOW_PLAN"
     FOLLOW_MS=$(($(now_ms) - FOLLOW_START))
     if [ "${#JOIN_ARGS[@]}" -gt 0 ]; then
-      FOLLOW_NOTE=$(python3 scripts/collect_follow.py follow-join "$OUT" "$FOLLOW_MS" "$SNAP_MS" "$MAX_PAGES" "$FOLLOW_SECS" "${JOIN_ARGS[@]}") || FOLLOW_NOTE='**繋げなかった** (雪像は 1 枚目のまま)'
+      FOLLOW_NOTE=$(python3 scripts/collect_follow.py follow-join "$OUT" "$FOLLOW_MS" "$SNAP_MS" "$MAX_PAGES" "$FOLLOW_SECS" "${JOIN_ARGS[@]}") || FOLLOW_NOTE='**繋げなかった** (スナップショットは 1 枚目のまま)'
     fi
   fi
 }
 follow_parts
 
-# --- 雪像に入らない口 ------------------------------------------------------------
+# --- スナップショットに入らない口 ------------------------------------------------------------
 # `/daily` `/healthz` `/slo` `/config` `/profile?res=60` は `/snapshot` の部に無いので、
 # T15.99 までは親が手で取っていた。同じ時刻の名前 (`<時刻>-<口>.json`) で隣に置く。
 # `/profile` は重い口 (同時 1 本) なので、JSON が返らなければ 1 秒おいて 3 回まで試す。
-# 取れなくても雪像は出す (要約に「取れなかった」と書く)
+# 取れなくてもスナップショットは出す (要約に「取れなかった」と書く)
 fetch_extras() {
   EXTRA_GOT=
   EXTRA_FAILED=
@@ -535,10 +535,10 @@ fetch_extras() {
 fetch_extras
 
 # --- 匿名化した写しを隣に置く (T17.16) ---------------------------------------
-# 雪像は `status/` にしか置けない (閲覧先と接続元が並ぶ) ので、テストへ持ち込めるように
+# スナップショットは `status/` にしか置けない (閲覧先と接続元が並ぶ) ので、テストへ持ち込めるように
 # `anonymize-snapshot.py` で名前・IP・UA だけを置き換えた写しを `<時刻>-snapshot.anon.json` に置く。
 # `/daily` と (繋いだあとの) `/profile?res=60` も `--side` で**同じ表**に通して `<時刻>-<口>.anon.json` に。
-# 失敗しても雪像と要約は出す (写しを消して 1 行知らせるだけ)
+# 失敗してもスナップショットと要約は出す (写しを消して 1 行知らせるだけ)
 write_anon() {
   ANON_NOTE=
   if [ "$ANON" = 1 ]; then
@@ -559,39 +559,39 @@ write_anon() {
 }
 write_anon
 
-# 要約の頭の箇条 (雪像・隣の口・続き・匿名化・前回・判定表の相手と 0 時間)
+# 要約の頭の箇条 (スナップショット・隣の口・続き・匿名化・前回・判定表の相手と 0 時間)
 print_head() {
-  # 前回の雪像 (名前が UTC 時刻なので、名前順の 1 つ前が前回)
+  # 前回のスナップショット (名前が UTC 時刻なので、名前順の 1 つ前が前回)
   # shellcheck disable=SC2010  # 名前は自分で付けた UTC 時刻 (英数字と - だけ) なので ls | grep で足りる
   PREV=$(ls -1 "$DIR"/*-snapshot.json 2>/dev/null | grep -vF "$OUT" | tail -1)
 
   printf '# rust-http-proxy — %s (%s)\n\n' "$PROXY" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   # `--closeout` (T29.26) から呼ばれたときは、前提の 1 行と取り寄せ・選択の箇条を頭に置く
   [ -n "${CLOSEOUT_HEAD:-}" ] && [ -f "$CLOSEOUT_HEAD" ] && cat "$CLOSEOUT_HEAD"
-  printf -- '- 雪像: `%s` (%s B)\n' "$OUT" "$(wc -c <"$OUT" | tr -d ' ')"
+  printf -- '- スナップショット: `%s` (%s B)\n' "$OUT" "$(wc -c <"$OUT" | tr -d ' ')"
   # shellcheck disable=SC2086  # 先頭の空白を落とすため、わざと語に割る
-  [ -n "$EXTRA_GOT" ] && printf -- '- 雪像に入らない口: `%s-{%s}.json`\n' "$DIR/$STAMP" "$(echo $EXTRA_GOT | tr ' ' ',')"
+  [ -n "$EXTRA_GOT" ] && printf -- '- スナップショットに入らない口: `%s-{%s}.json`\n' "$DIR/$STAMP" "$(echo $EXTRA_GOT | tr ' ' ',')"
   [ -n "$EXTRA_FAILED" ] && printf -- '- **取れなかった口**:%s\n' "$EXTRA_FAILED"
   [ -n "$FOLLOW_NOTE" ] && printf -- '- 切れた部の続き (既定で追う。T22.5): %s\n' "$FOLLOW_NOTE"
   [ "$FOLLOW" = 1 ] || printf -- '- 切れた部の続き: 追っていない (`FULL=0` か `--no-follow`)\n'
   [ -n "$PROFILE_NOTE" ] && printf -- '- `/profile?res=60` は `offset=` で追って %s\n' "$PROFILE_NOTE"
   [ -n "$ANON_NOTE" ] && printf -- '- 匿名化した写し: %s\n' "$ANON_NOTE"
   [ -n "$PREV" ] && printf -- '- 前回: `%s`\n' "$PREV"
-  # 判定表の相手と 0 時間の雪像 (T18.2)。読めないものは 1 行断って、渡されなかったことにする
+  # 判定表の相手と 0 時間のスナップショット (T18.2)。読めないものは 1 行断って、渡されなかったことにする
   if [ -n "$JUDGE_BEFORE" ]; then
     if [ -f "$JUDGE_BEFORE" ]; then
       printf -- '- 判定表の相手 (`BEFORE`): `%s`\n' "$JUDGE_BEFORE"
     else
-      printf -- '- **`BEFORE` の雪像が無い**: `%s` (判定表の相手は前回の雪像のまま)\n' "$JUDGE_BEFORE"
+      printf -- '- **`BEFORE` のスナップショットが無い**: `%s` (判定表の相手は前回のスナップショットのまま)\n' "$JUDGE_BEFORE"
       echo "BEFORE=$JUDGE_BEFORE is not a file (judging against the previous snapshot)" >&2
       JUDGE_BEFORE=
     fi
   fi
   if [ -n "$ZERO" ]; then
     if [ -f "$ZERO" ]; then
-      printf -- '- 0 時間の雪像 (`ZERO`): `%s`\n' "$ZERO"
+      printf -- '- 0 時間のスナップショット (`ZERO`): `%s`\n' "$ZERO"
     else
-      printf -- '- **`ZERO` の雪像が無い**: `%s`\n' "$ZERO"
+      printf -- '- **`ZERO` のスナップショットが無い**: `%s`\n' "$ZERO"
       echo "ZERO=$ZERO is not a file (the heap row cannot be judged)" >&2
       ZERO=
     fi
@@ -600,7 +600,7 @@ print_head() {
 print_head
 
 # --- 切れた部の続きを取る (--full。T15.0) -----------------------------
-# 雪像 1 枚は部ごとに 256 KiB で切れる (`truncated`)。`offset=` を持つ 3 つの部だけ、
+# スナップショット 1 枚は部ごとに 256 KiB で切れる (`truncated`)。`offset=` を持つ 3 つの部だけ、
 # `next_offset` が `null` になるまで**追加の URL で**引いて別ファイルに落とす。
 # `recent` と `hosts` は上の「続きを追う」(T22.5) で繋いだあとなので、ここに来るのはまだ切れている
 # ときだけ (続きは繋いだ部の `next_offset` から引く)
@@ -677,10 +677,10 @@ section_diff() {
   [ -n "$PREV" ] && [ -f "${PREV%-snapshot.json}-profile_res_60.json" ] &&
     PROFILE_BEFORE=${PREV%-snapshot.json}-profile_res_60.json
   [ "$CRITERIA" = off ] || CRIT="--criteria $CRITERIA"
-  # phase18 の 2 行の材料 (T18.2): `ZERO` があれば `--zero` で、日次の雪像の表は保存先 (`--from-server`
+  # phase18 の 2 行の材料 (T18.2): `ZERO` があれば `--zero` で、日次のスナップショットの表は保存先 (`--from-server`
   # が `<日付>T000000Z-snapshot.json` を置く所) を `--daily-snapshots` で渡す。**phase18 と、同じ材料を
   # 使う phase20 (T20.1)・phase21 (T21.2)・phase22 (T22.1)・phase23 (T23.1)・phase24 (T24.2)・phase25 (T27.0)・phase26 (T29.10)・phase27 (T30.0)・phase28 (T31.0)・phase29 (T32.29)・phase30 (T33.1・T33.2)・T35 (T35.9・T35.11)・T36 (T36.1・T36.3)・T37 (T37.1)・T38 (T38.0・T38.1) のときだけ**
-  # (phase24 と phase25 は `memory.baseline` が無い雪像のときだけ 0 時間の雪像で読むので、渡しておく)
+  # (phase24 と phase25 は `memory.baseline` が無いスナップショットのときだけ 0 時間のスナップショットで読むので、渡しておく)
   # (古い定義の判定表は今までと同じ命令で出す)
   P18=()
   if [ "$CRITERIA" = phase18 ] || [ "$CRITERIA" = phase20 ] || [ "$CRITERIA" = phase21 ] ||
@@ -706,10 +706,10 @@ section_diff() {
     MEDIAN_K=()
     [ -n "$DIFF_CRIT" ] || MEDIAN_K=(--burst-median-k 3)
     # shellcheck disable=SC2086  # $DIFF_CRIT は 2 語に分けたい
-    # `/daily` は雪像に無いので、取れていれば判定表のミスの行に日ごとの幅を並べる (T15.15)
+    # `/daily` はスナップショットに無いので、取れていれば判定表のミスの行に日ごとの幅を並べる (T15.15)
     # `/profile?res=60` (上で繋いだ 24 時間ぶん) は phase17 の conn 役の CPU/要求 の材料 (T17.0a)。
-    # 前回の雪像の隣に同じ時刻の `-profile_res_60.json` があれば `--profile-before` で前にも渡す
-    # (`--from-server` で取り寄せた日の雪像には無いので、そのときは雪像の `/profile` の部で参考になる)
+    # 前回のスナップショットの隣に同じ時刻の `-profile_res_60.json` があれば `--profile-before` で前にも渡す
+    # (`--from-server` で取り寄せた日のスナップショットには無いので、そのときはスナップショットの `/profile` の部で参考になる)
     python3 scripts/snapshot-diff.py "$PREV" "$OUT" ${AAAA:+--aaaa "$AAAA"} $DIFF_CRIT "${MEDIAN_K[@]}" \
       ${DIFF_CRIT:+${DAILY:+--daily "$DAILY"}} \
       ${DIFF_CRIT:+${PROFILE_AFTER:+--profile "$PROFILE_AFTER"}} \
@@ -752,7 +752,7 @@ section_diff() {
     # 見出しは 1 段下げる (この文書の `##` の見出しと同じ段にならないように)
     sed -e '/^## 9\. /,$d' -e 's/^#\{1,2\} /### /' "$DIFFMD"
   else
-    echo '(前回の雪像が無いか DIFF=0)'
+    echo '(前回のスナップショットが無いか DIFF=0)'
   fi
   printf '\n'
 }
@@ -805,17 +805,17 @@ section_criteria() {
   printf '\n'
   if [ -n "$CRITMD" ] && grep -q '^## 9\. ' "$CRITMD"; then
     # 相手が `BEFORE` のときは、どの 1 枚と比べた表かを先に書く (上の差分とは相手が違う)
-    [ "$CRITMD" = "$DIFFMD" ] || printf '\n相手は `BEFORE` の雪像 `%s` です (上の差分の相手は前回の雪像)。\n' "$JUDGE_BEFORE"
+    [ "$CRITMD" = "$DIFFMD" ] || printf '\n相手は `BEFORE` のスナップショット `%s` です (上の差分の相手は前回のスナップショット)。\n' "$JUDGE_BEFORE"
     sed -n '/^## 9\. /,$p' "$CRITMD" | sed '1d'   # 見出しは上で出している
   elif [ "$CRITERIA" = off ]; then
     printf '\n(CRITERIA=off なので出していない)\n'
   elif [ -n "$CRITMD" ] && [ "$CRITMD" != "$DIFFMD" ]; then
     # `BEFORE` との判定が表まで届かなかった (道具の文句をそのまま出す)
-    printf '\n(`BEFORE` の雪像との判定表を組めなかった)\n\n```\n'
+    printf '\n(`BEFORE` のスナップショットとの判定表を組めなかった)\n\n```\n'
     cat "$CRITMD"
     printf '```\n'
   else
-    printf '\n(前回の雪像が無いか DIFF=0 なので判定できない)\n'
+    printf '\n(前回のスナップショットが無いか DIFF=0 なので判定できない)\n'
   fi
 }
 section_criteria

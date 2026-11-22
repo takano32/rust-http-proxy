@@ -49,7 +49,7 @@ def conn_profile(conn_us_per_row):
 
 
 def zero_snapshot(heap_used=4_500_000, mmap=8_000_000, version="0.1.0+bbbbbbb", uptime=120):
-    """B と同じ起動の「0 時間の雪像」(起動 2 分後)。B の `memory` は `heap_used` 6.0 + `mmap` 8.0 MB。"""
+    """B と同じ起動の「0 時間のスナップショット」(起動 2 分後)。B の `memory` は `heap_used` 6.0 + `mmap` 8.0 MB。"""
     memory = {"rss": 15_000_000, "heap_used": heap_used, "heap_free": 400_000, "mmap": mmap}
     return {"taken_at": Criteria17Parts.START + uptime, "version": version, "uptime_secs": uptime,
             "parts": ["status"], "dropped": [],

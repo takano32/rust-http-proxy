@@ -136,7 +136,7 @@ class Group(unittest.TestCase):
 class DnsCauseColumns(unittest.TestCase):
     """`errors_by_cause` の 8 要素と 10 要素の両方を読む (T25.0)。
 
-    過去の雪像 (T25.0 より前) の `errors_by_cause` は 8 要素で、`dns` … `other` の
+    過去のスナップショット (T25.0 より前) の `errors_by_cause` は 8 要素で、`dns` … `other` の
     並びは今も同じ。T25.0 からは**うしろに** 2 つ (`nxdomain` / `dns_temp` = `dns` の
     内訳) が付く。8 要素を読んでも落ちず、10 要素では内訳を出すこと。
     """
@@ -160,7 +160,7 @@ class DnsCauseColumns(unittest.TestCase):
         row = pd.row_of("connect://imap.docomo.ne.jp:993", old, new)
         self.assertEqual(len(row["errors_by_cause"]), 10, "8 要素と 10 要素を突き合わせる")
         self.assertEqual(row["errors_by_cause"][0], 2, "`dns` の差分は今までどおり")
-        self.assertEqual(row["errors_by_cause"][8], 2, "内訳は後の雪像にだけある")
+        self.assertEqual(row["errors_by_cause"][8], 2, "内訳は後のスナップショットにだけある")
         self.assertEqual(pd.causes_text(row["errors_by_cause"]), "nxdomain 2")
 
 

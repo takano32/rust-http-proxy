@@ -4,7 +4,7 @@
     python3 -m unittest discover -s scripts        # リポジトリの根から
     cd scripts && python3 -m unittest              # scripts の中から
 
-架空の雪像 2 枚 (`testdata/snapshot-a.json` / `snapshot-b.json`) は **手で計算できる値**で
+架空のスナップショット 2 枚 (`testdata/snapshot-a.json` / `snapshot-b.json`) は **手で計算できる値**で
 組んである (標本はバケツ 1 つに固め、`avg_ms` は差分が割り切れる数にしてある)。
 デプロイ先の実出力 (リポジトリの `status/`) があるときだけ回るテストが最後に 1 本あり、
 **T.14.0 の表と同じ数字が出ること**を見る (実データはリポジトリに入れないので、無ければ飛ばす)。
@@ -60,7 +60,7 @@ class Restart(unittest.TestCase):
         self.assertTrue(r["restarted"])
         self.assertTrue(any("版が変わった" in x for x in r["reasons"]))
         self.assertTrue(any("`uptime_secs` が減った" in x for x in r["reasons"]))
-        # 起動 = 後の雪像の取得時刻 − uptime
+        # 起動 = 後のスナップショットの取得時刻 − uptime
         self.assertEqual(r["started_at"], 1789086400 - 43200)
         self.assertEqual(r["boundary"], r["started_at"])
         self.assertEqual(r["wall_secs"], 86400)
@@ -414,7 +414,7 @@ class EventsErrorsBursts(unittest.TestCase):
         self.assertNotIn("| reload | — |", md)
 
     def test_an_old_snapshot_with_what_still_prints(self):
-        """手で組んだ古い雪像 (`what`) も読めること (保険の分岐)。"""
+        """手で組んだ古いスナップショット (`what`) も読めること (保険の分岐)。"""
         b = read(B)
         e = b["events"]["events"][0]
         b["events"]["events"][0] = {"at": e["at"], "kind": e["kind"], "what": "hand made"}
@@ -465,14 +465,14 @@ class EventsErrorsBursts(unittest.TestCase):
         self.assertEqual(pd.fmt_bytes(999), "999 B")
 
     def test_an_old_snapshot_with_peak_still_prints(self):
-        """手で組んだ古い雪像 (`peak`) も読めること (保険の分岐)。"""
+        """手で組んだ古いスナップショット (`peak`) も読めること (保険の分岐)。"""
         self.assertEqual(sd.shot_text({"at": 1789052400, "peak": 99}),
                          "2026-09-10 15:00:00Z (越えた瞬間 99 本)")
 
 
 @contextlib.contextmanager
 def written(**snaps):
-    """書き換えた雪像を一時ディレクトリに置いて、そのパスを返す (`test_snapshot_summary.py` と同じ)。"""
+    """書き換えたスナップショットを一時ディレクトリに置いて、そのパスを返す (`test_snapshot_summary.py` と同じ)。"""
     with tempfile.TemporaryDirectory() as tmp:
         paths = {}
         for name, body in snaps.items():
@@ -538,7 +538,7 @@ class NewColumns(unittest.TestCase):
         self.assertEqual(h["after"]["bytes_delta"], 410000)
 
     def test_an_old_snapshot_leaves_them_empty_instead_of_crashing(self):
-        """欄の無い雪像 (A) でも読めること。`dns_warm` は `None` (0 と混ぜない)。"""
+        """欄の無いスナップショット (A) でも読めること。`dns_warm` は `None` (0 と混ぜない)。"""
         a = sd.load_source(A, False)
         rows, bounds, _c, _i = sd.merged_history(a, a, "3600")
         agg = sd.aggregate(rows, bounds, None)
@@ -613,7 +613,7 @@ class RecentConnect(unittest.TestCase):
     """差分の「2. 平常時の前後」に足した**成功した接続だけ**の確立時間 (T.20.1 (3))。
 
     `/history` の確立の区間と `recent_quantiles.connect` には失敗した接続の時間も入るので、
-    後の雪像の `/recent` から `reason` が `error` で始まらない CONNECT だけを読む。
+    後のスナップショットの `/recent` から `reason` が `error` で始まらない CONNECT だけを読む。
     """
 
     ROW = "| CONNECT 確立 (**成功した接続だけ**) |"
@@ -691,7 +691,7 @@ class RecentConnect(unittest.TestCase):
         """phase14〜phase18 の出力は 1 文字も変えない: `/recent` があっても行も断り書きも鍵も足さない。"""
         b = with_recent(self.errors(30), connects=[5, 6, 7], failed=2)
         plain = self.errors(30)
-        plain["dropped"] = []                                # B は `recent` を落とした雪像
+        plain["dropped"] = []                                # B は `recent` を落としたスナップショット
         with written(b=b, plain=plain) as p:
             for name in sd.FROZEN:
                 argv = ["--no-dns", "--criteria", name]
@@ -789,7 +789,7 @@ class Schema(unittest.TestCase):
         self.assertTrue(pd.is_snapshot(new))
         # 版 1 は `parts` だけで決める (`/status` は `parts` を持たない)
         self.assertFalse(pd.is_snapshot({"schema": 1, "status": "ok", "hosts": []}))
-        # 版の無い `/status` も雪像ではない (`hosts` が配列)
+        # 版の無い `/status` もスナップショットではない (`hosts` が配列)
         self.assertFalse(pd.is_snapshot(read(A)["status"]))
 
     def test_unwrap_takes_the_hosts_part_in_both_versions(self):
@@ -797,7 +797,7 @@ class Schema(unittest.TestCase):
             inner = pd.unwrap(snap)
             self.assertEqual(len(inner["hosts"]), len(snap["hosts"]["hosts"]))
             self.assertEqual(inner["snapshot_taken_at"], snap["taken_at"])
-        # 雪像でない JSON はそのまま返る
+        # スナップショットでない JSON はそのまま返る
         st = read(A)["status"]
         self.assertIs(pd.unwrap(st), st)
 
@@ -856,7 +856,7 @@ class Anonymized(unittest.TestCase):
     """T.14.35 の匿名化した実データ (`testdata/deployed-2026-09-16.anon.json`) で回る。
 
     上の `Deployed` は リポジトリの `status/` があるときだけ回るが、これは
-    **リポジトリの中の実データ** (ホスト名と IP と UA だけを置き換えた雪像) なのでいつでも回る。
+    **リポジトリの中の実データ** (ホスト名と IP と UA だけを置き換えたスナップショット) なのでいつでも回る。
     """
 
     def test_the_anonymized_snapshot_gives_the_numbers_of_t140(self):
@@ -896,7 +896,7 @@ class Anonymized0926(unittest.TestCase):
     `recent` / `profile` / `events` / `hosts_series` / T.16.0 の 3 列のある版 (`0.1.0+2e57626`、起動から
     47.2 時間)。「前」は 2026-09-16 の fixture (別に匿名化したので名前の番号は前後で合わない。判定表の
     行はどれも名前に依らない数か、名前で引くものは「判定できず」になる)。
-    **数字は T.16.99 の `結果:` と同じ** (`Deployed17` が `status/` の生の雪像で見ているものを、匿名化の
+    **数字は T.16.99 の `結果:` と同じ** (`Deployed17` が `status/` の生のスナップショットで見ているものを、匿名化の
     あとでもリポジトリの中だけで見る)。
     """
 
@@ -979,7 +979,7 @@ TOKYO_ANON = os.path.join(DEPLOYED, "tokyo", "2026-10-27T024200Z-snapshot.anon.j
 
 @unittest.skipUnless(os.path.exists(TOKYO_ANON), "tokyo の実データが無い (status/tokyo/)")
 class DeployedRttSplit(unittest.TestCase):
-    """T.29.18 の受け入れ基準: tokyo の (匿名化した) 雪像で 2 行の表が出る (匿名化で RTT が残る)。"""
+    """T.29.18 の受け入れ基準: tokyo の (匿名化した) スナップショットで 2 行の表が出る (匿名化で RTT が残る)。"""
 
     def test_the_tokyo_snapshot_splits_into_two_groups(self):
         d = build([A, TOKYO_ANON, "--no-dns"])

@@ -3,7 +3,7 @@
 
     python3 -m unittest discover -s scripts        # リポジトリの根から
 
-入力はその場で組んだ**架空の**雪像 (宛先の名前は出てこない。時刻だけ)。本物の雪像は入れない。
+入力はその場で組んだ**架空の**スナップショット (宛先の名前は出てこない。時刻だけ)。本物のスナップショットは入れない。
 """
 
 import contextlib
@@ -168,7 +168,7 @@ class HistoryTest(unittest.TestCase):
         self.assertEqual(part["history"]["window_secs"], 3 * 3600)
 
     def test_from_is_the_deadline_the_snapshot_was_taken_under(self):
-        # T23.3 以降の雪像は 5 秒で撮っているので `--from 5`。3 秒にすると 1 件あたり 2 秒縮む
+        # T23.3 以降のスナップショットは 5 秒で撮っているので `--from 5`。3 秒にすると 1 件あたり 2 秒縮む
         h = history(empty_buckets(), timeouts=50, samples=2)
         old = ct.analyze(snap(hist=h), (3, 5), ref=10)
         new = ct.analyze(snap(hist=h), (3, 5), ref=5)

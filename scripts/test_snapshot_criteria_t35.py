@@ -28,7 +28,7 @@ class Criteria35Events(unittest.TestCase):
     T0 = 1_800_000_000
 
     def snap(self, events, uptime=7200, top_uptime=True, capacity=None):
-        """起動から `uptime` 秒の雪像。`events` は `(起動からの秒, 文面)`、負の秒は起動より前。"""
+        """起動から `uptime` 秒のスナップショット。`events` は `(起動からの秒, 文面)`、負の秒は起動より前。"""
         start = self.T0 - uptime
         ev = {"events": [{"kind": "anomaly", "at": start + t, "text": text} for t, text in events]}
         if capacity is not None:
@@ -74,7 +74,7 @@ class Criteria35Events(unittest.TestCase):
         self.assertIn("`dns_slow` **1.00** 件/時 (2 件、前 0.50)", old[2])
 
     def test_the_uptime_comes_from_the_status_part_first(self):
-        # 雪像の上の段に `uptime_secs` の無い雪像: phase30 は数えられず、T35 (要約) は `status` から読む
+        # スナップショットの上の段に `uptime_secs` の無いスナップショット: phase30 は数えられず、T35 (要約) は `status` から読む
         b = self.snap([(60, "dns_slow: a")], top_uptime=False)
         self.assertEqual(self.row(sc._p22_events, {}, b)[2], "—")
         row = self.row(sc._t35_events, {}, b)
@@ -102,7 +102,7 @@ class Criteria35Heap(unittest.TestCase):
     UP = 48 * 3600
 
     def snap(self, grown_mb, cache_mb=0.0, mem_n=0, disk_n=0, alloc=None, cache=True, baseline=True):
-        """起動から 48 時間の雪像。`heap_used + mmap − cache_memory` は基準 18.8 MB から `grown_mb` 増えている。"""
+        """起動から 48 時間のスナップショット。`heap_used + mmap − cache_memory` は基準 18.8 MB から `grown_mb` 増えている。"""
         base = 18_812_256
         cm = int(cache_mb * 1e6)
         now = base + int(grown_mb * 1e6)

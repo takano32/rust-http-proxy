@@ -11,7 +11,7 @@
 
 どの場面も、まず手元のオリジンへの CONNECT を `--warm` 本 (既定 2,000) 流して `/recent` を埋める。
 
-- (a) 重い口: `/snapshot` を 5 回 (日次の雪像は同じ組み立てで上限が大きいだけ。T29.16)
+- (a) 重い口: `/snapshot` を 5 回 (日次のスナップショットは同じ組み立てで上限が大きいだけ。T29.16)
 - (b) 名前解決の総当たり: 名前の引けない宛先 (`*.invalid`) への CONNECT を `--nx` 本 (既定 4,000、8 並列)
 - (c) (b) のあとに (a)
 - (d) メモリのキャッシュに 14 MiB の forward GET を入れて PURGE (= 追い出し) を 3 回、
@@ -277,7 +277,7 @@ def scenario(name, args, envs, oport):
         print("\n### (%s)\n" % name)
         print("| 段 | rss | 山 (VmHWM) | anon | file | heap_used | heap_free | mmap | mmap_threshold | no_dyn | arenas |")
         print("|---|---|---|---|---|---|---|---|---|---|---|")
-        # `/recent` (2,000 件) を埋めてから測る (tokyo の雪像はいつも満杯。空だと重い口が軽い)
+        # `/recent` (2,000 件) を埋めてから測る (tokyo のスナップショットはいつも満杯。空だと重い口が軽い)
         run_many(args.warm, 8, lambda i: connect_local(port, oport))
         time.sleep(1)
         show(measure(pid, port, "idle (CONNECT x%d)" % args.warm, knobs=True))

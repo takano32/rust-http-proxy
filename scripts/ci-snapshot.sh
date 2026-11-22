@@ -126,7 +126,7 @@ fi
 # 上限はベンチ 2 本 + `/snapshot` の取り寄せに要る時間 + 余裕。
 #
 # **`PROXY_STATS_PERSIST` は既定 (on) のまま**にすること: off にすると `crates/run/src/lib.rs` が
-# **履歴スレッドごと起動しない**ので `/history` も `/bursts` も空になり、雪像の値打ちが半分になる
+# **履歴スレッドごと起動しない**ので `/history` も `/bursts` も空になり、スナップショットの値打ちが半分になる
 # (実測: off で `history.5` の標本が 0 本、`/history?summary=1` が全部 0)。状態ファイル
 # (`.rust-http-proxy.rrd` 4 MiB と `.rust-http-proxy.recent` 4 MiB。T14.9) は `HOME` を
 # 使い捨てのディレクトリにしてあるのでそこに作られ、終わりに消える

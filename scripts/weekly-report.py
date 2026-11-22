@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-# 1 週間ぶんの雪像から「週次の要約」を **Markdown 1 枚**にする (TODO.md T14.40)。
+# 1 週間ぶんのスナップショットから「週次の要約」を **Markdown 1 枚**にする (TODO.md T14.40)。
 #
-# 入力は `status/` に溜まった雪像 (`*-snapshot.json`)。プロキシ自身が
+# 入力は `status/` に溜まったスナップショット (`*-snapshot.json`)。プロキシ自身が
 # 1 日 1 回 (UTC 0 時) 書いている日次の `/snapshot` (T14.34) を
 # `scripts/collect-deployed.sh --from-server` で取り寄せた `<日付>T000000Z-snapshot.json` も
 # 同じ形なので、そのまま混ぜてよい。`/daily` (T14.20) の JSON だけでも出る。
@@ -17,7 +17,7 @@
 #   1. 要求数 (日別)              5. 山 (`/bursts` があれば枚数と最大、無ければ `active_max`)
 #   2. CONNECT 確立 p50 / p95     6. 接続元の出入り (`clients[]` の初回 / 最終)
 #   3. 名前解決のミス率           7. 遅かったホスト上位 N (`avg_ms` × 要求数)
-#   4. エラー (原因別)            8. 新しく見たホスト (前の雪像に無かった名前)
+#   4. エラー (原因別)            8. 新しく見たホスト (前のスナップショットに無かった名前)
 #
 # **数字の求め方は `scripts/snapshot-diff.py` (T14.17) と同じ**: `/history?res=3600` を
 # **UTC の日で切って**同じ `aggregate()` に通すので、同じ期間を切れば同じ値が出る
@@ -119,7 +119,7 @@ def daily_from_jsonl(path):
 
 
 def load_inputs(paths):
-    """雪像と `/daily` の行を読み分ける。読めなかったものは理由つきで返す (止めない)。"""
+    """スナップショットと `/daily` の行を読み分ける。読めなかったものは理由つきで返す (止めない)。"""
     snaps, daily, skipped = [], {}, []
     for p in paths:
         try:
@@ -207,7 +207,7 @@ def day_stats(rows, bounds, limit, days, daily):
 # ---------------------------------------------------------------- (5) 山
 
 def burst_shots(snaps):
-    """`/bursts` の写真を重ねる (同じ雪像が何枚あっても 1 枚は 1 回)。"""
+    """`/bursts` の写真を重ねる (同じスナップショットが何枚あっても 1 枚は 1 回)。"""
     seen = {}
     for snap in snaps:
         for b in sd.part(snap, "bursts").get("bursts") or []:
@@ -221,7 +221,7 @@ def client_window(snaps):
     """接続元ごとに「いつ初めて / 最後に見たか」と週の増分を作る。
 
     `/clients` (T14.7) には `first_seen` / `last_seen` があるが、`/status` の `clients[]`
-    (古い版) には `last_seen` しか無い。そのときは**初めて出た雪像の日**で代える。
+    (古い版) には `last_seen` しか無い。そのときは**初めて出たスナップショットの日**で代える。
     """
     out = {}
     for snap in snaps:
@@ -259,8 +259,8 @@ def client_window(snaps):
 def client_moves(clients, days, first_snap_day):
     """日ごとの「新しく来た」「来なくなった」。
 
-    - **新しく来た**: `first_seen` がその日。`first_seen` が無い版では「初めて出た雪像の日」を
-      使うが、**いちばん古い雪像の日は数えない** (その日は全部が初めてに見えてしまう)。
+    - **新しく来た**: `first_seen` がその日。`first_seen` が無い版では「初めて出たスナップショットの日」を
+      使うが、**いちばん古いスナップショットの日は数えない** (その日は全部が初めてに見えてしまう)。
     - **来なくなった**: `last_seen` がその日で、**窓の最後の日ではない** (最後の日はまだ来る)。
     """
     moves = {d: {"in": [], "out": []} for d in days}
@@ -281,7 +281,7 @@ def client_moves(clients, days, first_snap_day):
 def host_delta(snaps):
     """週の初めと終わりの `/hosts` の差 (`.rrd` の通算なので引き算する)。
 
-    雪像が 1 枚しか無ければ引き算できないので**通算のまま**返す (`windowed` が False)。
+    スナップショットが 1 枚しか無ければ引き算できないので**通算のまま**返す (`windowed` が False)。
     """
     if not snaps:
         return {"rows": [], "windowed": False, "truncated": False, "source": None,
@@ -310,12 +310,12 @@ def slow_hosts(rows, top):
 
 
 def new_hosts(snaps, days):
-    """前の雪像に無かった名前を、**その雪像が写した日**に付ける。
+    """前のスナップショットに無かった名前を、**そのスナップショットが写した日**に付ける。
 
-    日は `taken_at` の **1 秒前**の日で見る。T14.34 の日次の雪像は「終わった日」を
-    翌日 00:00 UTC の直後に写すので、そのままでは 1 日ずれる。窓より後の雪像
+    日は `taken_at` の **1 秒前**の日で見る。T14.34 の日次のスナップショットは「終わった日」を
+    翌日 00:00 UTC の直後に写すので、そのままでは 1 日ずれる。窓より後のスナップショット
     (窓の最後の日より新しいもの) は最後の日にまとめる。
-    いちばん古い雪像は比べる相手が無いので数えない (`.rrd` の通算なので全部が初めてに見える)。
+    いちばん古いスナップショットは比べる相手が無いので数えない (`.rrd` の通算なので全部が初めてに見える)。
     """
     per_day = {d: set() for d in days}
     seen, pairs, outside = None, 0, 0
@@ -382,7 +382,7 @@ def build(snaps, daily, args):
     limit = max(1, round(args.burst * interval / 3600.0)) if interval else args.burst
     known = sorted({day_of(r["t"]) for r in rows} | set(daily))
     if not known:
-        raise SystemExit("読めた雪像にも /daily にも日が 1 つも無い")
+        raise SystemExit("読めたスナップショットにも /daily にも日が 1 つも無い")
     wanted = day_seq(known[-1], args.days) if args.days > 0 else known
     days = [d for d in wanted if d in known]
     stats = day_stats(rows, bounds, limit, days, daily)
@@ -440,14 +440,14 @@ def render(d, top):
 
 
 def head_lines(d):
-    """頭: 件数と何日ぶんか、日別の数字の出どころ、入力の雪像、週ぜんたい (平常時) の 1 段落。"""
+    """頭: 件数と何日ぶんか、日別の数字の出どころ、入力のスナップショット、週ぜんたい (平常時) の 1 段落。"""
     out = []
     p = out.append
     days, week = d["days"], d["week"]
     n, ms, ratio = sd.n, sd.ms, sd.ratio
     p(f"# rust-http-proxy — 週次の要約 ({days[0]} 〜 {days[-1]})")
     p("")
-    p(f"- **雪像 {len(d['snaps'])} 枚、{len(days)} 日ぶん** "
+    p(f"- **スナップショット {len(d['snaps'])} 枚、{len(days)} 日ぶん** "
       f"(求めたのは {d['asked'] if d['asked'] > 0 else len(days)} 日"
       + (f"、足りない {len(d['missing'])} 日: {', '.join(d['missing'])}" if d["missing"] else "")
       + ")")
@@ -457,7 +457,7 @@ def head_lines(d):
           "`snapshot-diff.py` (T14.17) と同じ切り方・同じ `aggregate()`)")
         if d["limit"] <= 1:
             p("- **注意**: 解像度が細かいので平常時の閾が 1 標本 1 本になっている "
-              "(1 本でも通れば「バースト」として外れる)。`res=3600` のある雪像を渡すか "
+              "(1 本でも通れば「バースト」として外れる)。`res=3600` のあるスナップショットを渡すか "
               "`--burst` を上げる")
     else:
         p("- `/history` がどの入力にも無いので、日別は `/daily` (T14.20) の 1 行から出している")
@@ -567,7 +567,7 @@ def error_lines(d):
         else:
             p(f"この {len(days)} 日でエラーは **{n(week['all']['errors'])}** 件。"
               "**原因別の内訳はこの入力に無い** (`/daily` の 1 行には合計しか入っていない。"
-              "内訳が要るなら雪像か `/history` を渡す)。")
+              "内訳が要るならスナップショットか `/history` を渡す)。")
     else:
         head = " | ".join(CAUSE_NAMES[i] for i in cols)
         p(f"| 日 | 合計 | {head} |")
@@ -644,8 +644,8 @@ def client_lines(d, top):
         p("`/clients` (T14.7) も `/status` の `clients[]` もこの入力に無い。")
     else:
         if not d["has_clients_part"]:
-            p("`/clients` (T14.7) がこの雪像に無いので `/status` の `clients[]` で代える "
-              "(**`first_seen` が無い版**なので「新しく来た」は初めて出た雪像の日で見る)。")
+            p("`/clients` (T14.7) がこのスナップショットに無いので `/status` の `clients[]` で代える "
+              "(**`first_seen` が無い版**なので「新しく来た」は初めて出たスナップショットの日で見る)。")
             p("")
         p("| 日 | 新しく来た | 来なくなった | 接続元 |")
         p("|---|---:|---:|---|")
@@ -690,10 +690,10 @@ def slow_host_lines(d, top):
         p("`/hosts` がこの入力に無い。")
     else:
         if h["windowed"]:
-            p(f"いちばん古い雪像といちばん新しい雪像の `{h['source']}` の差 "
+            p(f"いちばん古いスナップショットといちばん新しいスナップショットの `{h['source']}` の差 "
               "(`.rrd` の通算なので引き算する)。")
         else:
-            p(f"雪像が 1 枚なので引き算できない。`{h['source']}` の**通算** "
+            p(f"スナップショットが 1 枚なので引き算できない。`{h['source']}` の**通算** "
               "(状態ファイルに残っている起動前からの値も混ざる) をそのまま並べる。")
         if h["rrd_reset"]:
             p("")
@@ -715,19 +715,19 @@ def slow_host_lines(d, top):
 
 
 def new_host_lines(d, top):
-    """「新しく見たホスト」の節 (前の雪像に無かった名前)。"""
+    """「新しく見たホスト」の節 (前のスナップショットに無かった名前)。"""
     out = []
     p = out.append
     days = d["days"]
-    p("## 新しく見たホスト (前の雪像に無かった名前)")
+    p("## 新しく見たホスト (前のスナップショットに無かった名前)")
     p("")
     nh = d["new_hosts"]
     if not nh or not nh["pairs"]:
-        p(f"雪像が {len(d['snaps'])} 枚しか無いので「前の雪像」が無い (2 枚目から出る)。")
+        p(f"スナップショットが {len(d['snaps'])} 枚しか無いので「前のスナップショット」が無い (2 枚目から出る)。")
     else:
-        p(f"雪像 {nh['pairs'] + 1} 枚を古い順に並べて、隣どうしで比べた "
+        p(f"スナップショット {nh['pairs'] + 1} 枚を古い順に並べて、隣どうしで比べた "
           "(`other` は表からあふれた分の置き場なので数えない)。"
-          + (f" 窓の外の雪像 {nh['outside']} 枚は数えていない。" if nh["outside"] else ""))
+          + (f" 窓の外のスナップショット {nh['outside']} 枚は数えていない。" if nh["outside"] else ""))
         p("")
         p("| 日 | 件数 | 名前 |")
         p("|---|---:|---|")
@@ -745,9 +745,9 @@ def new_host_lines(d, top):
 
 def parser():
     p = argparse.ArgumentParser(
-        description="1 週間ぶんの雪像から週次の要約を Markdown 1 枚にする (T14.40)")
+        description="1 週間ぶんのスナップショットから週次の要約を Markdown 1 枚にする (T14.40)")
     p.add_argument("inputs", nargs="+", metavar="DIR|FILE",
-                   help="雪像の置き場 (`status/`)、`*-snapshot.json`、"
+                   help="スナップショットの置き場 (`status/`)、`*-snapshot.json`、"
                         "`/daily` の JSON のどれでも。混ぜてよい")
     p.add_argument("--days", type=int, default=DEFAULT_DAYS, metavar="N",
                    help=f"いちばん新しい日から遡る日数 (既定 {DEFAULT_DAYS}、0 で全部)")
@@ -768,7 +768,7 @@ def main(argv=None):
         raise SystemExit("入力が 1 つも見つからない")
     snaps, daily, skipped = load_inputs(paths)
     if not snaps and not daily:
-        raise SystemExit("雪像も /daily も読めなかった: "
+        raise SystemExit("スナップショットも /daily も読めなかった: "
                          + "; ".join(f"{p}: {why}" for p, why in skipped))
     d = build(snaps, daily, args)
     if args.out == "json":

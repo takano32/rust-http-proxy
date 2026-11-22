@@ -24,7 +24,7 @@ if (api.dnsStats({ dns: { warm: 5, warm_secs: 900 } }).warm !== 5) {
 }
 // T32.17: ミス率は名前解決に失敗した試みのミスを除く (`/history?summary=1&since=restart` の
 // `dns_fail_misses ÷ dns_misses` を `/status` のミスから引き、`stale_hits` を当たりに数える)。
-// 数字は 0.30.4 の 48 時間の雪像 (`2026-10-31T063104Z`): 今までの 64.5% が 5.1% になる
+// 数字は 0.30.4 の 48 時間のスナップショット (`2026-10-31T063104Z`): 今までの 64.5% が 5.1% になる
 const realDns = { dns: { hits: 17266, misses: 31358, stale_hits: 12591 } };
 const realSum = { dns_misses: 31348, dns_fail_misses: 29742 };
 const rdn = api.dnsStats(realDns, realSum);

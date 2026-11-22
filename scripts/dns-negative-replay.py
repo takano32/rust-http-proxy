@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # 名前解決の**負のキャッシュ** (`PROXY_DNS_NEGATIVE_SECS`、既定 60 秒) の持ち時間を変えたときに、
 # 引き直し (OS への問い合わせ) と待ちがどれだけ減るか、**誤って断る本数**がいくつになるかを
-# 雪像 1 枚の上で数える (T27.3 段 1)。
+# スナップショット 1 枚の上で数える (T27.3 段 1)。
 #
-# 材料は雪像 (`/snapshot`) 1 枚:
+# 材料はスナップショット (`/snapshot`) 1 枚:
 #   - `/log` の `502 Bad Gateway: connect <host:port> failed: failed to lookup address information:
 #     Name or service not known` の行 … NXDOMAIN で断った要求 1 本ずつの時刻 (覚えていた失敗を返した
 #     要求も同じ文面で書く。`/errors` の 1 行は同じ失敗をまとめたものなので、時刻はこちらから取る)

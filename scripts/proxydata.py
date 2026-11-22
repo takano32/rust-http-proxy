@@ -7,7 +7,7 @@
 
 **応答の形の版 (`schema`。T14.49)**: プロキシの応答は先頭に `"schema":N` を持つ。
 この道具は版で分岐する ([`schema_of`] / [`is_snapshot`]) が、**版の無い古い出力 (版 0) も
-今までどおり読める** — 手元に残っている雪像はどれも版の無い形なので、そちらが読めなく
+今までどおり読める** — 手元に残っているスナップショットはどれも版の無い形なので、そちらが読めなく
 なったら過去の分析をやり直せない。
 """
 
@@ -24,10 +24,10 @@ from datetime import datetime, timezone
 
 CONNECT = "connect://"
 # `/status` の `errors_by_cause` の並び (`crates/metrics-types` の ERR_CAUSE_NAMES)。
-# **先頭 8 つは過去の雪像 (8 要素) と同じ意味と並び**で、動かしてはいけない。
+# **先頭 8 つは過去のスナップショット (8 要素) と同じ意味と並び**で、動かしてはいけない。
 CAUSE_NAMES = ["dns", "refused", "unreachable", "timeout", "reset", "tls", "loop", "other"]
 # T25.0 で `errors_by_cause` の**うしろに**足された 2 つ (9・10 番目)。
-# `dns` の内訳で、`dns == nxdomain + dns_temp` になる。8 要素の雪像 (T25.0 より前) は
+# `dns` の内訳で、`dns == nxdomain + dns_temp` になる。8 要素のスナップショット (T25.0 より前) は
 # この 2 つが無いので 0 として読む。
 DNS_CAUSE_NAMES = ["nxdomain", "dns_temp"]
 
@@ -43,7 +43,7 @@ def is_folded(row):
     return row.get("key") == FOLDED_HOST
 
 # この道具が知っている応答の形の版 (`crates/metrics/src/metrics.rs` の `SCHEMA`。T14.49)。
-# **版 0 = `schema` の無い古い出力** (2026-09-16 以前に取った雪像) で、そちらは今までどおり
+# **版 0 = `schema` の無い古い出力** (2026-09-16 以前に取ったスナップショット) で、そちらは今までどおり
 # 鍵の有無から形を推測して読む。版が上がったらここも上げて、下の分岐に 1 本足す。
 SCHEMA = 1
 
@@ -213,7 +213,7 @@ def load(path):
     return unwrap(load_json(path))
 
 
-# 雪像のファイル名の時刻 (`…/2026-09-16T0106Z-status`・`2026-10-24T184027Z-snapshot.json`)
+# スナップショットのファイル名の時刻 (`…/2026-09-16T0106Z-status`・`2026-10-24T184027Z-snapshot.json`)
 STAMP_RE = re.compile(r"(\d{4})-(\d{2})-(\d{2})T(\d{2})(\d{2})(\d{2})?Z")
 
 
@@ -299,7 +299,7 @@ def row_of(key, a, b):
         err = 0.05 * (cur["timed"] + old["timed"]) / d_timed
     else:
         avg, err = None, None
-    # 待ちの内訳 (T12.4 より前の古い雪像には無いので、無ければ 0)
+    # 待ちの内訳 (T12.4 より前の古いスナップショットには無いので、無ければ 0)
     def d(name):
         return cur.get(name, 0) - old.get(name, 0)
     causes = [x - y for x, y in zip(pad_causes(cur), pad_causes(old))]
@@ -326,7 +326,7 @@ def row_of(key, a, b):
 def pad_causes(row):
     """`errors_by_cause` を 10 列 (8 つの原因 + `dns` の内訳 2 つ) にそろえる。
 
-    T25.0 より前の雪像は 8 要素なので、足りない 2 つは 0 (内訳が分からない) として読む。
+    T25.0 より前のスナップショットは 8 要素なので、足りない 2 つは 0 (内訳が分からない) として読む。
     """
     v = list(row.get("errors_by_cause") or [])
     n = len(CAUSE_NAMES) + len(DNS_CAUSE_NAMES)
@@ -336,8 +336,8 @@ def pad_causes(row):
 def causes_text(counts):
     """`[80, 0, ...]` -> `dns 80`。全部 0 なら `—`。
 
-    9・10 番目 (`dns` の内訳) が入っている雪像では、合計の `dns` の代わりに内訳を出す
-    (両方並べると同じ失敗を 2 回数えたように見える)。8 要素の雪像は今までどおり
+    9・10 番目 (`dns` の内訳) が入っているスナップショットでは、合計の `dns` の代わりに内訳を出す
+    (両方並べると同じ失敗を 2 回数えたように見える)。8 要素のスナップショットは今までどおり
     `dns N` だけ。
     """
     names = CAUSE_NAMES + DNS_CAUSE_NAMES

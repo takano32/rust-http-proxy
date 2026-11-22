@@ -99,7 +99,7 @@ def judge(name, hist, hosts, majors, status_b, overload, th,
           a=None, b=None, info=None, dns=None, errors=None, burst=BURST_PER_HOUR):
     """`RULES[name]` の各行を順に呼んで判定表にする。
 
-    `a` / `b` (雪像そのもの) と `info` / `dns` / `errors` は **phase15 / phase17 の行だけが使う**
+    `a` / `b` (スナップショットそのもの) と `info` / `dns` / `errors` は **phase15 / phase17 の行だけが使う**
     (phase14 の 4 行は今までどおりの 7 つの引数だけで足りる)。
     """
     info = info or {}
@@ -133,7 +133,7 @@ def judge(name, hist, hosts, majors, status_b, overload, th,
 # `--criteria` の名前ごとに、判定表の上に置く「材料と直したところ」の 1 段落 (T34.130 で表にした)。
 # phase14 には無い。**文面は過去の判定を出し直せるように変えない**
 INTRO = {
-    # T15.0。材料が雪像に無い行は「0 だった」ではなく「判定できず」にする
+    # T15.0。材料がスナップショットに無い行は「0 だった」ではなく「判定できず」にする
     "phase15": ("材料は `/hosts` `/status` の `dns` `/dns` (名前ごとの引き直し)・"
                 "`/history` (`dns_warm` と `errors_by_cause`、`res=60` の `closed` / `transfer`)・"
                 "`/profile` (`conn` 役の CPU)・`--daily` (日ごとのミス) です。"

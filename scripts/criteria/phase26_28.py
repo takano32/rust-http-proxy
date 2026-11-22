@@ -14,11 +14,11 @@ from .phase23_25 import DNS_FAILURES, _p23_connect_errors, recent_attempts
 # --- Phase 26 (T29.10。phase25 の 17 行 + T28.99 で手で読んだ「ほかに見ること」と T29.99 の見ること) ---
 #
 # phase25 の 17 行は 1 つも動かさず、**18 番目から後ろに足す**。T28.99 の「ほかに見ること (2)〜(8)」は
-# 個票を手で数えていた (408 は数が無かった)。T29.99 の見ること (RSS・CPU) も、雪像で読めるものはここに置く。
-# 他人の `Set-Cookie` (T29.0) は雪像に数が無いので行にしない (結合テストで見る)。
+# 個票を手で数えていた (408 は数が無かった)。T29.99 の見ること (RSS・CPU) も、スナップショットで読めるものはここに置く。
+# 他人の `Set-Cookie` (T29.0) はスナップショットに数が無いので行にしない (結合テストで見る)。
 
 def snap_hours(snap):
-    """雪像の起動からの時間 (時。`uptime_secs` が無ければ None)。"""
+    """スナップショットの起動からの時間 (時。`uptime_secs` が無ければ None)。"""
     up = snap.get("uptime_secs")
     return up / 3600.0 if up else None
 
@@ -39,7 +39,7 @@ def recent_window(rows):
 def _p26_header_timeouts(c, th):
     """T.29.10 (a): 408 (ヘッダーの締め切り) の件数。**表示だけ** (本数は相手が決める)。
 
-    材料は後の雪像の `/status` の `rejected_requests.header_timeout` (起動からの通算) と、`/recent` の
+    材料は後のスナップショットの `/status` の `rejected_requests.header_timeout` (起動からの通算) と、`/recent` の
     `error:header_timeout` の行 (うち `reqs` ≥ 1 = 1 要求目を通したあとの keep-alive で止まった接続)。
     T.29.10 より前の版には欄が無いので「判定できず」(0 と書かない)。T.33.0 からは 1 バイトも送らない先張りの接続を
     408 にせず `/status` の `silent_closes` に数えるので、欄があれば同じ行に並べる (無い版は何も書かない)。

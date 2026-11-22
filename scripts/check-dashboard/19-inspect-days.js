@@ -5,7 +5,7 @@
 //     `/snapshots` の一覧。T14.40 / T14.34)・`eventRows` (`/events` の表。T14.11 / T14.23) を
 //     3 つの入力で回す: (1) `/daily` と `/snapshots` の作り置き (9 日ぶん = 週の窓より 2 日多い)、
 //     (2) **`snapshot-local.json` の `events`** (手元のプロキシの本物の出力。`anomaly` 入り)、
-//     (3) **匿名化した実データ** (T14.35。この版の雪像には `/daily` も `/events` も無いので
+//     (3) **匿名化した実データ** (T14.35。この版のスナップショットには `/daily` も `/events` も無いので
 //     **「無い版」の分岐**を実データで通し、`/history?res=3600` を UTC の日で束ねて
 //     「週の足し算」を本物の分布で確かめる)。
 const insNew = pick(insJs, ['num', 'dailyRows', 'weeklyRows', 'eventRows'], 'inspect.html', insPrelude);
@@ -106,9 +106,9 @@ if (wk.p95_hi !== Math.max.apply(null, want7.map((d) => d.connect_p95_ms))) fail
 if (wk.from !== want7[0].day || wk.to !== want7[6].day) fail('週の期間が違う: ' + wk.from + ' → ' + wk.to);
 if (wk.missing !== 0 || wk.gaps !== 0) fail('7 日そろっているのに足りない日が出た');
 // `/snapshots` の一覧と日を突き合わせる (この週は 5 枚)
-if (wk.in_week !== 5) fail('この週の雪像が 5 枚でない: ' + wk.in_week);
-if (!wk.rows[0].snapshot || wk.rows[0].snapshot.date !== wk.rows[0].day) fail('雪像が日に結び付いていない');
-if (wk.rows[6].snapshot !== null) fail('雪像の無い日に雪像が付いた');
+if (wk.in_week !== 5) fail('この週のスナップショットが 5 枚でない: ' + wk.in_week);
+if (!wk.rows[0].snapshot || wk.rows[0].snapshot.date !== wk.rows[0].day) fail('スナップショットが日に結び付いていない');
+if (wk.rows[6].snapshot !== null) fail('スナップショットの無い日にスナップショットが付いた');
 if (wk.snapshot_days !== 30 || !wk.has_snapshots) fail('/snapshots の残す日数が読めていない');
 // 足りない日・抜けた日・無い版
 const thin = insNew.weeklyRows({ days: dailyLines.slice(0, 3) }, null, 7);
@@ -183,7 +183,7 @@ for (const r of localEv.rows) {
 }
 if (localEv.anomalies !== localEv.rows.filter((r) => r.anomaly).length) fail('本物の異常の数が合わない');
 
-// (3) 匿名化した実データ (T14.35)。この版の雪像には `/daily` も `/events` も `/snapshots` も
+// (3) 匿名化した実データ (T14.35)。この版のスナップショットには `/daily` も `/events` も `/snapshots` も
 //     無いので、まず**「無い版」の分岐**を実データで通し、そのあと `/history?res=3600` を
 //     UTC の日で束ねて `/daily` の形に組み直し、**週の足し算**を本物の分布で確かめる。
 function checkDailyWeekly() {
@@ -191,11 +191,11 @@ function checkDailyWeekly() {
   if (!fs.existsSync(snapPath)) return null;
   const where = path.basename(snapPath);
   const a = JSON.parse(fs.readFileSync(snapPath, 'utf8'));
-  if (insNew.dailyRows(a.daily || null, 14).available) fail(where + ': /daily の無い雪像で available になった');
-  if (insNew.eventRows(a.events || null, 200).available) fail(where + ': /events の無い雪像で available になった');
+  if (insNew.dailyRows(a.daily || null, 14).available) fail(where + ': /daily の無いスナップショットで available になった');
+  if (insNew.eventRows(a.events || null, 200).available) fail(where + ': /events の無いスナップショットで available になった');
   const empty = insNew.weeklyRows(a.daily || null, a.snapshots || null, 7);
   if (empty.rows.length !== 0 || empty.total.requests !== 0 || empty.available) {
-    fail(where + ': /daily の無い雪像で週が 0 にならない');
+    fail(where + ': /daily の無いスナップショットで週が 0 にならない');
   }
   // 実データの標本を UTC の日で束ねて `/daily` の 1 行にする (区間の値はそのまま足せる)
   const h = (a.history || {})['3600'] || {};
@@ -236,7 +236,7 @@ function checkDailyWeekly() {
   const msAll = lines.slice(-7).reduce((x, d) => x + d.dns_ms_sum, 0) / hand('dns_misses');
   if (Math.abs(w.total.dns_miss_ms - msAll) > 1e-6) fail(where + ': 週のミス 1 回が合わない: ' + w.total.dns_miss_ms);
   // **T14.40 (`weekly-report.py`) が同じ実データから出した週の数字と一致すること**
-  // (fixture を再デプロイ後の雪像に差し替えたら、この 3 つの数も一緒に直す)
+  // (fixture を再デプロイ後のスナップショットに差し替えたら、この 3 つの数も一緒に直す)
   if (w.total.requests !== 522251) fail(where + ': 週の要求数が T14.40 の 522,251 と違う: ' + w.total.requests);
   if (w.total.errors !== 101) fail(where + ': 週のエラーが T14.40 の 101 と違う: ' + w.total.errors);
   if (w.total.active_max !== 218) fail(where + ': 週の最大同時が T14.40 の 218 と違う: ' + w.total.active_max);
@@ -265,7 +265,7 @@ console.log(
     wk.p50_lo.toFixed(1) +
     '〜' +
     wk.p95_hi.toFixed(1) +
-    ' ms、週では出さない)、雪像 ' +
+    ' ms、週では出さない)、スナップショット ' +
     wk.in_week +
     ' / ' +
     wk.rows.length +

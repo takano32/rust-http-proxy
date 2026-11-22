@@ -5,7 +5,7 @@
 #
 # 今日の版はエンドポイントが 10 本以上増え、環境変数も増えた。増やしたのは別々のエージェントで、
 # **コードにあるのに文書に無い / 文書にあるのにコードに無い**が目で見つからなくなっている。
-# 突き合わせるのは次の 13。検査は何を見るかの名前で呼び、出力の行の頭と NG の行にも `[名前]` で出す
+# 突き合わせるのは次の 14。検査は何を見るかの名前で呼び、出力の行の頭と NG の行にも `[名前]` で出す
 # (T37.7 で `(a)`〜`(k)` の記号から変えた):
 #
 #   [エンドポイント]   … `crates/endpoints/src/endpoints/dispatch.rs` の経路表 (match の腕)
@@ -29,6 +29,8 @@
 #   [位置で指す識別]   … 文書・コード・道具・CI に、このリポジトリの中を位置や記号で指す識別 (`§`・付録の記号・章の番号・
 #                        タスクの中の札・検査の記号や番号) が戻っていないこと (T37.9)。
 #                        中身は `scripts/check-position-refs.py` (試験は `scripts/test_check_position_refs.py`)
+#   [言葉の決まり]     … 道具・CI・README に、使わないと決めた言葉 (`AGENTS.md` の「言葉の決まり」の表の左の欄) が
+#                        戻っていないこと (T39.10)。中身は `scripts/check-words.py` (試験は `scripts/test_check_words.py`)
 #
 # **意図的に外してあるものは下の除外表に理由つきで持つ** (黙って無視しない)。
 # 差分が 1 件でもあれば理由を印字して exit 1。
@@ -141,17 +143,17 @@ cat >"$W/snap-skip" <<'EOF'
 /blocklist	1 ホストを指定して引く / 変える口 (`?host=` が要る)
 /explain	1 相手を指定して組む口 (`?host=` / `?client=` が要る。中身は `/hosts` `/dns` `/recent` の組み直し)
 /snapshot	自分自身
-/snapshots	ディスクに残した過去の雪像の一覧 (雪像の中に雪像は入れない)
+/snapshots	ディスクに残した過去のスナップショットの一覧 (スナップショットの中にスナップショットは入れない)
 /snapshots/<date>	同上 (1 日ぶんの中身)
 /readers	`/status` の末尾の `readers` に上位 20 が入る (T14.53)
-/trace	`PROXY_TRACE_CLIENT` を設定したときだけ中身があり、**URL のパスが入る** (T14.27)。誰でも取れる雪像には入れない
+/trace	`PROXY_TRACE_CLIENT` を設定したときだけ中身があり、**URL のパスが入る** (T14.27)。誰でも取れるスナップショットには入れない
 /slo	`/history` の標本から判定し直せる (T14.50)
-/daily	日ごとの要約はファイル (`~/.rust-http-proxy.daily.jsonl`) に永久に残る。雪像は「そのときの様子」を撮るもの (T14.20 の申し送り「`parts` に足す」は T28.28 で足さないと決めた: `collect-deployed.sh` が `-daily.json` を別に取り、雪像の 4 MiB の枠を食わないため。足すなら `scripts/anonymize-snapshot.py` の PART_ORDER と `snapshot-diff.py` も一緒に直す)
+/daily	日ごとの要約はファイル (`~/.rust-http-proxy.daily.jsonl`) に永久に残る。スナップショットは「そのときの様子」を撮るもの (T14.20 の申し送り「`parts` に足す」は T28.28 で足さないと決めた: `collect-deployed.sh` が `-daily.json` を別に取り、スナップショットの 4 MiB の枠を食わないため。足すなら `scripts/anonymize-snapshot.py` の PART_ORDER と `snapshot-diff.py` も一緒に直す)
 EOF
 cut -f1 "$W/snap-skip" | LC_ALL=C sort -u >"$W/snap-skip-names"
 LC_ALL=C sort -u "$W/ep-code" | comm -23 - "$W/snap-skip-names" >"$W/snap-want"
 
-printf '[スナップショットの部] `/snapshot` の parts %s 部 = %s 口 / 雪像に入るべき口 %s (除外 %s)\n' \
+printf '[スナップショットの部] `/snapshot` の parts %s 部 = %s 口 / スナップショットに入るべき口 %s (除外 %s)\n' \
   "$(wc -l <"$W/parts-raw")" "$(wc -l <"$W/parts-ep")" "$(wc -l <"$W/snap-want")" "$(wc -l <"$W/snap-skip-names")"
 diffset "[スナップショットの部]" "parts" "$W/parts-ep" "個票の口" "$W/snap-want"
 sed 's/^/    除外: /;s/\t/ — /' "$W/snap-skip"
@@ -392,10 +394,15 @@ python3 scripts/check-spec-names.py "$W/env-code" "$W/ep-code" || NG=1
 # 古い章の対応表などは、`scripts/check-position-refs.py` の除外表に理由つきで持つ
 python3 scripts/check-position-refs.py || NG=1
 
+# --- [言葉の決まり] (T39.10) --------------------------------------------------------
+# 「スナップショット」と書く (2026-11-12、利用者の指示。前の呼び方は `AGENTS.md` の「言葉の決まり」の表)。凍結した判定表の文面・`snapshot-diff.py` の
+# 出力の文面と、それを確かめる試験の期待値は、`scripts/check-words.py` の除外表に理由つきで持つ
+python3 scripts/check-words.py || NG=1
+
 echo
 if [ "$NG" = 0 ]; then
-  echo "13 を突き合わせて 差分 0 件。"
+  echo "14 を突き合わせて 差分 0 件。"
   exit 0
 fi
-echo "差分あり。README / \`/\` の案内 / \`/snapshot\` / 環境変数の表 / 台帳 (\`docs/task-index.md\` と \`tasks/\`) / 判定表の既定 / \`-h\` の既定 / 上の・下の / いまの数字 / 仕様に載っているか / 位置で指す識別 を直すか、理由を除外表に書くこと。"
+echo "差分あり。README / \`/\` の案内 / \`/snapshot\` / 環境変数の表 / 台帳 (\`docs/task-index.md\` と \`tasks/\`) / 判定表の既定 / \`-h\` の既定 / 上の・下の / いまの数字 / 仕様に載っているか / 位置で指す識別 / 言葉の決まり を直すか、理由を除外表に書くこと。"
 exit 1

@@ -17,7 +17,7 @@ bk = api.bootKind([bootStart(100, 'aaaa'), { at: 150, kind: 'anomaly', text: 'x'
 if (bk.kind !== 'silent' || bk.at !== 300) fail('bootKind が無言の再起動を読めない: ' + JSON.stringify(bk));
 if (api.bootKind([bootStart(100, 'aaaa')]).kind !== 'edge') fail('bootKind: 窓の先頭の start は edge');
 if (api.bootKind([]).kind !== 'none' || api.bootKind(undefined).kind !== 'none') fail('bootKind: 出来事が無いときは none');
-// 実データ (匿名化した雪像に /events があれば) でも落ちない
+// 実データ (匿名化したスナップショットに /events があれば) でも落ちない
 const realEvents = statusFile && fs.existsSync(statusFile) ? (JSON.parse(fs.readFileSync(statusFile, 'utf8')).events || null) : null;
 const realKind = realEvents ? api.bootKind(realEvents.events || realEvents).kind : 'none';
 console.log('OK: 起動のカード (T28.25) の bootKind: 普通の再起動・無言の再起動・窓の先頭・記録なしを読み分けた (' +

@@ -15,7 +15,7 @@ from .phase23_25 import _p24_heap
 # phase17〜30 の行 (`_p17_events`) は `criteria/phase14_18.py` の `anomaly_rates` で数え、要約の表は
 # `snapshot-summary.py` の `anomaly_rates` で数えていた。2 つは起動の時刻の出し方 (`uptime_secs` だけか、
 # `status.uptime_secs` を先に見るか)・`:` の無い文面 (外すか `?` に数えるか)・「切れている」の読み方
-# (応答の `truncated` だけか、リングが満杯で起動より前の出来事が残っていない時も含めるか) が違い、同じ雪像でも
+# (応答の `truncated` だけか、リングが満杯で起動より前の出来事が残っていない時も含めるか) が違い、同じスナップショットでも
 # 要約の件/時と判定表の行がずれることがあった (T34.5 のレビュー)。利用者の判断 (2026-11-07) で要約の
 # 数え方に揃え、T35 からはその 1 つの関数 (`criteria/common.py` の `anomaly_rates_since_start`) を使う。
 # 件/時は要約の表と同じく 3 桁 (閾 0.1 件/時の近くで 2 桁に丸めると読み違える)。
@@ -23,7 +23,7 @@ from .phase23_25 import _p24_heap
 def _t35_events_measured(c, th):
     """T35.9: `/events` の anomaly の種類別 件/時 (要約の表と同じ関数・同じ 3 桁)。
 
-    行の形は `_p17_events` と同じ (閾のある種類を先に太字で、前の雪像の件/時を添える)。T35 では
+    行の形は `_p17_events` と同じ (閾のある種類を先に太字で、前のスナップショットの件/時を添える)。T35 では
     下の `display_only` で表示だけにする (phase22 から `dns_slow` の判定は別の行に任せている)。
     """
     limits = th["events_per_hour"]
@@ -82,7 +82,7 @@ _t35_events = display_only(
 #   64 KiB × 2^k (本文以上の最小)。10 MB の本文で +6.8 MB、3 MB で +1.2 MB、1 KB で +64 KiB が数えられていない
 # - mmap の頁の端数 (`PROXY_MALLOC_MMAP_THRESHOLD_KB` 256 以上の本文) は 1 件 4 KiB 未満で、上の 0.5 KiB に紛れる
 #
-# 雪像には本文ごとの長さも、長さが分かっていたかも無い (`/status` の `cache.memory` は件数と長さの合計だけ)
+# スナップショットには本文ごとの長さも、長さが分かっていたかも無い (`/status` の `cache.memory` は件数と長さの合計だけ)
 # ので、端数は**幅**でしか引けない: 1 件の端数は `max(本文, 64 KiB)` 未満なので、合計は 0 以上
 # `used_bytes + 件数 × 64 KiB` 未満。残りの上下限が両方とも閾の同じ側なら判定し、またがれば「判定できず」
 # (上下限を書く。phase30 の `dns_slow` の行と同じ書き方)。本体が本文の確保の大きさの合計を
@@ -127,7 +127,7 @@ def _t35_heap(c, th):
 
     キャッシュがメモリやディスクを使うのは良いことなので、届かずにしない (利用者の判断 2026-11-07)。
     `/status` の `cache_memory` の定義は変えず、物差しの側で、本文の確保の端数と索引の見積もりを引く。
-    `memory.baseline` が無い雪像は `_p24_heap` をそのまま返す (基準を混ぜない。phase24 と同じ)。
+    `memory.baseline` が無いスナップショットは `_p24_heap` をそのまま返す (基準を混ぜない。phase24 と同じ)。
     """
     b = c["b"]
     mem = memory_of(b)

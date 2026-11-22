@@ -41,7 +41,7 @@ def profile_role_cores(snap, role):
 def minute_parts(a, b, name):
     """2 枚の `/history?res=60` の `name` (`closed` / `transfer`) を時刻で重ねる。
 
-    どちらも `keys` と `samples` を持つ別の配列 (T14.6 / T14.25)。同じ時刻は**新しい雪像の値**。
+    どちらも `keys` と `samples` を持つ別の配列 (T14.6 / T14.25)。同じ時刻は**新しいスナップショットの値**。
     欄が無い版は飛ばす。返すのは `({t: {鍵: 値}}, 最初に見つかった部の頭)` か、どちらにも無ければ None。
     """
     rows, head = {}, None
@@ -60,7 +60,7 @@ def minute_parts(a, b, name):
 def tunnel_closes(a, b, boundary, burst):
     """`/history?res=60` から、**平常時に閉じたトンネル**の `idle_timeout` と半閉じの割合 (T15.15)。
 
-    前の版は `/recent` (雪像では 256 KiB で切れ、窓の長さが毎回違う) から割合を取っていた。
+    前の版は `/recent` (スナップショットでは 256 KiB で切れ、窓の長さが毎回違う) から割合を取っていた。
     こちらは 1 分ごとの**全数**: 母数は `transfer.tunnels` (終わったトンネルの数)、
     分子は `closed.reasons` の `idle_timeout` (トンネルにしか付かない理由) と `transfer.half_close_n`。
 
@@ -319,10 +319,10 @@ def _p15_timeout(c, th):
 # --- Phase 17 の 4 行 (T17.0a。前の 4 行は phase15 の関数をそのまま使う) ---
 
 def profile_source(snap):
-    """その雪像の `/profile` の材料と出どころ (無ければ `(None, None)`)。
+    """そのスナップショットの `/profile` の材料と出どころ (無ければ `(None, None)`)。
 
     `--profile FILE` (`/profile?res=60` の JSON。`build` が `profile_res_60` に入れる) を先に採る。
-    無ければ雪像の `/profile` の部 (5 秒の標本で 1 時間未満しか無い) で、そのときは**参考**。
+    無ければスナップショットの `/profile` の部 (5 秒の標本で 1 時間未満しか無い) で、そのときは**参考**。
     """
     p = snap.get("profile_res_60")
     if isinstance(p, dict) and p.get("samples"):
@@ -366,7 +366,7 @@ def profile_cost(p, role):
 def _p17_conn_per_request(c, th):
     """T17.99: conn 役の CPU/要求 が前の 1.3 倍以下 (T16.99 で手で見た行を自動で)。
 
-    材料は `--profile` (`/profile?res=60`)。無ければ雪像の `/profile` の部で「参考」と書く。
+    材料は `--profile` (`/profile?res=60`)。無ければスナップショットの `/profile` の部で「参考」と書く。
     **プロセス全体のコア数も並べる** (要求の中身で conn 役の値が振れるので、桁はこちらで見る)。
     """
     k = th["conn_per_request_factor"]
@@ -412,7 +412,7 @@ def _p17_warm_max(c, th):
     sb = part(c["b"], "status").get("dns") or {}
     sa = part(c["a"], "status").get("dns") or {}
     ev = sb.get("warm_evicted")
-    # `warm_evicted` は起動からの通算。再起動していなければ前の雪像を引いてその間の値にする
+    # `warm_evicted` は起動からの通算。再起動していなければ前のスナップショットを引いてその間の値にする
     windowed = ev is not None and not (c["info"] or {}).get("restarted") \
         and sa.get("warm_evicted") is not None
     if windowed:
@@ -546,23 +546,23 @@ def mb(v):
 
 
 def memory_of(snap):
-    """その雪像の `/status` の `memory` (無ければ空の辞書)。"""
+    """そのスナップショットの `/status` の `memory` (無ければ空の辞書)。"""
     m = part(snap, "status").get("memory")
     return m if isinstance(m, dict) else {}
 
 
 def uptime_text(secs):
-    """起動からの時間。1 時間に満たなければ分で書く (0 時間の雪像は起動の数分後)。"""
+    """起動からの時間。1 時間に満たなければ分で書く (0 時間のスナップショットは起動の数分後)。"""
     secs = secs or 0
     return f"{secs / 60:,.1f} 分" if secs < 3600 else f"{secs / 3600:,.1f} 時間"
 
 
 def _p18_heap(c, th):
-    """T18.0: `heap_used + mmap` が 0 時間の雪像から 5 MB 以上増えていないか。
+    """T18.0: `heap_used + mmap` が 0 時間のスナップショットから 5 MB 以上増えていないか。
 
-    材料は `--zero FILE` (0 時間の雪像。`build` が `zero_snapshot` に入れる) と後の雪像の
+    材料は `--zero FILE` (0 時間のスナップショット。`build` が `zero_snapshot` に入れる) と後のスナップショットの
     `$.status.memory`。**`heap_free` と `rss` は並べるだけ** (閾を置かない。T17.99 で伸びたのは
-    `heap_free` で、バーストの大きさで決まる)。`--zero` が無いか、後の雪像と同じ起動でなければ
+    `heap_free` で、バーストの大きさで決まる)。`--zero` が無いか、後のスナップショットと同じ起動でなければ
     「判定できず」。
     """
     lim = th["heap_growth_mb"]
@@ -594,7 +594,7 @@ def _p18_heap(c, th):
 def _p18_request_probes(c, th):
     """T18.0: `v4_first` の間に利用者の経路で IPv6 を探っていないか (T18.1 の計器)。
 
-    材料は後の雪像の `$.status.ipv6.request_probes` (起動からの通算)。欄が無い版は「判定できず」。
+    材料は後のスナップショットの `$.status.ipv6.request_probes` (起動からの通算)。欄が無い版は「判定できず」。
     0 でなければ「届かず」で、理由を読むための `canary.ipv6_runs` / `ipv6_skipped` を並べる。
     """
     want = th["request_probes"]

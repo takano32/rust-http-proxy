@@ -3,8 +3,8 @@
 
     python3 -m unittest discover -s scripts        # リポジトリの根から
 
-入力は**架空の**雪像 (`testdata/replay-dns.json`、名前は `*.example.invalid`) と、
-その場で組んだ到着列。**本物の雪像 (利用者の閲覧先が並ぶ) は入れない**。
+入力は**架空の**スナップショット (`testdata/replay-dns.json`、名前は `*.example.invalid`) と、
+その場で組んだ到着列。**本物のスナップショット (利用者の閲覧先が並ぶ) は入れない**。
 """
 
 import contextlib
@@ -375,7 +375,7 @@ class SnapshotTest(unittest.TestCase):
 
 class CurrentModelTest(unittest.TestCase):
     """T29.17: 「今の規則」(`current`) は keep-warm を止めた模型 (warm 0・serve-stale 21,600 秒) で、
-    名前解決に失敗した到着は負のキャッシュ (60 秒) で回す。一致は雪像の実機の値と比べる。"""
+    名前解決に失敗した到着は負のキャッシュ (60 秒) で回す。一致はスナップショットの実機の値と比べる。"""
 
     def test_current_never_warms_and_answers_stale(self):
         tb = dr.Table(dr.RULES["current"], window=0, serve_stale=21600)
@@ -411,7 +411,7 @@ class CurrentModelTest(unittest.TestCase):
         cur = out["rules"]["current"]
         self.assertEqual(out["fit"]["miss_per_lookup"], dr.within(cur["misses"], 4))
         self.assertEqual(out["fit"]["refresh_per_hour"], dr.within(cur["refresh_per_hour"], 10.0))
-        # 雪像に `/status` の `dns.refreshes` が無ければ T16.99 の物差しのまま
+        # スナップショットに `/status` の `dns.refreshes` が無ければ T16.99 の物差しのまま
         out = dr.run(read(SNAP), ["current"])
         self.assertEqual(out["fit"]["target"]["refresh_per_hour"], dr.TARGET_REFRESH_PER_HOUR)
 
@@ -430,7 +430,7 @@ T2917 = os.path.join(os.path.dirname(HERE), "status", "tokyo", "2026-10-27T02420
 
 @unittest.skipUnless(os.path.exists(T2917), "tokyo の実データが無い (status/tokyo/)")
 class Deployed2917(unittest.TestCase):
-    """T29.17 の受け入れ基準: 10-27 の雪像で、今の規則の模型がミス・引き直しとも実機の ±30%。
+    """T29.17 の受け入れ基準: 10-27 のスナップショットで、今の規則の模型がミス・引き直しとも実機の ±30%。
 
     実機は同じ区間 (2.54 時間) のミス 130 回、引き直し 374 回/時 (起動から 24.1 時間。`warm_secs` 0)。
     T29.16 までの `current` (keep-warm あり) は引き直し 2,273 回/時で「合わない」だった。

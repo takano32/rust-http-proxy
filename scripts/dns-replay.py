@@ -2,7 +2,7 @@
 # 名前解決の表 (`crates/net-dns/src/dns.rs`) を**再生の模型**で回し、規則を変えたときの
 # ミスと引き直しの数を見積もる (T17.5)。
 #
-# 材料は雪像 (`/snapshot`) 1 枚:
+# 材料はスナップショット (`/snapshot`) 1 枚:
 #   - `/recent` の `at` (開いた時刻) と `target` … **全部そろっている区間** (下の「測る区間」) の到着列
 #   - `/connections` の `age_secs` … まだ閉じていない接続 (同じ区間に開いたもの)
 #   - `/hosts_series` (上位 16 ホスト × 5 分 × 24 時間) … 測る区間の**前の助走** (warm の状態を作る)
@@ -37,11 +37,11 @@
 #
 # **「今の規則」(`current`) は keep-warm を止めた模型 (T29.17)**: `PROXY_DNS_WARM_SECS=0` (T22.4。warm に上げない
 # = 裏の引き直しは先回りと serve-stale だけ) と serve-stale 21,600 秒 (T21.3) が 0.22.6 からの既定で、tokyo は
-# `warm_secs` 0。T29.16 までの `current` は warm 3,600 秒・serve-stale なしの模型で、10-27 の雪像に当てると引き直し
+# `warm_secs` 0。T29.16 までの `current` は warm 3,600 秒・serve-stale なしの模型で、10-27 のスナップショットに当てると引き直し
 # 2,273 回/時 (実機 374 回/時) を出し、道具自身が「模型が実機と合わない」と判定していた。その模型は `keep_warm`
 # (と `no_idle`) として残す。**名前解決に失敗した接続** (`/recent` の `error:nxdomain` / `error:dns_temp` /
 # `error:dns`) は負のキャッシュ (60 秒。T27.3) の模型で回す (期限内は当たり、それ以外は `negative` のミス、
-# 裏の引き直しは無し)。一致は**その雪像の実機の値**と比べる: ミスは同じ区間の `/history?res=60` の
+# 裏の引き直しは無し)。一致は**そのスナップショットの実機の値**と比べる: ミスは同じ区間の `/history?res=60` の
 # `dns_misses`、引き直しは `/status` の `dns.refreshes` ÷ 起動からの時間 (どちらも ±30%)
 #
 # 使い方: scripts/dns-replay.py SNAP.json [--rule current|keep_warm|no_idle|all] [--serve-stale SECS]... [--no-prime]
@@ -59,7 +59,7 @@ TTL = 60
 WARM = 3600
 MAX_WARM = 32
 # 実機の値 (T16.99: 平常時のミス 0.06 回/接続、裏の引き直し 436 回/時)。模型が合っているかの物差し。
-# T29.17 からは雪像に実機の値 (`/history` のミス・`/status` の引き直し) があればそちらと比べ、無いときだけこれ
+# T29.17 からはスナップショットに実機の値 (`/history` のミス・`/status` の引き直し) があればそちらと比べ、無いときだけこれ
 TARGET_MISS_PER_CONNECT = 0.06
 TARGET_REFRESH_PER_HOUR = 436.0
 # 負のキャッシュの TTL (`PROXY_DNS_NEGATIVE_TTL_SECS` の既定。T27.3)
@@ -304,7 +304,7 @@ class Table:
             self.c["misses_by_kind"][kind] += 1
 
 
-# ------------------------------------------------------------------ 雪像から到着列を作る
+# ------------------------------------------------------------------ スナップショットから到着列を作る
 
 def history_rows(snap, res="60"):
     """`/history?res=<res>` の標本を辞書の列にする (`keys` の並びで読む)。"""
@@ -314,7 +314,7 @@ def history_rows(snap, res="60"):
 
 
 def build(snap):
-    """雪像から (助走の到着列, 区間の到着列, 区間の始まり, 区間の終わり, 前から居た名前) を作る。"""
+    """スナップショットから (助走の到着列, 区間の到着列, 区間の始まり, 区間の終わり, 前から居た名前) を作る。"""
     taken = snap.get("taken_at") or 0
     recent = ((snap.get("recent") or {}).get("recent")) or []
     if not recent:
@@ -479,7 +479,7 @@ def run(snap, rules, prime=True, stale=()):
     cur = out["rules"].get("current")
     if cur:
         # 実機の値と比べる (T29.17)。ミスは同じ区間の回数、引き直しは起動からの回/時。
-        # 雪像に無ければ T16.99 の物差し (ミス/到着と回/時)
+        # スナップショットに無ければ T16.99 の物差し (ミス/到着と回/時)
         if real is not None and real.get("dns_misses"):
             miss_ok = within(cur["misses"], real["dns_misses"])
             miss_target = {"misses": real["dns_misses"]}
@@ -690,7 +690,7 @@ def render(out):
                      + (f" = {mp:.3f} 回/接続" if mp is not None else ""))
     tgt = (out.get("fit") or {}).get("target") or {}
     if "misses" in tgt:
-        lines.append(f"物差し (T29.17。この雪像の実機): ミス {tgt['misses']} 回 (同じ区間)、引き直し "
+        lines.append(f"物差し (T29.17。このスナップショットの実機): ミス {tgt['misses']} 回 (同じ区間)、引き直し "
                      f"{tgt['refresh_per_hour']:.0f} 回/時 (`/status` の起動から) (±{TOLERANCE * 100:.0f}%)")
     else:
         lines.append(f"物差し (T16.99): ミス {TARGET_MISS_PER_CONNECT} 回/接続、引き直し "

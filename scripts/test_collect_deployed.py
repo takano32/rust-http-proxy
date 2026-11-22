@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """`scripts/collect-deployed.sh` が `/profile?res=60` を `offset=` で追って 1 つに繋ぐ試験 (T17.0b) と、
-雪像の隣に匿名化した写しを置く試験 (T17.16)、判定表の相手を `BEFORE` / `ZERO` で渡す試験 (T18.2)、
-雪像の切れた `recent`・`hosts` を既定で追って雪像に繋ぐ試験 (T22.5)、`--from-server` が締めの「前」と
+スナップショットの隣に匿名化した写しを置く試験 (T17.16)、判定表の相手を `BEFORE` / `ZERO` で渡す試験 (T18.2)、
+スナップショットの切れた `recent`・`hosts` を既定で追ってスナップショットに繋ぐ試験 (T22.5)、`--from-server` が締めの「前」と
 「0 時間」を版で選び、`--closeout` が 1 回で取り寄せ・本番・前提まで出す試験 (T29.26)。
 
     python3 -m unittest discover -s scripts        # リポジトリの根から
@@ -125,7 +125,7 @@ class CollectProfileTest(unittest.TestCase):
         self.addCleanup(srv.shutdown)
         d = tempfile.mkdtemp(prefix="t170b-")
         self.addCleanup(lambda: subprocess.run(["rm", "-rf", d]))
-        # 前回の雪像とその隣の口 (`{名前: 中身}`) を先に置いておく
+        # 前回のスナップショットとその隣の口 (`{名前: 中身}`) を先に置いておく
         for name, body in (prev or {}).items():
             with open(os.path.join(d, name), "w") as f:
                 json.dump(body, f)
@@ -187,7 +187,7 @@ class CollectProfileTest(unittest.TestCase):
         self.assertIn("2 枚を繋いだ", out)
 
     def test_profile_passed_to_diff(self):
-        # 繋いだ `-profile_res_60.json` は `snapshot-diff.py --profile` に、前回の雪像の隣の
+        # 繋いだ `-profile_res_60.json` は `snapshot-diff.py --profile` に、前回のスナップショットの隣の
         # 同じ時刻の `-profile_res_60.json` は `--profile-before` に渡る (phase17 の conn 役の行)
         p = FakeProfile(1440)
         before = FakeProfile(100).page(0)
@@ -212,13 +212,13 @@ class CollectProfileTest(unittest.TestCase):
 
 
 class CollectBeforeZeroTest(unittest.TestCase):
-    """判定表の相手を `BEFORE`、0 時間の雪像を `ZERO` で渡す (T18.2)。
+    """判定表の相手を `BEFORE`、0 時間のスナップショットを `ZERO` で渡す (T18.2)。
 
     既定の `CRITERIA` は T38 (T38.0)。下のテストは `criteria="phase18"` を名指しして回す
     (`BEFORE` / `ZERO` の受け渡しは定義に依らない)。
 
-    偽のサーバーが返す「いまの雪像」は `testdata/snapshot-b.json` (版 `0.1.0+bbbbbbb`、起動から 12 時間、
-    `memory` は `heap_used` 6.0 + `mmap` 8.0 MB)。保存先には前回の雪像 (直前の 1 枚) を置いておく。
+    偽のサーバーが返す「いまのスナップショット」は `testdata/snapshot-b.json` (版 `0.1.0+bbbbbbb`、起動から 12 時間、
+    `memory` は `heap_used` 6.0 + `mmap` 8.0 MB)。保存先には前回のスナップショット (直前の 1 枚) を置いておく。
     """
 
     PREV = "2025-12-31T120000Z-snapshot.json"
@@ -250,7 +250,7 @@ class CollectBeforeZeroTest(unittest.TestCase):
         for name, body in files.items():
             with open(os.path.join(d, name), "w") as f:
                 json.dump(body, f)
-        # 時刻は 00:00:00 にしない (いま撮る 1 枚が日次の雪像の名前になって、下の表に並んでしまう)
+        # 時刻は 00:00:00 にしない (いま撮る 1 枚が日次のスナップショットの名前になって、下の表に並んでしまう)
         e = dict(os.environ, PROBE="0", DASHBOARD="0", DIFF="1", ANON="0",
                  COLLECT_STAMP="2026-01-01T120000Z")
         for name in ("CRITERIA", "BEFORE", "ZERO", "AAAA"):
@@ -286,14 +286,14 @@ class CollectBeforeZeroTest(unittest.TestCase):
         self.assertIn("立った窓の、名前解決に**成功した**ミスの平均が 500 ms 未満", tail)
         # T35.9: `/events` の行は要約と同じ数え方 (T36 も同じ行)
         self.assertIn("`/events` の anomaly の種類別 件/時 (`dns_slow` を含めて表示だけ。要約と同じ数え方)", tail)
-        # 前回の雪像に `/profile` も `/recent` も無いので conn 役と接続のエラーの行は「判定できず」で、
+        # 前回のスナップショットに `/profile` も `/recent` も無いので conn 役と接続のエラーの行は「判定できず」で、
         # 参考の行は無い (表示だけは phase21 の 4 行 + `/events` の行 + phase22 の接続のエラーの行 +
         # phase29 で表示だけにした cgroup の CPU の行 + T36.2 の機械の速さの物差しの行)
         self.assertIn("(ほかに表示だけ 8 行。集計に数えない)", tail)
         self.assertNotIn("参考", tail.split("\n\n")[-2])
         # 表の頭 + 27 行 (T29.10・T29.15 で phase25 の 17 行に 9 行、T36.2 で末尾に表示だけの 1 行)
         self.assertEqual(tail.count("\n| "), 1 + 27)
-        # `baseline` も `boot` も無い雪像なので、heap の行は phase23 の読み方に戻る
+        # `baseline` も `boot` も無いスナップショットなので、heap の行は phase23 の読み方に戻る
         self.assertIn("`heap_used + mmap − cache_memory` の 0 時間の雪像からの増えが 5 MB 未満", tail)
         self.assertIn("こちらが原因の無言の再起動", tail)
         # `BEFORE` も `ZERO` も無ければ今までどおり直前の 1 枚が相手で、(g) は判定できない
@@ -317,7 +317,7 @@ class CollectBeforeZeroTest(unittest.TestCase):
         self.assertIn("### snapshot-diff: `%s` →" % os.path.join(d, self.PREV), head)
         self.assertNotIn("完了の定義に対する判定", head)
         tail = self.judged(out)
-        self.assertIn("相手は `BEFORE` の雪像 `%s` です" % path, tail)
+        self.assertIn("相手は `BEFORE` のスナップショット `%s` です" % path, tail)
         self.assertIn("後: `--profile` 20 標本", tail)
         self.assertIn("前: `--profile` 50 標本", tail)       # `BEFORE` の隣のもの
         self.assertNotIn("100 標本", tail)
@@ -349,7 +349,7 @@ class CollectBeforeZeroTest(unittest.TestCase):
         self.assertNotIn("前: `--profile`", tail)
 
     def test_zero_and_the_daily_snapshots_are_passed_under_phase20_too(self):
-        """phase20・phase21・phase24〜T38 と既定 (T38) でも `ZERO` は (g) の行に届き、日次の雪像の表が付く。"""
+        """phase20・phase21・phase24〜T38 と既定 (T38) でも `ZERO` は (g) の行に届き、日次のスナップショットの表が付く。"""
         for criteria in ("phase20", "phase21", "phase24", "phase25", "phase26", "phase27", "phase28", "phase29", "phase30",
                          "T35", "T36", "T37", "T38", None):
             with self.subTest(criteria=criteria):
@@ -369,14 +369,14 @@ class CollectBeforeZeroTest(unittest.TestCase):
         self.assertIn("**+1.5** MB (12.5 → 14.0 MB)", tail)
         self.assertIn("`cache_memory` 0.0 → 0.0", tail)
         self.assertIn("**日次の雪像**", tail)
-        # 「2. 前回との差分」の表には成功した接続だけの行が出る (この雪像に `/recent` の部は無い)
+        # 「2. 前回との差分」の表には成功した接続だけの行が出る (このスナップショットに `/recent` の部は無い)
         self.assertIn("| CONNECT 確立 (**成功した接続だけ**) |", out[:out.index("## ホスト別 (status-diff.py)")])
 
     def test_zero_is_passed_to_the_heap_row(self):
         _, out, _ = self.run_collect(files={"2025-12-31T060000Z-snapshot.json": self.zero()},
                                      ZERO="{dir}/2025-12-31T060000Z-snapshot.json")
         tail = self.judged(out)
-        self.assertIn("- 0 時間の雪像 (`ZERO`): ", out)
+        self.assertIn("- 0 時間のスナップショット (`ZERO`): ", out)
         self.assertIn("**+1.5** MB (12.5 → 14.0 MB)", tail)
         self.assertIn("`--zero` (起動から 2.0 分)", tail)
 
@@ -387,7 +387,7 @@ class CollectBeforeZeroTest(unittest.TestCase):
                                      BEFORE="{dir}/" + before,
                                      ZERO="{dir}/2025-12-31T060000Z-snapshot.json")
         tail = self.judged(out)
-        self.assertIn("相手は `BEFORE` の雪像", tail)
+        self.assertIn("相手は `BEFORE` のスナップショット", tail)
         self.assertIn("**+1.5** MB (12.5 → 14.0 MB)", tail)
 
     def test_the_daily_snapshots_of_the_directory_are_listed_under_phase18(self):
@@ -408,11 +408,11 @@ class CollectBeforeZeroTest(unittest.TestCase):
     def test_a_missing_before_or_zero_falls_back_with_a_note(self):
         d, out, err = self.run_collect(BEFORE="{dir}/nowhere-snapshot.json",
                                        ZERO="{dir}/nowhere-zero.json")
-        self.assertIn("- **`BEFORE` の雪像が無い**", out)
-        self.assertIn("- **`ZERO` の雪像が無い**", out)
+        self.assertIn("- **`BEFORE` のスナップショットが無い**", out)
+        self.assertIn("- **`ZERO` のスナップショットが無い**", out)
         self.assertIn("is not a file", err)
         tail = self.judged(out)
-        self.assertNotIn("相手は `BEFORE` の雪像", tail)
+        self.assertNotIn("相手は `BEFORE` のスナップショット", tail)
         self.assertEqual(tail.count("\n| "), 1 + 10)        # 直前の 1 枚との 10 行は出る
         self.assertIn("`--zero` (0 時間の雪像) が渡されていない", tail)
 
@@ -422,12 +422,12 @@ class CollectBeforeZeroTest(unittest.TestCase):
                                      BEFORE="{dir}/" + before)
         self.assertIn("(CRITERIA=off なので出していない)", off)
         _, nodiff, _ = self.run_collect(files={before: self.a}, BEFORE="{dir}/" + before, DIFF="0")
-        self.assertIn("(前回の雪像が無いか DIFF=0 なので判定できない)", nodiff)
+        self.assertIn("(前回のスナップショットが無いか DIFF=0 なので判定できない)", nodiff)
 
 
 
 class CollectAnonTest(unittest.TestCase):
-    """雪像の隣に匿名化した写し (`-snapshot.anon.json` と隣の口の `.anon.json`) を置く (T17.16)。"""
+    """スナップショットの隣に匿名化した写し (`-snapshot.anon.json` と隣の口の `.anon.json`) を置く (T17.16)。"""
 
     def run_collect(self, **env):
         srv = serve(FakeProfile(10))
@@ -466,7 +466,7 @@ class CollectAnonTest(unittest.TestCase):
         self.assertIn("- 匿名化した写し: `%ssnapshot.anon.json` (隣の口 2 つも同じ表で)" % stamp, out)
 
     def test_the_anonymized_copy_is_not_the_previous_snapshot(self):
-        # 次の回の「前回」は生の雪像 (`-snapshot.json`) で、`.anon.json` は拾わない
+        # 次の回の「前回」は生のスナップショット (`-snapshot.json`) で、`.anon.json` は拾わない
         d, _ = self.run_collect()
         e = dict(os.environ, PROBE="0", DASHBOARD="0", DIFF="0", CRITERIA="off",
                  COLLECT_STAMP="2026-01-02T000000Z")
@@ -503,7 +503,7 @@ class FakeRows:
                 self.host_base = json.load(f)["hosts"]["hosts"][0]
             self.rows = [self.host_row(i, count - i) for i in range(count)]
         self.busy_once = set()   # この offset の 1 回目は `busy` で断る
-        self.grow_after_first = False  # 雪像を返したあとに 1 行足す (頁の間の重なり)
+        self.grow_after_first = False  # スナップショットを返したあとに 1 行足す (頁の間の重なり)
         self.asked = []          # 引かれた offset (続きの頁だけ)
 
     def recent_row(self, i):
@@ -577,10 +577,10 @@ class FakeDns:
 
 
 def serve_follow(recent, hosts, dns=None, prof5=None):
-    """雪像の `recent`・`hosts` を上の偽の 1 枚目にし、`/recent` `/hosts` で続きを返す。
+    """スナップショットの `recent`・`hosts` を上の偽の 1 枚目にし、`/recent` `/hosts` で続きを返す。
 
     `dns` (`FakeDns`) と `prof5` (`FakeProfile` を `/profile?res=5` に見立てる) を渡すと、
-    雪像のその部も偽の 1 枚目にし、`/dns` と `/profile?res=5` で続きを返す (T27.1)。
+    スナップショットのその部も偽の 1 枚目にし、`/dns` と `/profile?res=5` で続きを返す (T27.1)。
     """
     with open(SNAPSHOT) as f:
         base = json.load(f)
@@ -637,7 +637,7 @@ def serve_follow(recent, hosts, dns=None, prof5=None):
 
 
 class CollectFollowTest(unittest.TestCase):
-    """切れた `recent`・`hosts` を既定で `offset=` で追い、雪像の同じ部に繋ぐ (T22.5)。
+    """切れた `recent`・`hosts` を既定で `offset=` で追い、スナップショットの同じ部に繋ぐ (T22.5)。
 
     偽の `recent` は 2,000 件 (リングの `MAX_RECENT`) で 1 枚に約 530 件、`hosts` は
     1,001 件 (`limit=1000` でも `offset=` で全部届く) で 1 枚に約 380 件。
@@ -716,7 +716,7 @@ class CollectFollowTest(unittest.TestCase):
                 self.assertIn("(**応答は 256 KiB で切れている**)", out)
 
     def test_overlap_between_pages_is_dropped_by_id(self):
-        # 雪像を返したあとに接続が 1 本閉じると並びがずれ、境目の 1 行が 2 枚に出る
+        # スナップショットを返したあとに接続が 1 本閉じると並びがずれ、境目の 1 行が 2 枚に出る
         recent = FakeRows("recent", 2000)
         recent.grow_after_first = True
         _, out, snap = self.run_collect(recent=recent)
@@ -785,7 +785,7 @@ class CollectFollowTest(unittest.TestCase):
 
 
     def test_dns_and_profile_are_joined_too(self):
-        # T27.1: T25.99 の雪像は `dns` 811 件中 678 件、`profile` 720 標本中 348 で切れていた
+        # T27.1: T25.99 のスナップショットは `dns` 811 件中 678 件、`profile` 720 標本中 348 で切れていた
         dns, prof5 = FakeDns(1500), FakeProfile(720)
         first = (len(dns.page(0)["entries"]), len(prof5.page(0)["samples"]))
         self.assertTrue(dns.page(0)["truncated"] and prof5.page(0)["truncated"])
@@ -866,7 +866,7 @@ class CollectViaTest(unittest.TestCase):
 
 
 class CollectFromServerTest(unittest.TestCase):
-    """`--from-server` が日次の雪像に加えて起動と停止の 1 枚 (`moments`) も取り寄せ、
+    """`--from-server` が日次のスナップショットに加えて起動と停止の 1 枚 (`moments`) も取り寄せ、
     `BEFORE` / `ZERO` に渡せる名前で置く試験 (T28.20)。偽のサーバーは `/snapshots` の形だけを写す。
     T29.26 から「前」と「0 時間」を各 1 枚の版で選ぶ (`T2899` の 4 枚)。`--closeout` は `live` を付けた
     偽のサーバー (`/status` と `/snapshot` も返す) で回す。"""
@@ -976,7 +976,7 @@ class CollectFromServerTest(unittest.TestCase):
         }
 
     def test_a_daily_snapshot_over_the_limit_is_warned(self):
-        """T29.16: 取り寄せた雪像の大きさと上限 (`limit_bytes`、無ければ 4 MiB) の割合を 1 行ずつ出し、
+        """T29.16: 取り寄せたスナップショットの大きさと上限 (`limit_bytes`、無ければ 4 MiB) の割合を 1 行ずつ出し、
         90% 以上なら警告する (日次が上限を越えると `recent` が 256 KiB に戻る)。"""
         _, out = self.run_from_server(self.listing(), pad={self.DAY: 4 * 1024 * 1024 + 10})
         line = [x for x in out.splitlines() if self.DAY + "T000000Z-snapshot.json`: " in x]
@@ -1062,7 +1062,7 @@ class CollectFromServerTest(unittest.TestCase):
         self.assertIn("取り寄せ 6 件", out)
         self.assertIn("いまの版 `0.28.48+c0ffee1` (`/status`) で選んだ", out)
         self.assertIn("- 判定表の相手 (`BEFORE`): `%s`" % before, out)
-        self.assertIn("- 0 時間の雪像 (`ZERO`): `%s`" % zero, out)
+        self.assertIn("- 0 時間のスナップショット (`ZERO`): `%s`" % zero, out)
         self.assertIn("## 要点", out)
         # 本番の要約はファイルにも残り、そこにも前提が入る
         mds = [n for n in os.listdir(d) if n.endswith("-collect.md")]
@@ -1092,7 +1092,7 @@ class CollectFromServerTest(unittest.TestCase):
                       "後の期間 (`/profile`・`/recent`・起動からの数) は 最後の起動 2026-10-26T18:29:11Z から 25.3 時間",
                       premise)
         # 0 時間は最初の起動のまま
-        self.assertIn("- 0 時間の雪像 (`ZERO`): `%s/2026-10-25T212745Z-start-snapshot.json`" % d, out)
+        self.assertIn("- 0 時間のスナップショット (`ZERO`): `%s/2026-10-25T212745Z-start-snapshot.json`" % d, out)
 
     def test_closeout_tells_a_process_restart_and_a_restart_without_its_snapshot(self):
         # T39.7: 停止の 1 枚を残した、`boot.id` の同じ起動 (プロセスだけの再起動)。`/status` の pid が
@@ -1110,7 +1110,7 @@ class CollectFromServerTest(unittest.TestCase):
                       premise)
 
     def test_closeout_takes_the_status_first(self):
-        # T32.31: 日次の雪像 (`/snapshots/<date>`。丸ごと `String` に読む) を引く前に `/status` を 1 本取り、
+        # T32.31: 日次のスナップショット (`/snapshots/<date>`。丸ごと `String` に読む) を引く前に `/status` を 1 本取り、
         # 要約の RSS にはそれを使う (本番の 1 回で `/status` を取り直さない)
         d = tempfile.mkdtemp(prefix="t3231-")
         self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
@@ -1130,7 +1130,7 @@ class CollectFromServerTest(unittest.TestCase):
         out = self.run_closeout(d, {"schema": 1, "version": "0.28.48+c0ffee1"}, BEFORE=mine)
         self.assertIn("- 判定表の相手 (`BEFORE`): `%s`" % mine, out)
         self.assertIn("`BEFORE` は渡されたもの (`%s`) を使う" % mine, out)
-        self.assertIn("- 0 時間の雪像 (`ZERO`): `%s/2026-10-25T212745Z-start-snapshot.json`" % d, out)
+        self.assertIn("- 0 時間のスナップショット (`ZERO`): `%s/2026-10-25T212745Z-start-snapshot.json`" % d, out)
 
     def test_without_a_start_after_the_last_shutdown_only_before_is_offered(self):
         listing = self.listing()

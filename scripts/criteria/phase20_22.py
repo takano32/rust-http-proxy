@@ -19,12 +19,12 @@ from .restarts import restart_info
 # --- Phase 20 (T20.1。phase18 の 10 行の物差しを直したもの) ---
 
 def _p20_heap(c, th):
-    """T20.1: `heap_used + mmap − cache_memory` が 0 時間の雪像から 5 MB 以上増えていないか。
+    """T20.1: `heap_used + mmap − cache_memory` が 0 時間のスナップショットから 5 MB 以上増えていないか。
 
     phase18 の `heap_used + mmap` の行 (`_p18_heap`) から**メモリのキャッシュ** (`memory.cache_memory`) を引いたもの。
     キャッシュは上限まで使ってよい作りなので、入ったぶんは漏れではない (T18.99 は 13.4 MB 入って
     +15.7 MB と出た。引くと +2.2 MB)。**`cache_memory` の欄が無い版は 0 として扱わず
-    「判定できず」**。ほかの読み方 (`--zero` が要る・後の雪像と同じ起動であること・`heap_free` と
+    「判定できず」**。ほかの読み方 (`--zero` が要る・後のスナップショットと同じ起動であること・`heap_free` と
     `rss` は並べるだけ) は `_p18_heap` と同じ。
     """
     lim = th["heap_growth_mb"]
@@ -121,7 +121,7 @@ _p21_miss_band = display_only(
 
 
 def profile_span(snap):
-    """その雪像の `/profile` の材料の長さ (`(秒, 標本, 出どころ)`。無ければ None)。"""
+    """そのスナップショットの `/profile` の材料の長さ (`(秒, 標本, 出どころ)`。無ければ None)。"""
     p, src = profile_source(snap)
     if not p:
         return None
@@ -158,9 +158,9 @@ def _p21_request_probes(c, th):
     """`ipv6.request_probes` (phase18 の行)。**起動直後だけ探ったのなら「満たした」** (T21.2)。
 
     0 回なら phase18 と同じ。0 でなければ、最後に探った時刻 (`ipv6.request_probe_at`) が
-    `--zero` (0 時間の雪像) の取得から `request_probe_grace_hours` 以内なら「満たした」
+    `--zero` (0 時間のスナップショット) の取得から `request_probe_grace_hours` 以内なら「満たした」
     (起動直後は canary がまだ IPv6 を見ていない。T20.99 は 3 回とも起動から 2.4 時間のうち)、
-    それより後に探っていれば「届かず」。`--zero` が無い・後の雪像と同じ起動でない・時刻が無いときは
+    それより後に探っていれば「届かず」。`--zero` が無い・後のスナップショットと同じ起動でない・時刻が無いときは
     「判定できず」。
     """
     _, _, shown, verdict, src = _p18_request_probes(c, th)
@@ -256,7 +256,7 @@ def _p22_dns_slow(c, th):
     """T22.2: `dns_slow` を新しい閾 (窓のミスの合計 1,000 ms 以上) で数えた件/時と、それより小さい窓で立った件数。
 
     判定は「合計が閾に満たない窓で立った `dns_slow` が 0」だけで決める (T22.2 の目安を親が読み替えたもの: ミスの
-    少ない窓で鳴らない)。T22.2 より前の版の雪像では、新しい閾なら立たなかった件数がここに出る。新しい閾での
+    少ない窓で鳴らない)。T22.2 より前の版のスナップショットでは、新しい閾なら立たなかった件数がここに出る。新しい閾での
     件/時は**表示だけで閾を置かない** (T22.2 の模型で tokyo の後の期間は本当に遅い窓だけで 0.17 件/時あり、
     件/時の閾は使われ方で落ちる。親の判断 2026-10-17)。phase21 の `dns_slow` ≤ 0.1 件/時の行は phase22 では表示だけ。
     """
@@ -295,7 +295,7 @@ def dns_counter(c, key, sub=None):
     """`/status` の `dns.<key>` (`sub` があれば `dns.<key>.<sub>`) の前と後。
 
     返すのは `(前の値, 後の値, その間か)`。後は再起動していなければ前を引いた差 (その間)、していれば
-    起動からの通算。前は前の雪像の起動からの通算。どちらかに欄が無ければその側は None。
+    起動からの通算。前は前のスナップショットの起動からの通算。どちらかに欄が無ければその側は None。
     """
     def get(snap):
         v = (part(snap, "status").get("dns") or {}).get(key)
@@ -371,7 +371,7 @@ def _p22_connect_errors(c, th):
 
 
 def counter_rates(c, key, sub=None):
-    """`dns_counter` の前と後を 1 時間あたりにする (前は前の雪像の起動から、後はその間か起動から)。
+    """`dns_counter` の前と後を 1 時間あたりにする (前は前のスナップショットの起動から、後はその間か起動から)。
 
     返すのは `(前 回/時, 後 回/時)`。時間か欄が無ければその側は None。
     """

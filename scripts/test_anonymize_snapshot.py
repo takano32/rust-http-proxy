@@ -4,7 +4,7 @@
     python3 -m unittest discover -s scripts        # リポジトリの根から
     cd scripts && python3 -m unittest              # scripts の中から
 
-架空の雪像 (下の `sample()`) で「**名前と IP と UA だけが変わり、数字は 1 つも変わらない**」
+架空のスナップショット (下の `sample()`) で「**名前と IP と UA だけが変わり、数字は 1 つも変わらない**」
 「同じ入力からは同じ出力」を見る。あわせて、**コミットしてある匿名化済みの実データ**
 (`testdata/deployed-2026-09-16.anon.json` と T17.16 の `deployed-2026-09-26.anon.json`) に元の名前が残っていないことも見る
 (実データそのものはリポジトリに入れないので、突き合わせは作った人が 1 回やる。ここでは
@@ -40,7 +40,7 @@ pd = _testing.load("proxydata", "proxydata.py")
 
 
 def sample():
-    """架空の雪像 1 枚 (宛先は `.example.net`、接続元は置き換えの対象になる範囲)。"""
+    """架空のスナップショット 1 枚 (宛先は `.example.net`、接続元は置き換えの対象になる範囲)。"""
     return {
         "taken_at": 1789520760,
         "version": "0.1.0+abcdef1",
@@ -471,7 +471,7 @@ class Bundle(unittest.TestCase):
 
 
 class Side(unittest.TestCase):
-    """`--side`: 雪像に入らない口を**雪像と同じ表で**置き換える (T17.16)。"""
+    """`--side`: スナップショットに入らない口を**スナップショットと同じ表で**置き換える (T17.16)。"""
 
     def run_main(self, tmp, sides, side_bodies):
         snap_path = os.path.join(tmp, "2026-09-26T114602Z-snapshot.json")
@@ -496,12 +496,12 @@ class Side(unittest.TestCase):
             with open(os.path.join(tmp, "2026-09-26T114602Z-extra.anon.json"),
                       encoding="utf-8") as f:
                 out = json.load(f)
-        # 雪像の出力は `--side` 無しと同じ (隣の口を足しても番号は動かない)
+        # スナップショットの出力は `--side` 無しと同じ (隣の口を足しても番号は動かない)
         self.assertEqual(got, anonymized())
-        # 雪像に出た名前 (`/dns` の 2 行目の two.example.net) は雪像と同じ番号
+        # スナップショットに出た名前 (`/dns` の 2 行目の two.example.net) はスナップショットと同じ番号
         two = got["dns"]["entries"][1]["host"]
         self.assertEqual(out["hosts"][0]["host"], two + ":443")
-        # 雪像に無かった名前は続きの番号
+        # スナップショットに無かった名前は続きの番号
         self.assertRegex(out["hosts"][1]["host"], r"^host-\d{4}\.g\d{4}\.example:443$")
         self.assertNotEqual(out["hosts"][1]["host"], two + ":443")
         self.assertEqual(out["clients"][0], {"client": "198.51.100.1", "agent": "ua-01"})
@@ -595,7 +595,7 @@ class Fixture(FixtureNames, unittest.TestCase):
 class Fixture0926(FixtureNames, unittest.TestCase):
     """T17.16 の 2 枚目。上の 2 つ (宛先・接続元・答え・UA の欄) に加えて、**欄の外**も見る。
 
-    生の雪像はリポジトリに無いので「元の値が 0 件」の突き合わせは作った人が 1 回やった
+    生のスナップショットはリポジトリに無いので「元の値が 0 件」の突き合わせは作った人が 1 回やった
     (報告に手順を書いた)。ここでは、置き換え忘れがあれば必ず残る形 (文書用でない IP、
     `.example` でないホスト名、UA らしい `名前/版`) が**ファイルのどこにも**無いことを見る。
     """

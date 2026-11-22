@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # 「繋がらなかった宛先を N 秒覚えて、その間の同じ宛先への要求は繋ぎに行かずに 502 を返す」
-# 規則を雪像 1 枚の上で回し、**早く断れた件数と縮む待ち**、**誤って断ったはずの件数**を数える (T22.3 段 1)。
+# 規則をスナップショット 1 枚の上で回し、**早く断れた件数と縮む待ち**、**誤って断ったはずの件数**を数える (T22.3 段 1)。
 #
-# 材料は雪像 (`/snapshot`) 1 枚:
+# 材料はスナップショット (`/snapshot`) 1 枚:
 #   - `/log` の `502 Bad Gateway: connect <host:port> failed: <理由>` の行 … 失敗 1 回ずつの時刻
 #     (`/errors` の 1 行は同じ失敗をまとめたもの (T20.3) で間の時刻が無いので、時刻はこちらから取る。
 #     CONNECT (`crates/tunnel`) も forward (`crates/http`) も同じ文面で書く)
@@ -29,7 +29,7 @@
 #     `/hosts` が 256 KiB で切れていてその宛先が載っていなければ、載っている中で最も少ない `requests` を
 #     上限の代わりに使う (並びは `requests` の多い順なので、載らなかった宛先はそれ以下)
 #
-# **同じ起動の雪像を `--with` で足すと**、成功の時刻の手がかり (`/recent` と `/hosts_series`) だけをそこから足す
+# **同じ起動のスナップショットを `--with` で足すと**、成功の時刻の手がかり (`/recent` と `/hosts_series`) だけをそこから足す
 # (日次の `/snapshots/<date>` など。起動の時刻 `taken_at - uptime_secs` が 5 秒以内のものだけ使い、ほかは黙って捨てる)。
 # 失敗の列と `/hosts` の総数は主の 1 枚からだけ取る。
 #
@@ -132,7 +132,7 @@ def rows_count(snap, lo):
     return c
 
 
-# 同じ起動の雪像と見なす `taken_at - uptime_secs` のずれ (秒。丸めで 1 秒ずれる)
+# 同じ起動のスナップショットと見なす `taken_at - uptime_secs` のずれ (秒。丸めで 1 秒ずれる)
 SAME_RUN_SLACK = 5
 
 
@@ -141,7 +141,7 @@ def same_run(a, b):
 
 
 class Evidence:
-    """成功の時刻の手がかりを、同じ起動の雪像 (主の 1 枚 + `--with` の何枚か) から集めたもの。
+    """成功の時刻の手がかりを、同じ起動のスナップショット (主の 1 枚 + `--with` の何枚か) から集めたもの。
 
     - `/recent` の成功は `id` で重ねずに集め、窓 ([最古の `at`, 取った時刻]) を区間として持つ
     - `/hosts_series` の 5 分枠は枠の始まりの時刻で重ねずに集め (大きい方)、数えている区間を持つ
@@ -318,7 +318,7 @@ def render(res, label, top=5, anon=False, out=sys.stdout):
     nm = (lambda t: names.get(t, t)) if anon else (lambda t: t)
     hours = res["covered_secs"] / 3600.0
     print(f"## {label} (覆う区間 {hours:.1f} 時間、失敗 {res['failures']} 回 / 宛先 {res['targets']} 個、"
-          f"成功の時刻は同じ起動の雪像 {res['snapshots_used']} 枚から)", file=out)
+          f"成功の時刻は同じ起動のスナップショット {res['snapshots_used']} 枚から)", file=out)
     if res["log_vs_errors_mismatch"]:
         print("注意: /log と /errors の回数が合わない宛先: "
               + ", ".join(f"{nm(t)} log {a} / errors {b}"

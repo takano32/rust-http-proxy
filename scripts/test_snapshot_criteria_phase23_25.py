@@ -34,7 +34,7 @@ from _criteria_testing import (  # noqa: E402
 class Criteria23(unittest.TestCase):
     """無言の再起動 (T23.2)。`/events` の `start` の直前に `shutdown` が無い起動を数える行。
 
-    実データでの数字は `Deployed23` (デプロイ先の雪像があるときだけ)。ここは `events` をその場で
+    実データでの数字は `Deployed23` (デプロイ先のスナップショットがあるときだけ)。ここは `events` をその場で
     作って、同じ秒の出来事・窓の先頭・読み戻し (`restored`)・自己ベンチの `start` の扱いを見る。
     """
 
@@ -44,7 +44,7 @@ class Criteria23(unittest.TestCase):
     STOP = "stop signal received; saving statistics"
 
     def snap(self, events, restored=0):
-        """`testdata/snapshot-a.json` を土台に、`/events` だけを載せ替えた雪像を作る。"""
+        """`testdata/snapshot-a.json` を土台に、`/events` だけを載せ替えたスナップショットを作る。"""
         d = read(A)
         d["events"] = {"events": events, "count": len(events), "kept": len(events),
                        "capacity": 512, "restored": restored, "truncated": False}
@@ -118,7 +118,7 @@ class Criteria23Rows(unittest.TestCase):
     heap の「判定できず」の理由、無言の再起動の行。
 
     `testdata/snapshot-{a,b}.json` には `/recent` の部が無いので、その場で作って載せる。
-    数字は 2026-10-17 → 10-20 の tokyo の雪像から採った (前 24 件 / 1,991 試行、後 30 件 /
+    数字は 2026-10-17 → 10-20 の tokyo のスナップショットから採った (前 24 件 / 1,991 試行、後 30 件 /
     2,000 試行のうち dns 170) — **親が T23.0 の道具で出した値と同じ**であることを見る。
     """
 
@@ -262,11 +262,11 @@ class Criteria23Rows(unittest.TestCase):
             return self.row(8, b=p["b"], extra=("--zero", p["z"]))
 
     def test_the_heap_row_says_when_each_start_began(self):
-        """0 時間の雪像と後の雪像が同じ版で起動し直している (2026-10-17 22:14:52Z の形)。"""
+        """0 時間のスナップショットと後のスナップショットが同じ版で起動し直している (2026-10-17 22:14:52Z の形)。"""
         b = cached(read(B), 0)
         b["events"] = self.starts(Criteria17Parts.START)
         z = cached(zero_snapshot(), 0)
-        # 0 時間の雪像は 2 時間前の起動 (取得の 2 分後が起動なので、起動は taken_at − 120)。
+        # 0 時間のスナップショットは 2 時間前の起動 (取得の 2 分後が起動なので、起動は taken_at − 120)。
         # 同じ UTC の日なので、2 つ目の時刻は日付を省いて出る
         z["taken_at"] = Criteria17Parts.START - 2 * 3600 + 120
         z["events"] = self.starts(z["taken_at"] - 120)
@@ -413,7 +413,7 @@ class Criteria24BootSplit(unittest.TestCase):
         self.assertEqual(self.row(events)[3], sd.MISSED)
 
     def test_the_phase23_text_is_unchanged_without_boot(self):
-        """`boot` の無い雪像では要点の文を 1 文字も変えない (過去の phase の出力を変えない)。"""
+        """`boot` の無いスナップショットでは要点の文を 1 文字も変えない (過去の phase の出力を変えない)。"""
         t = self.T0
         old = ("version 0.22.6+000681e on port 60357 "
                "(profile default, cache on, timeout 30s, max conns 240)")
@@ -438,8 +438,8 @@ class Criteria24BootSplit(unittest.TestCase):
 class Criteria24(unittest.TestCase):
     """`_p24_heap` (T24.4): heap の行を**起動から 60 秒の基準** (`memory.baseline`) との差で読む。
 
-    行そのものはここで確かめ、`RULES["phase24"]` への配線は T24.2。材料は後の雪像の
-    `/status` の `memory` だけで、**0 時間の雪像 (`--zero`) は要らない**。数字は T23.99 の実測
+    行そのものはここで確かめ、`RULES["phase24"]` への配線は T24.2。材料は後のスナップショットの
+    `/status` の `memory` だけで、**0 時間のスナップショット (`--zero`) は要らない**。数字は T23.99 の実測
     (0 時間 17.3 MB、29.8 時間後 19.5 MB) に合わせてある。
     """
 
@@ -471,7 +471,7 @@ class Criteria24(unittest.TestCase):
         return {"at": at, "bytes": bytes_}
 
     def test_the_baseline_alone_makes_the_row_readable(self):
-        """受け入れ基準: `baseline` のある雪像では、0 時間の雪像が無くても差が出る。"""
+        """受け入れ基準: `baseline` のあるスナップショットでは、0 時間のスナップショットが無くても差が出る。"""
         uptime = 29.8 * 3600
         row = self.row(uptime, self.mem(self.base(self.T0 + 60, 17_300_000)))
         self.assertEqual(row[3], sd.MET)
@@ -493,7 +493,7 @@ class Criteria24(unittest.TestCase):
             self.assertEqual(row[3], verdict, f"{heap}")
 
     def test_without_a_baseline_the_row_is_the_phase23_one(self):
-        """`baseline` が無い雪像 (T24.4 より前の版・起動から 60 秒以内) は今までどおり。"""
+        """`baseline` が無いスナップショット (T24.4 より前の版・起動から 60 秒以内) は今までどおり。"""
         mem = self.mem(None)
         d = {"b": self.snap(3600, mem)}
         self.assertEqual(sc._p24_heap(d, sd.PHASE23), sc._p23_heap(d, sd.PHASE23))
@@ -592,7 +592,7 @@ class Criteria24Rows(unittest.TestCase):
             self.assertIs(sd.RULES["phase24"][i], sd.RULES["phase23"][i], i)
 
     def test_a_snapshot_without_baseline_or_boot_reads_as_phase23(self):
-        """`memory.baseline` も `boot` も無い雪像 (T24.4・T24.0 より前の版) では 2 行とも phase23 と同じ。"""
+        """`memory.baseline` も `boot` も無いスナップショット (T24.4・T24.0 より前の版) では 2 行とも phase23 と同じ。"""
         c24 = self.judge()
         c23 = build([A, B, "--no-dns", "--criteria", "phase23"])["criteria"]
         self.assertEqual([r[3] for r in c24["rows"][:16]], [r[3] for r in c23["rows"]])
@@ -646,7 +646,7 @@ class Criteria24Rows(unittest.TestCase):
         return {"at": at, "kind": "shutdown", "text": "stop signal received; saving statistics"}
 
     def silent_row(self, last_boot):
-        """普通の再起動のあと、`shutdown` を残さずにもう一度起動し直した雪像の 16 番目の行。"""
+        """普通の再起動のあと、`shutdown` を残さずにもう一度起動し直したスナップショットの 16 番目の行。"""
         t = self.EV0
         b = read(B)
         events = [self.start(t, self.B1), self.stop(t + 616), self.start(t + 658, self.B1),
@@ -787,11 +787,11 @@ class Criteria24Rows(unittest.TestCase):
 class Criteria25Rows(unittest.TestCase):
     """`--criteria phase25` (T27.0): phase24 の 17 行のうち、T25.99 で物差しの穴だった 3 行。
 
-    (a) 無言の再起動は前の雪像の取得より後の `start` だけ、(b) 接続のエラーは試行 1,000 本の下限、
+    (a) 無言の再起動は前のスナップショットの取得より後の `start` だけ、(b) 接続のエラーは試行 1,000 本の下限、
     (c) 引き直しは 1 名前あたり。数字は T25.99 の 2 枚 (`2026-10-22T000000Z` → `2026-10-24T184027Z`) から採った。
     """
 
-    SINCE = 1792713604       # 前の雪像 (サーバーの日次) の取得 = 2026-10-23 00:00:04Z
+    SINCE = 1792713604       # 前のスナップショット (サーバーの日次) の取得 = 2026-10-23 00:00:04Z
     BOOT = "2c725916-e89"
 
     @staticmethod
@@ -863,7 +863,7 @@ class Criteria25Rows(unittest.TestCase):
 
     def test_no_start_in_the_window_is_met_only_when_the_process_is_older(self):
         ev = [self.stop(1792700000), self.start(1792700100, self.BOOT)]
-        # 後の起動 (取得 − uptime) が前の雪像より前 = 2 枚は同じプロセス
+        # 後の起動 (取得 − uptime) が前のスナップショットより前 = 2 枚は同じプロセス
         row = sc._p25_silent_restarts(self.ctx(ev, uptime=167128), sc.PHASE25)
         self.assertEqual(row[3], sd.MET)
         self.assertIn("前の雪像より後に起動なし", row[2])

@@ -3,9 +3,9 @@
 
     python3 -m unittest discover -s scripts        # リポジトリの根から
 
-入力は**架空の**雪像 (`testdata/dns-idle-{a,b,c,model}.json`、名前は `*.example.invalid`)。
-**本物の雪像 (利用者の閲覧先が並ぶ) は入れない**。a → b は同じプロセスの 1 時間あき、
-c は版が変わった (起動が変わった) 雪像。
+入力は**架空の**スナップショット (`testdata/dns-idle-{a,b,c,model}.json`、名前は `*.example.invalid`)。
+**本物のスナップショット (利用者の閲覧先が並ぶ) は入れない**。a → b は同じプロセスの 1 時間あき、
+c は版が変わった (起動が変わった) スナップショット。
 """
 
 import contextlib
@@ -39,7 +39,7 @@ def snap(path):
 
 
 def empty_snap(taken=1000, uptime=3600, version="0.1.0+test"):
-    """`/dns` と `/hosts` だけを持つ、その場で組む雪像。"""
+    """`/dns` と `/hosts` だけを持つ、その場で組むスナップショット。"""
     return {"taken_at": taken, "uptime_secs": uptime, "version": version, "_path": "x.json",
             "status": {"dns": {"ttl_secs": 60, "warm_secs": 0, "warm": 0, "refreshes": 0}},
             "dns": {"entries": [], "count": 0, "shown": 0, "truncated": False},
@@ -237,7 +237,7 @@ class CliTest(unittest.TestCase):
         self.assertIn("| idle.example.invalid | 40 |", text)
         self.assertIn("使われていない引き直し", text)
         self.assertIn("段 2 は要らない", text)
-        self.assertIn("起動が変わったので前の雪像とは比べない", text)
+        self.assertIn("起動が変わったので前のスナップショットとは比べない", text)
 
     def test_json_has_the_windows_and_the_verdict(self):
         buf = io.StringIO()

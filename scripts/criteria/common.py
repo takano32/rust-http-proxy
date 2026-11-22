@@ -17,7 +17,7 @@ HFIELDS = (
     "connects", "connect_ms_sum", "connect_ms_max", "connect_buckets",
     "forwards", "forward_ms_sum", "forward_ms_max", "forward_buckets",
     "errors", "errors_by_cause", "dns_misses", "dns_ms_sum", "evicted_idle",
-    # T15.0 で末尾に足した 8 列 (**名前で引くので古い雪像では `None`**)。
+    # T15.0 で末尾に足した 8 列 (**名前で引くので古いスナップショットでは `None`**)。
     # `waits` は利用者が待つ時間 (`queue + client_read + dns + connect`)、`dns_warm` は
     # その瞬間の warm な名前の件数、`*_delta` は区間の増分、`active_peak` は区間の真の山
     "waits", "wait_ms_sum", "wait_ms_max", "wait_buckets",
@@ -149,7 +149,7 @@ def norm_history(h):
 
 
 def merged_history(a, b, res):
-    """2 枚の `/history?res=` を時刻で重ねる (同じ時刻は**新しい雪像の値**を採る)。
+    """2 枚の `/history?res=` を時刻で重ねる (同じ時刻は**新しいスナップショットの値**を採る)。
 
     A の最後の窓は取得の途中までしか埋まっていないことがあるので、B が持っていれば B が勝つ。
     """
@@ -157,7 +157,7 @@ def merged_history(a, b, res):
 
 
 def merged_histories(snaps, res):
-    """N 枚の `/history?res=` を時刻で重ねる (同じ時刻は**後ろの雪像の値**を採る)。
+    """N 枚の `/history?res=` を時刻で重ねる (同じ時刻は**後ろのスナップショットの値**を採る)。
 
     `merged_history` (2 枚) と `weekly-report.py` (N 枚) の 1 つの本体 (T.34.133 で写しをまとめた)。
     """
@@ -175,7 +175,7 @@ def merged_histories(snaps, res):
 
 
 def history_res(snaps):
-    """使う `/history` の解像度 (粗いほど長く残っているので 3600 を第一希望。**後ろの雪像から**探す)。
+    """使う `/history` の解像度 (粗いほど長く残っているので 3600 を第一希望。**後ろのスナップショットから**探す)。
 
     `snapshot-diff.py` の `pick_res` (2 枚) と `weekly-report.py` (N 枚) の 1 つの本体 (T.34.133)。
     """

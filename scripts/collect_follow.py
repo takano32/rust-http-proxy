@@ -229,8 +229,8 @@ def later_period(ms, zero, started):
 
 
 def follow_plan(argv):
-    """雪像の切れた `recent`・`hosts`・`dns`・`profile` の続きの引き方を 1 部 1 行で出す (T22.5・T27.1)。"""
-    # 雪像がその部を組むときの引数 + `offset=` (`crates/endpoints/src/endpoints/recent/snapshot.rs` の `snapshot`)
+    """スナップショットの切れた `recent`・`hosts`・`dns`・`profile` の続きの引き方を 1 部 1 行で出す (T22.5・T27.1)。"""
+    # スナップショットがその部を組むときの引数 + `offset=` (`crates/endpoints/src/endpoints/recent/snapshot.rs` の `snapshot`)
     # `dns` と `profile` は T27.1 で足した (`/dns` の `offset=` は 0.27 から。0.25.4 には無い)
     URL = {"recent": "/recent?n=2000&offset=", "hosts": "/hosts?limit=1000&offset=",
            "dns": "/dns?sort=age&limit=4096&offset=", "profile": "/profile?res=5&offset="}
@@ -254,7 +254,7 @@ def next_offset(argv):
 
 
 def follow_join(argv):
-    """追って取った続きの頁を雪像の同じ部に繋いで置き直し、要約の 1 行を出す (T22.5・T27.1・T30.2)。"""
+    """追って取った続きの頁をスナップショットの同じ部に繋いで置き直し、要約の 1 行を出す (T22.5・T27.1・T30.2)。"""
     out, follow_ms, snap_ms, max_pages, follow_secs = argv[1:6]
     # `@<部>:<止めた理由>` のあとに、その部の続きの頁のファイルが並ぶ
     plan, cur = [], None
@@ -370,7 +370,7 @@ def profile_join(argv):
 
 def full_plan(argv):
     """`--full` で続きを引く部を 1 部 1 行で出す (T15.0)。"""
-    # 続きを引ける部と、その URL の形 (雪像がその部を組むときの引数 + `offset=`)
+    # 続きを引ける部と、その URL の形 (スナップショットがその部を組むときの引数 + `offset=`)
     URL = {
         "recent": "/recent?n=2000&offset=",
         "hosts": "/hosts?limit=1000&offset=",
@@ -427,7 +427,7 @@ def judge_profile(argv):
 
 
 def dashboard_inputs(argv):
-    """雪像から `check-dashboard.js` に渡す `/history?res=5` と `/status` を書き出す。"""
+    """スナップショットから `check-dashboard.js` に渡す `/history?res=5` と `/status` を書き出す。"""
     d = json.load(open(argv[1]))
     json.dump(d.get("history", {}).get("5") or {}, open(argv[2], "w"))
     json.dump(d.get("status") or {}, open(argv[3], "w"))

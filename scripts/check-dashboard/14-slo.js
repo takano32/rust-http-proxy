@@ -223,7 +223,7 @@ console.log(
     cut.connects +
     ' 本' +
     (cut.p50 == null ? '' : '、p50 ' + cut.p50.toFixed(2) + ' ms') +
-    ')。デプロイ先の雪像 (' +
+    ')。デプロイ先のスナップショット (' +
     path.basename(statusFile) +
     ' + ' +
     path.basename(file) +

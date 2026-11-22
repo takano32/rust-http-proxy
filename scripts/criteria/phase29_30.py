@@ -21,7 +21,7 @@ from .phase26_28 import _p27_connect_errors, _p28_cgroup_cpu_per_request
 # コードが T22.2 から合計 1,000 ms を条件にしているので構造上落ちず、名前解決の失敗の遅さで鳴っていた。
 
 def history_part(snap, res):
-    """雪像の `/history?res=…` の部 (`{"keys", "samples", "causes"}`。無ければ None)。"""
+    """スナップショットの `/history?res=…` の部 (`{"keys", "samples", "causes"}`。無ければ None)。"""
     h = (snap.get("history") or {}).get(str(res))
     if not isinstance(h, dict) or not isinstance(h.get("keys"), list) or not isinstance(h.get("samples"), list):
         return None
@@ -63,7 +63,7 @@ def dns_failures_between(snap, t0, t1):
     """窓 `[t0, t1)` の名前解決の失敗 (`/history` の `errors_by_cause.dns`) の数 (無ければ None)。
 
     `/history?res=60` (1 日) が覆うところは 1 分の標本で、それより古いところは `res=3600` の標本を窓に重なる
-    割合で按分して数える (`/profile` の窓は分の単位で時間の境目に揃わず、雪像を撮った時刻によっては端の 1 時間が
+    割合で按分して数える (`/profile` の窓は分の単位で時間の境目に揃わず、スナップショットを撮った時刻によっては端の 1 時間が
     まだ無い)。
     """
     h60, h3600 = history_part(snap, 60), history_part(snap, 3600)
@@ -101,7 +101,7 @@ def profile_roles_us(p):
 
 
 def _p29_profile_sides(c, th):
-    """前と後の `/profile` の材料 (`[(誰, 雪像, p, 出どころ)]`) か、判定できない理由。
+    """前と後の `/profile` の材料 (`[(誰, スナップショット, p, 出どころ)]`) か、判定できない理由。
 
     phase21 以降の「参考」(材料が 12 時間に満たない) は使わず、満たなければ「判定できず」にする (T.32.29。
     `--closeout` が前の版の最後の `-profile_res_60.json` (同じ版で 12 時間以上) を前の材料に選ぶ)。

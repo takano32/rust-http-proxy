@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
-# 雪像から **名前ごとの引き直しの回数と、実際の使用回数** を並べ、
+# スナップショットから **名前ごとの引き直しの回数と、実際の使用回数** を並べ、
 # 「1 時間に 1 回も使われていないのに引き直した回」の割合を出す (T24.1 の段 1)。
 #
-# 材料は雪像 (`/snapshot`) の 3 か所:
+# 材料はスナップショット (`/snapshot`) の 3 か所:
 #   - `/status` の `dns.refreshes` … 起動からの引き直しの**合計** (表が切れていても完全)
 #   - `/dns` の名前ごとの `refreshes`・`age_secs`・`ttl_left`・`idle_secs`・`misses`
 #     (`/dns` は 256 KiB で切れることがある。切れていれば `truncated` が立つ)
 #   - `/hosts` の名前ごとの `requests`・`last_seen`
 #
 # **窓の取り方で意味が変わる**ので、2 通りを別々に出す:
-#   - 雪像 2 枚以上 (`pair`): 同じプロセスの 2 枚の差 (`Δ引き直し` と `Δ要求`)。
+#   - スナップショット 2 枚以上 (`pair`): 同じプロセスの 2 枚の差 (`Δ引き直し` と `Δ要求`)。
 #     `/hosts` の `requests` は状態ファイルから復元した分を含む通算の値だが、**差を取れば
 #     復元した分は消える**ので、この窓だけが「その間に何回使われて何回引き直したか」を正確に言える。
 #     `Δ要求` が 0 の名前の `Δ引き直し` が「使われていないのに引き直した回」。
-#   - 雪像 1 枚 (`since_start`): 起動から (`uptime_secs`) の平均。`/hosts` の `requests` は
+#   - スナップショット 1 枚 (`since_start`): 起動から (`uptime_secs`) の平均。`/hosts` の `requests` は
 #     復元した分を含むので**通算のまま出し、回/時には直さない** (起動の長さで割ると嘘になる。
 #     2026-10-22 の `api.ipinfo.io` の 13,793 は 14 日ぶんの通算で、この起動の中の使用は
 #     `/hosts_series` の 24 時間で約 2,800 = 117 回/時)。使われたかどうかは `/dns` の
@@ -25,7 +25,7 @@
 # だから `idle_secs > 3600` の名前は、この 1 時間に 1 回も引き直していない。
 #
 # **`ttl_secs` (60) と `k` (45 秒) のどちらが効いているか** は `--model` で
-# `scripts/dns-replay.py` の `Table` をそのまま回して確かめる (同じ雪像の `/recent` の到着列)。
+# `scripts/dns-replay.py` の `Table` をそのまま回して確かめる (同じスナップショットの `/recent` の到着列)。
 # `k` は `refresh_after(ttl)` = TTL の 3/4 = 45 秒 (期限の手前で裏で引き直す齢)。
 # k=45 と k=60 (= TTL) の 2 通りを回し、名前ごとの引き直しの回/時を観測と並べる。
 # 模型の内訳 (`refresh_warm` / `refresh_ask` / `refresh_stale`) は、
@@ -70,7 +70,7 @@ host_of = dr.host_of
 SERVE_STALE = dr.SERVE_STALE
 
 
-# ------------------------------------------------------------------ 雪像を読む
+# ------------------------------------------------------------------ スナップショットを読む
 
 def taken_at(snap):
     return snap.get("taken_at") or 0
@@ -160,7 +160,7 @@ def pair_window(a, b):
         row["idle_secs"] = jb[name].get("idle_secs")
         row["age_secs"] = jb[name].get("age_secs")
         row["ttl_left"] = jb[name].get("ttl_left")
-        # `Δ要求` は両方の雪像に `/hosts` の行があるときだけ読める (`/hosts` は 1,000 件で切れる)
+        # `Δ要求` は両方のスナップショットに `/hosts` の行があるときだけ読める (`/hosts` は 1,000 件で切れる)
         if name in qa and name in qb:
             row["requests"] = qb[name]["requests"] - qa[name]["requests"]
         if hours > 0:
@@ -191,7 +191,7 @@ def pair_window(a, b):
 
 
 def since_start_window(snap):
-    """雪像 1 枚から、起動からの平均を出す (要求は通算のまま。`requests_per_hour` は出さない)。"""
+    """スナップショット 1 枚から、起動からの平均を出す (要求は通算のまま。`requests_per_hour` は出さない)。"""
     hours = uptime(snap) / 3600.0
     rows = []
     for name, e in dns_entries(snap).items():
@@ -236,7 +236,7 @@ def since_start_window(snap):
 
 
 def windows(snaps):
-    """雪像の並びから窓を作る (隣り合う 2 枚が同じプロセスなら pair、そうでなければ since_start)。"""
+    """スナップショットの並びから窓を作る (隣り合う 2 枚が同じプロセスなら pair、そうでなければ since_start)。"""
     out = []
     for a, b in zip(snaps, snaps[1:]):
         ok, why = same_process(a, b)
@@ -283,14 +283,14 @@ def verdict(win, model_share=None, model_warm=None):
     if win.get("warm_secs") in (0, "0", None) and not win.get("warm"):
         # keep-warm が 0: 引き直しは全部、要求の経路 (使われた名前) で起きる
         return {"share": 0.0, "basis": "none", "go": False}
-    # warm が動いている版で雪像 1 枚: タイマーの回数は今の件数しか分からない
+    # warm が動いている版でスナップショット 1 枚: タイマーの回数は今の件数しか分からない
     return None
 
 
 # ------------------------------------------------------------------ 模型 (dns-replay.py の Table)
 
 def model(snap, names=()):
-    """同じ雪像の `/recent` の到着列で、k を変えて引き直しを数える。
+    """同じスナップショットの `/recent` の到着列で、k を変えて引き直しを数える。
 
     `k` は `refresh_after(ttl)` = 3/4 TTL (いまの規則) と `ttl` (= TTL まで待つ) の 2 通り。
     名前ごとの回/時と、引き直しの内訳 (warm = タイマー / 当たりの先回り / 古い答え) を返す。
@@ -383,17 +383,17 @@ def pct(v):
 
 
 def stamp(t):
-    """epoch 秒を UTC の ISO 8601 にする (雪像の名前と同じ形)。"""
+    """epoch 秒を UTC の ISO 8601 にする (スナップショットの名前と同じ形)。"""
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t or 0))
 
 
 def render(out):
-    """結果を Markdown にする。雪像の一覧・窓ごと・模型・判定の節を順につなぐ (T34.138 で割った)。"""
+    """結果を Markdown にする。スナップショットの一覧・窓ごと・模型・判定の節を順につなぐ (T34.138 で割った)。"""
     lines = snapshot_lines(out)
     for w in out["windows"]:
         lines.append("")
         if w.get("restart_reason"):
-            lines.append("(起動が変わったので前の雪像とは比べない: %s)" % w["restart_reason"])
+            lines.append("(起動が変わったので前のスナップショットとは比べない: %s)" % w["restart_reason"])
         lines += pair_lines(w, out["top"]) if w["kind"] == "pair" else boot_lines(w, out["top"])
     lines += model_lines(out)
     lines += verdict_lines(out)
@@ -401,10 +401,10 @@ def render(out):
 
 
 def snapshot_lines(out):
-    """頭: 読んだ雪像 1 枚 1 行。"""
+    """頭: 読んだスナップショット 1 枚 1 行。"""
     lines = []
     for s in out["snapshots"]:
-        lines.append("雪像 %s: %s (起動から %.2f 時間、版 %s、`/dns` %s 件%s、`/hosts`%s)"
+        lines.append("スナップショット %s: %s (起動から %.2f 時間、版 %s、`/dns` %s 件%s、`/hosts`%s)"
                      % (s["path"], stamp(s["taken_at"]), s["uptime_secs"] / 3600.0,
                         s["version"], s["dns_entries"],
                         " (切れている)" if s["dns_truncated"] else "",
@@ -442,9 +442,9 @@ def pair_lines(w, top):
 
 
 def boot_lines(w, top):
-    """雪像 1 枚の、起動からの窓 (引き直しの通算と、名前ごとの `idle_secs`)。"""
+    """スナップショット 1 枚の、起動からの窓 (引き直しの通算と、名前ごとの `idle_secs`)。"""
     lines = []
-    lines.append("## 起動から %s (%.2f 時間、雪像 1 枚)%s"
+    lines.append("## 起動から %s (%.2f 時間、スナップショット 1 枚)%s"
                  % (w["to_path"], w["hours"],
                     "" if not w["dns_truncated"] else " — `/dns` が切れている"))
     lines.append("引き直し %d 回 (%.1f 回/時)、表の名前 %d 件、warm %s 件 "
@@ -577,12 +577,12 @@ def run(paths, with_model=False, top=TOP):
         obs = {n: ((e.get("refreshes") or 0) / hours) for n, e in dns_entries(last).items()
                if hours > 0 and (e.get("refreshes") or 0) > 0}
         out["model"] = model(last, sorted(obs.items(), key=lambda kv: -kv[1]))
-        # 模型の窓 (直近) は、いちばん新しい雪像の起動についての値
+        # 模型の窓 (直近) は、いちばん新しいスナップショットの起動についての値
         model_share = out["model"]["rules"]["k"]["warm_share"]
         model_warm = out["model"]["window"]["warm_secs"]
     for w in out["windows"]:
         key = str(w["from"]) + "-" + str(w["to"])
-        # 模型の値は、いちばん新しい雪像の起動についてだけ使う
+        # 模型の値は、いちばん新しいスナップショットの起動についてだけ使う
         newest = w["to"] == taken_at(snaps[-1]) and w.get("to_path") == snaps[-1]["_path"]
         out["verdict"][key] = verdict(w, model_share if newest else None,
                                       model_warm if newest else None)

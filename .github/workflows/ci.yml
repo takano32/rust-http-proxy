@@ -59,7 +59,7 @@ jobs:
         run: cargo doc --workspace --no-deps --document-private-items
       # 文書とコードが同じ集合か (エンドポイント・環境変数・`/snapshot` の部・画面の関数・クレートの表。T14.56)
       - run: ./scripts/check-docs.sh
-      # scripts/ の道具の単体テスト (雪像の要約・判定・匿名化と、`scripts/mx` の test_mx.sh。T17.15)
+      # scripts/ の道具の単体テスト (スナップショットの要約・判定・匿名化と、`scripts/mx` の test_mx.sh。T17.15)
       - run: python3 -m unittest discover -s scripts
       # クレートの版の決まり (T26.3: 版 = デプロイの番号。全クレート = 本体 = proxy-server)。ずれていたら落とす
       # (中身が変わっただけでは落とさず、前回のデプロイから変えた数を印字する。タグの上では release.yml が版 = タグも見る)

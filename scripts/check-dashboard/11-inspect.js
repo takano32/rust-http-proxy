@@ -2,7 +2,7 @@
 // 前の節の `const` を使うので、`check-dashboard.js` が名前の順につないで 1 つの本文として回す)
 // 10. 「調査」ページ (`crates/web/src/inspect.html`。T14.8) の描画関数。
 //    `/dashboard` と同じ作法で **DOM に触らない 9 つ**を名前で抜き出し、
-//    (1) 手元のベンチで取った `/snapshot` の実出力、(2) デプロイ先の雪像 (`/status` と
+//    (1) 手元のベンチで取った `/snapshot` の実出力、(2) デプロイ先のスナップショット (`/status` と
 //    `/history`)、(3) まだ実出力に無い欄の架空の見本、の 3 つで通す。
 const insHtml = fs.readFileSync(
   path.join(__dirname, '..', 'crates/web/src/inspect.html'),
@@ -40,7 +40,7 @@ const ins = pick(
 );
 
 // `/snapshot` の実出力 (無ければ作り置き)。中身は手元のベンチで作ったものだけ
-// (デプロイ先の雪像は**個人の閲覧先**が入るのでリポジトリには置かない)
+// (デプロイ先のスナップショットは**個人の閲覧先**が入るのでリポジトリには置かない)
 const snapFile = process.argv[5] || path.join(__dirname, 'testdata', 'snapshot-local.json');
 const snap = JSON.parse(fs.readFileSync(snapFile, 'utf8'));
 const snapAt = +snap.taken_at || 0;
@@ -297,7 +297,7 @@ if (cut.connects && !(cut.p50 <= cut.p95 + 1e-9)) fail('p50 > p95');
 if (cut.connects && !(cut.p95 <= cut.max)) fail('p95 が窓の最大値を超えた');
 if (cut.connects && !(cut.avg <= cut.max)) fail('平均が最大値を超えた');
 if (cut.dns_misses && !(cut.dns_avg >= 0)) fail('ミス 1 回の平均が読めていない');
-// デプロイ先の雪像 (`/history` + `/status`) でも同じ読み方が通ること
+// デプロイ先のスナップショット (`/history` + `/status`) でも同じ読み方が通ること
 const deployedNow = samples.length ? samples[samples.length - 1].t : 0;
 const deployed = ins.sinceStart(hist, +st.since_start_secs || 0, deployedNow);
 if (deployed.mode !== 'samples') fail('デプロイ先の /history を標本として読めていない');

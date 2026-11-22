@@ -1,6 +1,6 @@
 # 判定表 (`scripts/snapshot_criteria.py`) の**再起動**の部 (T34.124 で割った)。
 #
-# 2 枚の雪像の間の再起動 (`restart_info`。差分の「再起動」) と、`/events` の `start` から無言の再起動を
+# 2 枚のスナップショットの間の再起動 (`restart_info`。差分の「再起動」) と、`/events` の `start` から無言の再起動を
 # 数える部 (`silent_restarts`。判定表の phase23 以降の行と `snapshot-summary.py` が使う。T23.2)。
 
 import re
@@ -49,7 +49,7 @@ START_VERSION = re.compile(r"^version\s+(\S+)")
 # `start` の文面に載っている `boot` の印 (T24.0)。`crates/run/src/lib.rs` が
 # `/proc/sys/kernel/random/boot_id` の**先頭 12 文字**を "… on port 60357 boot 7aa666f1-264 (profile …)" と書く
 # (1 件 128 B の枠に収めるため。全体は `/status` の `boot.id`)。
-# 手で組んだ雪像や将来の版が全体 (36 文字) を書いても読めるように、6〜36 文字を受ける。
+# 手で組んだスナップショットや将来の版が全体 (36 文字) を書いても読めるように、6〜36 文字を受ける。
 START_BOOT = re.compile(r"\bboot\s+([0-9a-fA-F]{6,36})\b")
 
 
@@ -135,7 +135,7 @@ def sort_start(out, e, marks, prev, prev_boot):
         `shutdown` があるので、版を上げただけの再起動は無言にならない。逆に、窓の**先頭**の `start`
         (それより前の出来事が 1 つも無い) や、窓が起動の途中から始まっている `start` は
         「無言だった」とは言えないので `edge` に分ける (数えない)。
-        2026-10-20 の雪像では、10-08 09:24:20Z の `start` (読み戻しの先頭) がここに入る。
+        2026-10-20 のスナップショットでは、10-08 09:24:20Z の `start` (読み戻しの先頭) がここに入る。
 
     **ホストの再起動か、プロセスだけの再起動か** (T24.0): 無言の再起動の 1 件ずつについて、
     その `start` の文面の `boot` (T24.0 から載る) と**1 つ前の起動の `boot`** (`prev_boot`) を比べる。
@@ -182,7 +182,7 @@ def boot_split_text(r):
     """無言の再起動のうち、**ホストの再起動**と**プロセスだけの再起動**の内訳を 1 文にする (T24.0)。
 
     **`boot` を持つ行が 1 つも無ければ何も足さない** (T24.0 より前の版が書いた `start` だけの
-    雪像)。過去の phase の出力を 1 文字も変えないための線で、`boot_unknown` だけの雪像
+    スナップショット)。過去の phase の出力を 1 文字も変えないための線で、`boot_unknown` だけのスナップショット
     (切り分けられる回が 1 つも無い) でも文は変えず、判定表の「根拠」に件数を書く。
     """
     host = len(r.get("host") or [])
@@ -219,7 +219,7 @@ def silent_restart_text(r, bold=True):
         # 無言の再起動があるときは、窓の先頭の `start` が別に残っていることだけ添える
         if r["edge"]:
             text += f"。ほかに窓の先頭などの `start` {len(r['edge'])} 件は判定できない"
-        # ホストの再起動かプロセスだけの再起動か (T24.0。`boot` の無い雪像では何も足さない)
+        # ホストの再起動かプロセスだけの再起動か (T24.0。`boot` の無いスナップショットでは何も足さない)
         text += boot_split_text(r)
         return text
     if not r["graceful"]:

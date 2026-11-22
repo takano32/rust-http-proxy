@@ -39,7 +39,7 @@ class Criteria38ConnVolume(unittest.TestCase):
         return {"interval_secs": 60, "keys": ["t", "requests", "cpu_us", "threads"], "roles": roles, "samples": rows}
 
     def c(self, pa, pb, fa=None, fb=None):
-        """前と後の雪像。名前解決の失敗は要求の 4 割 (`/history?res=3600` の `dns`)。"""
+        """前と後のスナップショット。名前解決の失敗は要求の 4 割 (`/history?res=3600` の `dns`)。"""
         def fails(p):
             return round(p["samples"][0][1] * 0.4 * 60)
         return {"a": self.snap(pa, fa if fa is not None else fails(pa)),
