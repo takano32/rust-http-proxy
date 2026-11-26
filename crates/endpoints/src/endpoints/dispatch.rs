@@ -130,7 +130,8 @@ fn dispatch_get(ep: &Endpoint<'_>, req: &Incoming<'_>, target: &str) -> Reply {
         "/" | "" => (200, "text/plain; charset=utf-8", endpoint_list(ep.lite)).into(),
         _ => match path.strip_prefix("/snapshots/") {
             // 残してある 1 日ぶんをそのまま (T14.34)。起動と停止の 1 枚 (`<時刻>-start|shutdown`。
-            // T28.20) も同じ口。どちらとしても読めない名前は 404
+            // T28.20) と停止の隣の `/profile?res=60` (`<時刻>-shutdown-profile`。T40.0) も同じ口。
+            // どちらとしても読めない名前は 404
             Some(date) => recent::snapshot_file(date).into(),
             // 自分宛てだが知らないパス: 自分へ転送するとループするので 404
             None => (

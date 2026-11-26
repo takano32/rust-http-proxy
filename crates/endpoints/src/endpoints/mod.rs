@@ -91,27 +91,37 @@ pub struct SnapshotSource {
 /// この層より**下**にあるため (下から上を呼ぶと依存が輪になる。T14.11 の `events::poll`
 /// と同じ判断で、**向きは上から預ける**)。
 pub fn register_snapshot(src: SnapshotSource) {
+    let src = std::sync::Arc::new(src);
     // 引数は「`recent` の部の上限」(起動と停止の 1 枚は 6 MiB = 全部 (T28.20・T38.7)、
     // 日次は 1 MiB (T28.46)) と全体の上限。`dns`・`hosts`・`profile` も部の上限で切らない (T38.7)
+    let snap = std::sync::Arc::clone(&src);
     crate::snapshots::set_builder(Box::new(move |recent_max, limit| {
-        let ep = Endpoint {
-            metrics: &src.metrics,
-            cache: &src.cache,
-            // 要求で来たわけではないのでログの接続 id は無い (履歴スレッドが組む)
-            conn_id: 0,
-            port: src.port,
-            host: None,
-            // 要求で来たわけではないので読み手は数えない (T14.53)
-            client: None,
-            pac_direct: &[],
-            lite: src.lite,
-            readonly: src.readonly,
-            version: src.version,
-            build: src.build,
-            concurrency: &*src.concurrency,
-        };
-        recent::disk_snapshot(&ep, recent_max, limit).2
+        recent::disk_snapshot(&source_endpoint(&snap), recent_max, limit).2
     }));
+    // 停止の 1 枚の隣に書く `/profile?res=60` の全部 (T40.0)。`--lite` では `/profile` が無いので書かない
+    crate::snapshots::set_profile_builder(Box::new(move |limit| {
+        (!src.lite).then(|| profile::shutdown_profile(&source_endpoint(&src), limit))
+    }));
+}
+
+/// 預かった [`SnapshotSource`] から、要求で来たのではない `Endpoint` を作る (日次・起動・停止の 1 枚を組む所)。
+fn source_endpoint(src: &SnapshotSource) -> Endpoint<'_> {
+    Endpoint {
+        metrics: &src.metrics,
+        cache: &src.cache,
+        // 要求で来たわけではないのでログの接続 id は無い (履歴スレッドが組む)
+        conn_id: 0,
+        port: src.port,
+        host: None,
+        // 要求で来たわけではないので読み手は数えない (T14.53)
+        client: None,
+        pac_direct: &[],
+        lite: src.lite,
+        readonly: src.readonly,
+        version: src.version,
+        build: src.build,
+        concurrency: &*src.concurrency,
+    }
 }
 
 /// 内部エンドポイントなら応答して `Ok(true)` を返す。そうでなければ何もせず `Ok(false)`。

@@ -276,7 +276,7 @@ fn build_upstream(
     pool
 }
 
-/// 停止シグナルの後始末 (統計と個票を書き、`/snapshot` を 1 枚撮り、ballast を空にする)。
+/// 停止シグナルの後始末 (`/snapshot` を 1 枚撮り、統計と個票を書き、`/profile?res=60` を隣に書き、ballast を空にする)。
 fn install_shutdown(
     config: &Config,
     cache: &Arc<Cache>,
@@ -302,7 +302,8 @@ fn install_shutdown(
             // `recent` は切らずに全部入れる。後始末の上限 (`signal::GRACE` = 3 秒) の中に
             // 収まるよう、組んで書くまでにかかった時間をログに出す
             let t = std::time::Instant::now();
-            if let Some(path) = proxy_server::snapshots::take_shutdown(&c) {
+            let stop = proxy_server::snapshots::take_shutdown(&c);
+            if let Some(path) = &stop {
                 log_info!(
                     None,
                     "shutdown snapshot {} built and written in {:.1} ms",
@@ -319,6 +320,18 @@ fn install_shutdown(
                     "statistics saved to {} ({} individual records appended)",
                     st.path.display(),
                     n
+                );
+            }
+            // 停止の 1 枚の隣に `/profile?res=60` の全部 (T40.0。締めの「前」の CPU の材料)。
+            // 状態ファイルより後にするのは、後始末の上限 (3 秒) を越えたときに失うのをこちらにするため
+            let t = std::time::Instant::now();
+            if let Some(path) = proxy_server::snapshots::take_shutdown_profile(&c, stop.as_deref())
+            {
+                log_info!(
+                    None,
+                    "shutdown profile {} built and written in {:.1} ms",
+                    path.display(),
+                    t.elapsed().as_secs_f64() * 1000.0
                 );
             }
         }),

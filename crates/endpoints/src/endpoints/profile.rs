@@ -112,6 +112,19 @@ pub(super) fn profile_within(
     (200, "application/json", out)
 }
 
+/// 停止の 1 枚の隣に書く `/profile?res=60` の全部 (T40.0)。`limit` は全体の上限 (6 MiB)。
+///
+/// 中身は `/profile?res=60` の応答の形そのもので、`n` はその解像度の全部 (1,440)・`offset` は 0。
+/// 上限に入れば `offset=` で繋いだ 1,440 標本と同じ標本が並び (`truncated` は偽、`next_offset` は `null`)、
+/// 締めの道具 (`scripts/collect-deployed.sh --closeout`) がそのまま `--profile-before` に渡せる。
+/// 越えるときは新しい方を残して古い方から落とし、`truncated` が立つ (いつもの口と同じ)。
+pub(super) fn shutdown_profile(ep: &Endpoint<'_>, limit: usize) -> String {
+    profile_within(ep, Some(SHUTDOWN_QUERY), limit).2
+}
+
+/// [`shutdown_profile`] の問い合わせ (1 分の解像度の全部)。
+const SHUTDOWN_QUERY: &str = "res=60";
+
 /// 標本の前まで: 版・解像度・段階とロックの名前・1 標本の並び (`"samples":[` まで。T34.95)。
 fn write_head(out: &mut String, p: &Profile, res: usize) {
     // 応答の形の版は**いちばん先頭の鍵** (T14.49)
@@ -306,6 +319,134 @@ mod tests {
         ] {
             assert!(out.contains(key), "{} が無い: {}", key, out);
         }
+    }
+
+    /// 1 分の環を 1,440 本の忙しい標本で埋める (役割 9 つ・上位スレッド 8 本・段階・走れずに待った時間)。
+    fn fill_busy_day(m: &crate::metrics::Metrics) {
+        use crate::profile::{ROLES, RoleWindow, Sample, Stages, TOP_THREADS, TopThread};
+        let role = RoleWindow {
+            cpu_us: 1_234_567,
+            user_us: 234_567,
+            samples: 6_000,
+            states: [999; crate::profile::NSTATES],
+        };
+        let mut comm = [0u8; 16];
+        comm[..15].copy_from_slice(b"conn-worker-123");
+        let top = TopThread {
+            cpu_us: 9_876_543,
+            tid: 4_000_000,
+            running: 60,
+            role: 1,
+            comm,
+        };
+        let mut stages = Stages::default();
+        let d = crate::metrics::Detail {
+            dns_ms: 7,
+            connect_ms: 23,
+            ..crate::metrics::Detail::default()
+        };
+        stages.observe_connect(&d);
+        stages.observe_forward(&d);
+        let busy = Sample {
+            requests: 12_345,
+            cpu_us: 4_567_890,
+            stages,
+            threads: [role; ROLES.len()],
+            locks: [123; crate::sync::LOCK_NAMES.len()],
+            queue_waited: 12,
+            queue_ms_sum: 345,
+            queue_ms_max: 67,
+            threads_top: [top; TOP_THREADS],
+            run_delay_us: Some([123_456; ROLES.len()]),
+            cpu_user_us: 1_234_567,
+            conn_split: [1_000_000, 200_000, 34_567],
+            ..Sample::default()
+        };
+        // 5 秒の標本を 1 日 + 1 分ぶん足す (1 分の窓は次の分の頭で閉じる)
+        let start = 1_800_000_000 / 60 * 60;
+        for i in 0..(profile::RESOLUTIONS[1].1 as u64 + 1) * 12 {
+            m.profile.push(Sample {
+                t: start + i * 5,
+                ..busy
+            });
+        }
+    }
+
+    /// 停止の隣に書く `/profile?res=60` (T40.0) は、`offset=` で繋いだ 1,440 標本と同じ標本を 1 枚に持ち、
+    /// 頭と尾は `/profile?res=60` の形のまま (`truncated` は偽・`next_offset` は `null`)。大きさと組む時間も出す。
+    #[test]
+    fn the_shutdown_profile_holds_every_minute_of_the_day() {
+        let m = crate::metrics::Metrics::new();
+        fill_busy_day(&m);
+        let cache = crate::cache::Cache::new(crate::cache::CacheConfig::disabled());
+        let concurrency = || crate::metrics::Concurrency {
+            max_conns: 0,
+            max_threads: 0,
+            live_threads: 0,
+            idle_threads: 0,
+            queued_jobs: 0,
+        };
+        let ep = Endpoint {
+            metrics: &m,
+            cache: &cache,
+            conn_id: 0,
+            port: 8080,
+            host: None,
+            client: None,
+            pac_direct: &[],
+            lite: false,
+            readonly: false,
+            version: "test",
+            build: "test",
+            concurrency: &concurrency,
+        };
+        let limit = crate::snapshots::DAILY_MAX_FILE as usize;
+        let t = std::time::Instant::now();
+        let whole = shutdown_profile(&ep, limit);
+        let took = t.elapsed();
+        let cap = profile::RESOLUTIONS[1].1;
+        println!(
+            "T40.0 忙しい標本 {} 本の停止の隣の /profile?res=60: {} B (上限 {} B の {:.0}%)、組むのに {:.1} ms",
+            cap,
+            whole.len(),
+            limit,
+            whole.len() as f64 * 100.0 / limit as f64,
+            took.as_secs_f64() * 1000.0
+        );
+        assert!(whole.len() <= limit, "{} B", whole.len());
+        assert!(whole.contains("\"interval_secs\":60,"), "{}", &whole[..200]);
+        assert!(
+            whole.ends_with(&format!(
+                ",\"count\":{0},\"shown\":{0},\"truncated\":false,\"n\":{0},\"offset\":0,\"next_offset\":null}}",
+                cap
+            )),
+            "{}",
+            &whole[whole.len() - 200..]
+        );
+        // いつもの口の頁を `offset=` で繋いだ標本の並びと同じ (`collect_follow.py profile-join` と同じ繋ぎ方)
+        let rows = |body: &str| -> String {
+            let from = body.find("\"samples\":[").unwrap() + "\"samples\":[".len();
+            let to = body.find("],\"locks_total\":").unwrap();
+            body[from..to].to_string()
+        };
+        let mut pages: Vec<String> = Vec::new();
+        let mut offset = 0;
+        loop {
+            let page = profile(&ep, Some(&format!("res=60&offset={}", offset))).2;
+            assert!(page.len() <= super::super::recent::MAX_BODY);
+            pages.push(rows(&page));
+            let at = page.rfind("\"next_offset\":").unwrap() + "\"next_offset\":".len();
+            match page[at..].trim_end_matches('}').parse::<usize>() {
+                Ok(next) => offset = next,
+                Err(_) => break,
+            }
+        }
+        assert!(pages.len() > 1, "1 枚に入り切らない量で試す");
+        pages.reverse();
+        assert_eq!(rows(&whole), pages.join(","));
+        // 頭 (`samples` の前) もいつもの口と同じ
+        let head = |body: &str| body[..body.find("\"samples\":[").unwrap()].to_string();
+        assert_eq!(head(&whole), head(&profile(&ep, Some("res=60")).2));
     }
 
     /// 尾は通算・直近 5 分・頁の位置の順で、頁の位置は末尾 (T34.95)。

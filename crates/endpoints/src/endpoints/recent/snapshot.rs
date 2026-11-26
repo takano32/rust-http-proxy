@@ -62,7 +62,8 @@ pub(in crate::endpoints) fn snapshots() -> (u16, &'static str, String) {
 }
 
 /// `/snapshots/<YYYY-MM-DD>` — 残してある 1 日ぶんを**そのまま**返す (T14.34)。
-/// `/snapshots/<YYYY-MM-DDTHHMMSSZ>-start|shutdown` (起動と停止の 1 枚。T28.20) も同じ口。
+/// `/snapshots/<YYYY-MM-DDTHHMMSSZ>-start|shutdown` (起動と停止の 1 枚。T28.20) と、停止の隣の
+/// `-shutdown-profile` (`/profile?res=60` の全部。T40.0) も同じ口。
 ///
 /// 中身は `/snapshot` の応答そのもの (組み直さない) なので、`scripts/snapshot-diff.py` や
 /// `scripts/collect-deployed.sh --from-server` がそのまま読める。**版 (`schema`) も

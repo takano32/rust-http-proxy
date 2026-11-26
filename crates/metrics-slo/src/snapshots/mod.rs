@@ -28,13 +28,20 @@
 //! ディスクに書く 3 つはどれも `dns`・`hosts`・`profile` も部の上限で切らず、全体の上限は
 //! 3 つとも [`DAILY_MAX_FILE`] (T38.7)。
 //!
+//! **停止の 1 枚の隣の `/profile?res=60`** (T40.0): 締めの CPU の 2 行の「前」の材料 (前の版の最後の
+//! 12 時間以上の `/profile?res=60`) は手元にしか残らず、こちらのコンテナが入れ替わると消えた。停止の
+//! 後始末で、`/profile?res=60` の全部の標本 (`offset=` で繋いだ 1,440 標本と同じ中身) を、停止の 1 枚と
+//! 同じ時刻の **`<YYYY-MM-DDTHHMMSSZ>-shutdown-profile.json`** に書く ([`take_shutdown_profile`])。
+//! 組むのは上の層で、[`set_profile_builder`] で預かる。`/snapshots` の `moments` に種類
+//! `shutdown-profile` で並び、残す決まりも起動と停止の 1 枚と同じ (種類ごと)。
+//!
 //! **`/snapshot` を組むのは `proxy-endpoints` の仕事**なので、ここは
 //! [`set_builder`] で預かった閉包を日付の変わり目に 1 回呼ぶだけにしてある
 //! (下の層 `proxy-metrics` から上の層を呼ぶと依存が輪になる。T14.11 の
 //! `events::poll` と同じ判断で、**向きは上から預ける**)。
 
 //!
-//! **T34.2 で 4 ファイルに割った**: 名前の往復 (`YYYY-MM-DD` / `<時刻>-start|shutdown`) は
+//! **T34.2 で 4 ファイルに割った**: 名前の往復 (`YYYY-MM-DD` / `<時刻>-start|shutdown|shutdown-profile`) は
 //! `snapshots/names.rs`、書くもの ([`Writer`]) は `snapshots/writer.rs`、置き場所の一覧と間引きは
 //! `snapshots/store.rs`。ここには大域の口 ([`configure`] / [`tick`] / [`list`] / [`read`] …) と
 //! `/snapshot` を組む閉包の預かり ([`set_builder`]) だけを置く。行を動かしただけで中身は変えていない。
@@ -108,6 +115,23 @@ pub fn default_dir() -> Option<PathBuf> {
 pub type Builder = Box<dyn Fn(Option<usize>, usize) -> String + Send + Sync>;
 
 static BUILDER: OnceLock<Mutex<Option<Builder>>> = OnceLock::new();
+
+/// 停止の 1 枚の隣に書く `/profile?res=60` を組む閉包 (預けるのは `proxy-endpoints`。[`set_profile_builder`]。T40.0)。
+///
+/// 引数は全体の上限 ([`DAILY_MAX_FILE`])。中身は `/profile?res=60` の応答の形のまま、標本を全部
+/// (上限に入るだけ、新しい方から) 入れる。`--lite` のように `/profile` が無い設定では `None`。
+pub type ProfileBuilder = Box<dyn Fn(usize) -> Option<String> + Send + Sync>;
+
+static PROFILE_BUILDER: OnceLock<Mutex<Option<ProfileBuilder>>> = OnceLock::new();
+
+fn profile_builder() -> &'static Mutex<Option<ProfileBuilder>> {
+    PROFILE_BUILDER.get_or_init(|| Mutex::new(None))
+}
+
+/// 停止の 1 枚の隣に書く `/profile?res=60` を組む閉包を預ける (**起動時に 1 回**、上の層から。T40.0)。
+pub fn set_profile_builder(f: ProfileBuilder) {
+    *profile_builder().locked() = Some(f);
+}
 
 fn builder() -> &'static Mutex<Option<Builder>> {
     BUILDER.get_or_init(|| Mutex::new(None))
@@ -211,6 +235,37 @@ pub fn take_shutdown(cache: &Cache) -> Option<PathBuf> {
     take(cache, Moment::Shutdown)
 }
 
+/// **停止の後始末から 1 回だけ呼ぶ** (状態ファイルを書いた後。T40.0)。
+///
+/// `/profile?res=60` の全部の標本を `-shutdown-profile` に 1 枚書く。名前の時刻は `beside`
+/// (いま書いた停止の 1 枚。書けなかったら `None`) と同じにし、無ければいまの時刻。
+/// 書かない設定なら原子の読み 1 回で戻る。組み方を預かっていない・`/profile` が無い設定でも書かない。
+pub fn take_shutdown_profile(cache: &Cache, beside: Option<&Path>) -> Option<PathBuf> {
+    if !ENABLED.load(Ordering::Relaxed) {
+        return None;
+    }
+    let t = beside
+        .and_then(|p| {
+            p.file_name()?
+                .to_str()?
+                .strip_suffix(EXT)
+                .map(str::to_string)
+        })
+        .and_then(|stem| parse_moment(&stem))
+        .map_or_else(crate::cache::now_epoch, |(t, _)| t);
+    let build = || {
+        profile_builder()
+            .locked()
+            .as_ref()
+            .and_then(|f| f(DAILY_MAX_FILE as usize))
+    };
+    writer()
+        .locked()
+        .write_moment(t, Moment::ShutdownProfile, build, |dir| {
+            (free_bytes(dir), cache.snapshot().disk_keep_free)
+        })
+}
+
 /// 起動と停止の 1 枚を組んで書く (`recent` の部の上限も全体の上限も [`DAILY_MAX_FILE`]。T38.7)。
 fn take(cache: &Cache, m: Moment) -> Option<PathBuf> {
     let t = crate::cache::now_epoch();
@@ -250,7 +305,7 @@ pub fn list() -> Listing {
 
 /// `/snapshots/<date>` と `/snapshots/<起動・停止の名前>` の中身 (そのままの JSON)。無ければ `None`。
 ///
-/// 読むのは `<YYYY-MM-DD>.json` と `<YYYY-MM-DDTHHMMSSZ>-start|shutdown.json` (T28.20) だけで、
+/// 読むのは `<YYYY-MM-DD>.json` と `<YYYY-MM-DDTHHMMSSZ>-start|shutdown|shutdown-profile.json` (T28.20・T40.0) だけで、
 /// 上限 ([`DAILY_MAX_FILE`]。T38.7 より前の起動・停止の 1 枚は 4 MiB 以下) を超えるファイル (手で置かれたもの) は読まない。
 pub fn read(date: &str) -> Option<String> {
     if !is_date(date) && parse_moment(date).is_none() {

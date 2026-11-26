@@ -341,6 +341,32 @@ class CollectBeforeZeroTest(unittest.TestCase):
         tail = self.judged(out)
         self.assertIn("前: `--profile` 800 標本", tail)
 
+    def test_before_takes_the_profile_beside_the_shutdown(self):
+        # T40.0: 「前」(停止の 1 枚) の隣に、プロキシが止めるときに書いた `/profile?res=60`
+        # (`--from-server` が `-shutdown-profile_res_60.json` に置く) が 12 時間以上あれば、手元のものより先にそれ
+        before = "2025-12-30T101010Z-shutdown-snapshot.json"
+        _, out, _ = self.run_collect(files={
+            before: self.a,
+            "2025-12-30T101010Z-shutdown-profile_res_60.json": FakeProfile(1440, pad=0).page(0),
+            "2025-12-29T000000Z-snapshot.json": self.a,
+            "2025-12-29T000000Z-profile_res_60.json": FakeProfile(800, pad=0).page(0),
+        }, BEFORE="{dir}/" + before)
+        self.assertIn("前: `--profile` 1440 標本", self.judged(out))
+
+    def test_a_short_profile_beside_the_shutdown_gives_way_to_a_long_local_one(self):
+        # T40.0: 停止の隣のものが 12 時間に満たなければ、手元の前の版の 12 時間以上のもの (T32.29)。
+        # 手元にも無ければ、短くても停止の隣のもの
+        before = "2025-12-30T101010Z-shutdown-snapshot.json"
+        side = {before: self.a,
+                "2025-12-30T101010Z-shutdown-profile_res_60.json": FakeProfile(300, pad=0).page(0)}
+        _, out, _ = self.run_collect(files=dict(side, **{
+            "2025-12-29T000000Z-snapshot.json": self.a,
+            "2025-12-29T000000Z-profile_res_60.json": FakeProfile(800, pad=0).page(0),
+        }), BEFORE="{dir}/" + before)
+        self.assertIn("前: `--profile` 800 標本", self.judged(out))
+        _, out, _ = self.run_collect(files=side, BEFORE="{dir}/" + before)
+        self.assertIn("前: `--profile` 300 標本", self.judged(out))
+
     def test_before_without_a_profile_next_to_it(self):
         before = "2025-12-30T101010Z-snapshot.json"
         _, out, _ = self.run_collect(files={before: self.a}, BEFORE="{dir}/" + before)
@@ -903,7 +929,7 @@ class CollectFromServerTest(unittest.TestCase):
     def t2899_versions(self):
         return {n: (v, b, p) for n, v, b, p in self.T2899}
 
-    def serve(self, listing, versions=None, live=None, pad=None):
+    def serve(self, listing, versions=None, live=None, pad=None, extra=None):
         bodies = {}
         for name in [f["date"] for f in listing.get("files", [])] + \
                 [m["name"] for m in listing.get("moments", [])]:
@@ -915,6 +941,9 @@ class CollectFromServerTest(unittest.TestCase):
                 if pad and name in pad:
                     body["pad"] = "x" * pad[name]
                 bodies[name] = json.dumps(body).encode()
+        # 名前ごとに中身を決めたもの (停止の隣の `/profile?res=60`。T40.0)
+        for name, body in (extra or {}).items():
+            bodies[name] = json.dumps(body).encode()
         with open(SNAPSHOT_B, "rb") as f:
             snapshot = f.read()
         self.fetched = []
@@ -954,8 +983,8 @@ class CollectFromServerTest(unittest.TestCase):
         self.addCleanup(srv.shutdown)
         return srv
 
-    def run_from_server(self, listing, d=None, versions=None, pad=None):
-        srv = self.serve(listing, versions, pad=pad)
+    def run_from_server(self, listing, d=None, versions=None, pad=None, extra=None):
+        srv = self.serve(listing, versions, pad=pad, extra=extra)
         if d is None:
             d = tempfile.mkdtemp(prefix="t2820-")
             self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
@@ -1031,6 +1060,31 @@ class CollectFromServerTest(unittest.TestCase):
                 ("2026-10-25T212745Z-start", "start", "0.28.48+c0ffee1", "**0 時間 (ZERO)**")):
             boot = "B1" if ver.startswith("0.28.48") else "B0"
             self.assertIn("`%s-snapshot.json` %s `%s` boot.id `%s` → %s" % (name, kind, ver, boot, tag), out)
+
+    def test_the_profile_beside_the_shutdown_is_fetched_and_chosen(self):
+        # T40.0: `moments` の種類 `shutdown-profile` (停止の 1 枚の隣の `/profile?res=60`) も手元に無ければ取り寄せ、
+        # `<時刻>-shutdown-profile_res_60.json` に置く。大きさの割合の行には並べず、「前」に合わせる
+        # `--profile-before` の選び方を 1 行出す
+        listing = self.t2899_listing()
+        side = "2026-10-25T203134Z-shutdown-profile"
+        listing["moments"].append({"name": side, "kind": "shutdown-profile", "bytes": 10, "t": 9})
+        # 形の合わない名前は取りに行かない
+        listing["moments"].append({"name": "2026-10-25T203134Z-shutdown-profile/../x",
+                                   "kind": "shutdown-profile", "bytes": 10, "t": 10})
+        d, out = self.run_from_server(listing, versions=self.t2899_versions(),
+                                      extra={side: FakeProfile(1440, pad=0).page(0)})
+        path = os.path.join(d, side + "_res_60.json")
+        with open(path) as f:
+            self.assertEqual(len(json.load(f)["samples"]), 1440)
+        self.assertIn(side, self.fetched)
+        self.assertEqual(len([n for n in os.listdir(d) if "profile" in n]), 1, os.listdir(d))
+        self.assertIn("取り寄せた: `%s`" % path, out)
+        self.assertNotIn("`%s`: " % path, out)
+        self.assertIn("- 前の CPU の材料 (`--profile-before`): 前の停止の隣の `/profile?res=60` `%s` "
+                      "(24.0 時間。T40.0) を選んだ" % path, out)
+        # 隣のものが無ければ、そう書く
+        d, out = self.run_from_server(self.t2899_listing(), versions=self.t2899_versions())
+        self.assertIn("- 前の CPU の材料 (`--profile-before`): 無い (前の停止の隣の `/profile?res=60` も", out)
 
     def run_closeout(self, d, live, **env):
         srv = self.serve(self.t2899_listing(), self.t2899_versions(), live=live)

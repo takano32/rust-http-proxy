@@ -499,6 +499,7 @@ curl -s http://127.0.0.1:8080/snapshot > snap.json      # 上の全部を 1 要�
 curl "http://127.0.0.1:8080/snapshots"                  # 日次で残した snapshot の一覧 (30 日ぶん)
 curl -s "http://127.0.0.1:8080/snapshots/2026-09-15" > day.json   # その日ぶんをそのまま
 curl -s "http://127.0.0.1:8080/snapshots/2026-10-25T203134Z-shutdown" > before.json   # 停止の 1 枚 (`moments[]` の `name`)
+curl -s "http://127.0.0.1:8080/snapshots/2026-10-25T203134Z-shutdown-profile" > before-profile.json   # その隣の /profile?res=60 の全部 (S16)
 # ブラウザで開くなら http://127.0.0.1:8080/dashboard (「いま」を見るコントロールパネル)
 # ブラウザで読むなら http://127.0.0.1:8080/inspect (上の個票を時間軸で描く「調査」ページ)
 # 端末から測るなら http://127.0.0.1:8080/probe.html (往復とプロキシ経由の取得をブラウザで測る)
@@ -596,6 +597,7 @@ release のバイナリは ubuntu-22.04 (glibc 2.35) でビルドしているの
 
 **止める直前に `scripts/collect-deployed.sh` でスナップショットを 1 枚**撮っておきます (次の版の判定の「前」になります。T17.19)。
 撮り忘れても、**プロキシ自身が停止シグナルで `<UTC 時刻>-shutdown.json` を 1 枚残します** (T28.20。`recent` は全部入り)。
+隣に同じ時刻の `-shutdown-profile.json` (`/profile?res=60` の全部。締めの CPU の行の「前」の材料。T40.0) も書きます。
 再デプロイのあとに `scripts/collect-deployed.sh --from-server <host>:<port>` で取り寄せると、`BEFORE=…` の 1 行が出ます。
 **「前」は時刻ではなく版で選びます** (T29.26): いまの版と**系列 (`0.<Phase>`) の違う版の最後の停止**です。同じ系列の
 途中のデプロイ (T28.99 で 53 分挟んだ 0.28.39 など) の停止は飛ばし、候補を全部、外した理由つきで並べます。

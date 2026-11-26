@@ -44,6 +44,7 @@ pub(super) fn endpoint_list(lite: bool) -> String {
          \x20 /snapshots                                  JSON: the daily, start and shutdown snapshots kept on disk\n\
          \x20 /snapshots/<YYYY-MM-DD>                     JSON: one saved day (as taken)\n\
          \x20 /snapshots/<time>-start|shutdown            JSON: one start or shutdown snapshot (as taken)\n\
+         \x20 /snapshots/<time>-shutdown-profile          JSON: /profile?res=60 written beside a shutdown snapshot\n\
          \x20 /dns?sort=age|host|misses&offset=          JSON: the resolver cache table\n\
          \x20 /log?n=200                                  JSON: the last warnings and errors\n\
          \x20 /hosts?sort=&limit=200&offset=              JSON: every host (/status keeps 50)\n\

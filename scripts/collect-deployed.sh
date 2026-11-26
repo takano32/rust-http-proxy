@@ -35,6 +35,9 @@
 #     残す `<UTC 時刻>-shutdown` / `-start`。一覧の `moments`) も手元に無いものだけ取り寄せて
 #     `<UTC 時刻>-shutdown-snapshot.json` / `-start-snapshot.json` に置き、**最後の停止とその後の
 #     最初の起動**を `BEFORE=… ZERO=…` の形で 1 行出す (締めの「前」と「0 時間」にそのまま渡せる)。
+#     停止の 1 枚の隣の `/profile?res=60` (T40.0。`moments` の種類 `shutdown-profile`) も手元に無ければ取り寄せて
+#     `<UTC 時刻>-shutdown-profile_res_60.json` に置き、「前」に合わせる `--profile-before` の選び方を 1 行出す
+#     (停止の隣のものが 12 時間以上あればそれ、無ければ手元の前の版の 12 時間以上の `-profile_res_60.json`)。
 #     T29.26 から**版で選ぶ**: 前 = いまの版と系列 (`0.<Phase>`) の違う版の最後の停止 (同じ系列の途中の
 #     デプロイは飛ばす)、0 時間 = その後のいまの版の最初の起動。候補は全部、選んだ / 外した理由つきで並べる。
 #
@@ -305,7 +308,11 @@ from_server() {
       python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$out.part" 2>/dev/null; then
       mv "$out.part" "$out"
       got=$((got + 1))
-      fetched+=("$out")
+      # 停止の隣の `/profile?res=60` (T40.0) はスナップショットではないので、大きさの割合の行には並べない
+      case "$out" in
+        *-shutdown-profile_res_60.json) ;;
+        *) fetched+=("$out") ;;
+      esac
       printf -- '- 取り寄せた: `%s` (%s B、サーバー側 %s B)\n' "$out" "$(wc -c <"$out" | tr -d ' ')" "$bytes"
     else
       rm -f "$out.part"
@@ -726,13 +733,21 @@ section_diff() {
   if [ "$DIFF" = 1 ] && [ -n "$JUDGE_BEFORE" ] && [ -n "$CRIT" ]; then
     CRITMD=$work/snapshot-criteria.md
     JUDGE_PROFILE=
-    [ -f "${JUDGE_BEFORE%-snapshot.json}-profile_res_60.json" ] &&
-      [ "${JUDGE_BEFORE%-snapshot.json}" != "$JUDGE_BEFORE" ] &&
-      JUDGE_PROFILE=${JUDGE_BEFORE%-snapshot.json}-profile_res_60.json
-    # 隣に無ければ (「前」は停止の 1 枚で、`-profile_res_60.json` は普段の 1 回の隣にしか無い)、**前の版の最後の
-    # `-profile_res_60.json` で 12 時間以上あるもの** を前の材料に選ぶ (T32.29。前は停止の 1 枚の `/profile` の部
-    # (0.5 時間) しか無く、T29.99 から 3 回続けて CPU の行が「参考」だった)。版は同じ時刻の `-snapshot.json` の
-    # `status.version` (`+<コミット>` は見ない)、長さは標本の数 × `interval_secs`
+    case "$JUDGE_BEFORE" in
+      *-shutdown-snapshot.json) ;;
+      *)
+        [ -f "${JUDGE_BEFORE%-snapshot.json}-profile_res_60.json" ] &&
+          [ "${JUDGE_BEFORE%-snapshot.json}" != "$JUDGE_BEFORE" ] &&
+          JUDGE_PROFILE=${JUDGE_BEFORE%-snapshot.json}-profile_res_60.json
+        ;;
+    esac
+    # 「前」が停止の 1 枚なら (普段の 1 回の隣の `-profile_res_60.json` は無い)、`collect_follow.py judge-profile` が選ぶ
+    # (取り寄せの箇条の「前の CPU の材料」と同じ関数): **前の停止の隣の `/profile?res=60`** (プロキシが止めるときに
+    # 書いたもの。`--from-server` が `<時刻>-shutdown-profile_res_60.json` に置く。T40.0) が 12 時間以上あればそれ、
+    # 無いか短ければ**前の版の最後の `-profile_res_60.json` で 12 時間以上あるもの** (T32.29。前は停止の 1 枚の
+    # `/profile` の部 (0.5 時間) しか無く、T29.99 から 3 回続けて CPU の行が「参考」だった。版は同じ時刻の
+    # `-snapshot.json` の `status.version` (`+<コミット>` は見ない)、長さは標本の数 × `interval_secs`)、
+    # それも無ければ短くても停止の隣のもの
     if [ -z "$JUDGE_PROFILE" ]; then
       JUDGE_PROFILE=$(python3 scripts/collect_follow.py judge-profile "$JUDGE_BEFORE" "$DIR") || JUDGE_PROFILE=
     fi

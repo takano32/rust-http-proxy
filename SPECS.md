@@ -644,6 +644,16 @@ DNS キャッシュの TTL、期限前の引き直し、keep-warm、serve-stale�
   停止の 1 枚を組んで書くのは停止の後始末の頭で、手元で数 ms (後始末の上限は 3 秒)
 - 起動と停止の 1 枚を残すのは種類ごとに `PROXY_SNAPSHOT_DAYS` 日以内かつ新しい方から
   `PROXY_SNAPSHOT_DAYS` 枚まで (再起動を繰り返しても置き場所を埋めない)
+- **停止の 1 枚の隣の `/profile?res=60`** (T40.0): 停止の後始末で、状態ファイルを書いた後に `/profile?res=60` の
+  全部の標本を、停止の 1 枚と同じ時刻の `<YYYY-MM-DDTHHMMSSZ>-shutdown-profile.json` に書く。中身は `/profile?res=60` の
+  応答の形のままで (S22)、部の 256 KiB ではなく全体の上限 6 MiB で切るので、1,440 標本が入れば `offset=` で繋いだ 1 枚と
+  同じ標本が並び、`count` = `shown`・`truncated` は偽・`n` は 1,440・`next_offset` は `null`。入らなければ新しい方を残して
+  `truncated` が立つ。`/snapshots` の `moments[]` に種類 `shutdown-profile` で並び、`/snapshots/<name>` で**そのまま**返る。
+  残す決まりは起動と停止の 1 枚と同じ (種類ごとに `PROXY_SNAPSHOT_DAYS` 日・枚)。ディスクの予算・書かない設定も同じで、
+  `--lite` (`/profile` が無い) では書かない。締めの「前」の CPU の材料 (前の版の最後の 12 時間以上の `/profile?res=60`) を
+  デプロイ先のディスクに残すためのもので、`collect-deployed.sh --from-server` が `<時刻>-shutdown-profile_res_60.json` に
+  取り寄せ、`--closeout` が「前」の隣のものを `--profile-before` に選ぶ (12 時間に満たなければ、手元の前の版の
+  12 時間以上の `-profile_res_60.json`。どちらを選んだかを取り寄せの箇条に書く)
 
 ## S17 canary
 
@@ -840,7 +850,8 @@ DNS キャッシュの TTL、期限前の引き直し、keep-warm、serve-stale�
   - **CPU/要求** — 窓の CPU (utime + stime の増分) ÷ 窓の要求数。`scripts/cpu-per-request.sh` と同じ物差しの値が
     デプロイ先でも読める (`recent.cpu_per_request_us` は直近 5 分)
   - **ロック** — 統計の表・名前解決の表・預かり所・ワーカーの 4 つが「待たされた」回数と、待ち行列で待った件数 / 合計 ms / 最大 ms
-  - 記録はプロセスのメモリだけ (約 7.0 MB = 1 標本 3,240 B × (720 + 1,440)。T39.11 で `conn_split` の 24 B を足した。状態ファイルには書かない)。応答は 256 KiB 以下で、
+  - 記録はプロセスのメモリだけ (約 7.0 MB = 1 標本 3,240 B × (720 + 1,440)。T39.11 で `conn_split` の 24 B を足した。状態ファイルには書かない。
+    止めるときに `res=60` の全部を停止の 1 枚の隣に書く: S16 の「停止の 1 枚の隣の `/profile?res=60`」。T40.0)。応答は 256 KiB 以下で、
     入り切らないときは**新しい標本を残して**古い方から落とし `"truncated": true` を出す。**`--lite` では `{"profile":"off"}`**
   - **`?n=` と `?offset=` (T15.0)** — 応答の 256 KiB に対して標本 1 本の JSON の行が太いので、
     1 枚に全部の標本は入らない (入る本数の実測は `specs/HISTORY.md`。メモリの見積もりの 3,240 B は JSON の行の長さとは別の数)。

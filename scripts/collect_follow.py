@@ -26,7 +26,12 @@ def status_version(argv):
 
 
 def snapshot_list(argv):
-    """標準入力の `/snapshots` の一覧を、1 行 1 枚 (`<日付> <バイト数> <置く名前>`) にする。名前は形を確かめてから使う。"""
+    """標準入力の `/snapshots` の一覧を、1 行 1 枚 (`<日付> <バイト数> <置く名前>`) にする。名前は形を確かめてから使う。
+
+    停止の 1 枚の隣の `/profile?res=60` (`<時刻>-shutdown-profile`。T40.0) は `<時刻>-shutdown-profile_res_60.json` に置く
+    (停止の 1 枚 `<時刻>-shutdown-snapshot.json` の `-snapshot.json` を `-profile_res_60.json` にした名前で、
+    普段の 1 回が隣に置く `/profile?res=60` と同じ流儀)。
+    """
     try:
         d = json.load(sys.stdin)
     except ValueError:
@@ -39,6 +44,8 @@ def snapshot_list(argv):
         name = str(m.get("name"))
         if re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{6}Z-(start|shutdown)", name):
             print(name, m.get("bytes", 0), name + "-snapshot.json")
+        elif re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{6}Z-shutdown-profile", name):
+            print(name, m.get("bytes", 0), name + "_res_60.json")
 
 
 def pick(argv):
@@ -138,6 +145,9 @@ def pick(argv):
             tag = "**前 (BEFORE)**" if m is before else "**0 時間 (ZERO)**" if m is zero else "外した: " + why.get(id(m), "")
             print("  - `%s` %s `%s`%s → %s" % (os.path.basename(m["path"]), m["kind"], m["ver"] or "?",
                   " boot.id `%s`" % m["boot"] if m["boot"] else "", tag))
+    if before:
+        # 前の CPU の材料 (`--profile-before`) の選び方 (T40.0)。本番の 1 回 (`judge-profile`) も同じ関数で選ぶ
+        print("- 前の CPU の材料 (`--profile-before`): " + choose_profile_before(before["path"], d)[1])
     if before and zero:
         print("- 締めの判定に渡せる 2 枚 (前と 0 時間): `BEFORE=%s ZERO=%s`" % (before["path"], zero["path"]))
     elif before:
@@ -397,9 +407,20 @@ def full_plan(argv):
             print("-", name, "この部に offset= はありません (1 枚ぶんだけです)")
 
 
-def judge_profile(argv):
-    """`BEFORE` と同じ版の、12 時間以上ある最後の `-profile_res_60.json` を選ぶ (T32.29)。"""
-    before, d = argv[1], argv[2]
+def profile_hours(path):
+    """`/profile?res=60` の 1 枚の長さ (時間。標本の数 × `interval_secs`)。読めなければ None。"""
+    try:
+        with open(path, encoding="utf-8") as f:
+            p = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(p, dict):
+        return None
+    return len(p.get("samples") or []) * (p.get("interval_secs") or 0) / 3600
+
+
+def local_long_profile(before, d):
+    """`BEFORE` と同じ版の、12 時間以上ある最後の `-profile_res_60.json` (T32.29)。無ければ None。"""
 
     def version(path):
         try:
@@ -416,14 +437,48 @@ def judge_profile(argv):
             m = re.match(r"^(\d{4}-\d{2}-\d{2}T\d{6}Z)-profile_res_60\.json$", name)
             if not m or version(os.path.join(d, m.group(1) + "-snapshot.json")) != want:
                 continue
-            try:
-                with open(os.path.join(d, name), encoding="utf-8") as f:
-                    p = json.load(f)
-            except (OSError, ValueError):
-                continue
-            if len(p.get("samples") or []) * (p.get("interval_secs") or 0) >= 12 * 3600:
-                print(os.path.join(d, name))
-                break
+            h = profile_hours(os.path.join(d, name))
+            if h is not None and h >= 12:
+                return os.path.join(d, name)
+    return None
+
+
+def choose_profile_before(before, d):
+    """締めの「前」(停止の 1 枚) に合わせる `--profile-before` と、選び方の説明 (T40.0)。
+
+    1. 前の停止の隣の `/profile?res=60` (`<時刻>-shutdown-profile_res_60.json`。プロキシが止めるときに書いたもの)
+       が 12 時間以上あればそれ
+    2. 無いか短ければ、手元の前の版の 12 時間以上の最後の `-profile_res_60.json` (T32.29)
+    3. それも無ければ、短くても停止の隣のもの
+    どれも無ければ (None, 説明)。
+    """
+    side = None
+    m = re.match(r"^(.*)-shutdown-snapshot\.json$", before)
+    if m and os.path.isfile(m.group(1) + "-shutdown-profile_res_60.json"):
+        side = m.group(1) + "-shutdown-profile_res_60.json"
+    side_h = profile_hours(side) if side else None
+    if side and side_h is not None and side_h >= 12:
+        return side, "前の停止の隣の `/profile?res=60` `%s` (%.1f 時間。T40.0) を選んだ" % (side, side_h)
+    local = local_long_profile(before, d)
+    if local:
+        if side:
+            why = "前の停止の隣の `/profile?res=60` は %.1f 時間しか無い" % (side_h or 0)
+        else:
+            why = "前の停止の隣の `/profile?res=60` は無い"
+        return local, "手元の前の版の 12 時間以上の最後の `%s` (%.1f 時間。T32.29) を選んだ (%s)" % (
+            local, profile_hours(local), why)
+    if side:
+        return side, ("前の停止の隣の `/profile?res=60` `%s` を選んだ (%.1f 時間で 12 時間に満たないが、"
+                      "手元にも前の版の 12 時間以上の `-profile_res_60.json` が無い)" % (side, side_h or 0))
+    return None, ("無い (前の停止の隣の `/profile?res=60` も、手元の前の版の 12 時間以上の "
+                  "`-profile_res_60.json` も無い。判定表は `--profile-before` 無しで読む)")
+
+
+def judge_profile(argv):
+    """`BEFORE` に合わせる `--profile-before` を選んで 1 行で出す (T32.29。T40.0 から停止の隣のものを先に見る)。"""
+    path, _ = choose_profile_before(argv[1], argv[2])
+    if path:
+        print(path)
 
 
 def dashboard_inputs(argv):

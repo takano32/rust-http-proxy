@@ -11,7 +11,9 @@
 //! 1. 起動の 1 枚は待ち時間 (試験では 1 秒) のあとに**1 回だけ**書かれ、一覧と取り寄せの口に出る
 //!    (60 秒待たないように `persist::set_baseline_after_secs` を差し替える。このバイナリだけ)
 //! 2. 実バイナリに SIGTERM を送ると停止の 1 枚が書かれ、起こし直すと一覧に出てそのまま読める。
-//!    停止にかかった時間も出す (後始末の上限 `signal::GRACE` = 3 秒の中)
+//!    停止にかかった時間も出す (後始末の上限 `signal::GRACE` = 3 秒の中)。
+//!    隣に同じ時刻の `-shutdown-profile` (`/profile?res=60` の全部。T40.0) も書かれ、一覧に種類
+//!    `shutdown-profile` で出て、`/snapshots/<名前>` でそのまま読める
 //!
 //! 「60 秒 → SIGTERM で 2 枚」を実バイナリで通したもの (と `snapshot-diff.py --criteria phase25`
 //! で読めること) は手で回した (コミットの本文)。
@@ -147,6 +149,14 @@ fn test_integration_sigterm_leaves_a_shutdown_snapshot() {
         .find(|l| l.contains("shutdown snapshot"))
         .unwrap_or_else(|| panic!("停止のスナップショットの行が無い: {:#?}", lines));
     println!("T28.20 {}", logged);
+    // 隣の `/profile?res=60` (T40.0): 同じ時刻の名前で、状態ファイルの後に書く
+    let profiles = moments(&snaps, "shutdown-profile");
+    assert_eq!(profiles, [format!("{}-profile", name)], "{:#?}", lines);
+    let logged = lines
+        .iter()
+        .find(|l| l.contains("shutdown profile"))
+        .unwrap_or_else(|| panic!("停止の隣の /profile の行が無い: {:#?}", lines));
+    println!("T40.0 {}", logged);
     // 後始末が終わったことの行 (状態ファイルも書けている = スナップショットが後始末の時間を食い潰していない)
     assert!(
         lines.iter().any(|l| l.contains("statistics saved to")),
@@ -175,6 +185,27 @@ fn test_integration_sigterm_leaves_a_shutdown_snapshot() {
     assert_eq!(
         endpoint_json(proxy.port, &format!("/snapshots/{}", name)),
         body
+    );
+    // 隣の `/profile?res=60` も一覧に出て、そのまま読める。中身は `/profile?res=60` の形で、標本を全部持つ
+    let prof_name = &profiles[0];
+    assert!(
+        list.contains(&format!(
+            "{{\"name\":\"{}\",\"kind\":\"shutdown-profile\"",
+            prof_name
+        )),
+        "{}",
+        list
+    );
+    let prof = std::fs::read_to_string(snaps.join(format!("{}.json", prof_name))).unwrap();
+    assert_eq!(
+        endpoint_json(proxy.port, &format!("/snapshots/{}", prof_name)),
+        prof
+    );
+    assert!(prof.contains("\"interval_secs\":60,"), "{}", prof);
+    assert!(
+        prof.contains("\"truncated\":false,\"n\":1440,\"offset\":0,\"next_offset\":null}"),
+        "{}",
+        prof
     );
     // 読めない名前は 404 (置き場所の外は見ない)
     for bad in [

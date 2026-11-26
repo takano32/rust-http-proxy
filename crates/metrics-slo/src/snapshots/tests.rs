@@ -205,6 +205,10 @@ fn moment_names_round_trip_and_bad_names_are_refused() {
         "2026-10-25T203134Z-shutdown"
     );
     assert_eq!(moment_name(t, Moment::Start), "2026-10-25T203134Z-start");
+    assert_eq!(
+        moment_name(t, Moment::ShutdownProfile),
+        "2026-10-25T203134Z-shutdown-profile"
+    );
     for m in Moment::ALL {
         assert_eq!(parse_moment(&moment_name(t, m)), Some((t, m)));
     }
@@ -228,8 +232,10 @@ fn moment_names_round_trip_and_bad_names_are_refused() {
     fs::create_dir_all(&dir).unwrap();
     for name in [
         "2026-10-25T203134Z-shutdown.json",
+        "2026-10-25T203134Z-shutdown-profile.json",
         "2026-10-24T010203Z-start.json",
         "2026-10-25.json",
+        "2026-10-25T203134Z-profile_res_60.json",
         "2026-10-25T203134Z-shutdown.json.tmp",
         "2026-10-25T203134Z-snapshot.json",
     ] {
@@ -238,7 +244,11 @@ fn moment_names_round_trip_and_bad_names_are_refused() {
     let names: Vec<String> = existing_moments(&dir).into_iter().map(|m| m.0).collect();
     assert_eq!(
         names,
-        ["2026-10-24T010203Z-start", "2026-10-25T203134Z-shutdown"]
+        [
+            "2026-10-24T010203Z-start",
+            "2026-10-25T203134Z-shutdown",
+            "2026-10-25T203134Z-shutdown-profile"
+        ]
     );
     assert_eq!(dates(&dir), vec!["2026-10-25"]);
     let _ = fs::remove_dir_all(&dir);
@@ -265,6 +275,9 @@ fn moments_are_written_and_pruned_by_kind() {
             format!("{}.json", moment_name(t, Moment::Shutdown))
         );
         written.push(moment_name(t, Moment::Shutdown));
+        // 隣の `/profile?res=60` も同じ時刻で (T40.0)。数え方は種類ごとなので停止の 1 枚を消さない
+        w.write_moment(t, Moment::ShutdownProfile, body, roomy)
+            .expect("停止の隣の /profile");
     }
     // 起動を同じ時刻に 4 回 (日数では消えず、枚数の 3 で 1 枚消える)
     for i in 0..4 {
@@ -282,9 +295,16 @@ fn moments_are_written_and_pruned_by_kind() {
         .collect();
     // 最後に書いた時刻 (base + 4 日) から 3 日以内 = 1・2・3・4 日目のうち新しい 3 枚
     assert_eq!(shutdowns, [&written[2], &written[3], &written[4]]);
+    // 停止の隣の `/profile?res=60` も同じ決まりで、残るのは残った停止の 1 枚の隣だけ (T40.0)
+    let profiles: Vec<String> = left
+        .iter()
+        .filter(|(_, m)| *m == Moment::ShutdownProfile)
+        .map(|(n, _)| n.trim_end_matches("-profile").to_string())
+        .collect();
+    assert_eq!(profiles, written[2..]);
     assert_eq!(left.iter().filter(|(_, m)| *m == Moment::Start).count(), 3);
     assert_eq!(dates(&dir), vec![day_name(20_700)], "日次の 1 枚はそのまま");
-    assert_eq!(w.moments_written(), 9);
+    assert_eq!(w.moments_written(), 14);
     // 予算を越えるなら書かない (日次と同じ判定)
     let _g = crate::events::TEST_LOCK.locked();
     let tight = |_: &Path| (Some(1024 * 1024), 1024 * 1024);
@@ -322,7 +342,10 @@ fn the_global_writer_records_and_reads_back() {
     configure(None, DEFAULT_DAYS);
     assert_eq!(take_shutdown(&cache), None);
     assert_eq!(take_start_if_due(&cache, true), None);
+    assert_eq!(take_shutdown_profile(&cache, None), None);
     configure(Some(dir.clone()), DEFAULT_DAYS);
+    // `/profile?res=60` の組み方を預かっていなければ隣の 1 枚は書かない (T40.0)
+    assert_eq!(take_shutdown_profile(&cache, None), None);
     // 起動の 1 枚: 待ち時間の前は書かず、たったら 1 回だけ (`recent` は全部入れる方。T38.7)
     assert_eq!(take_start_if_due(&cache, false), None);
     let start = take_start_if_due(&cache, true).expect("起動の 1 枚");
@@ -339,16 +362,45 @@ fn the_global_writer_records_and_reads_back() {
             .unwrap()
             .contains("\"recent_max\":6291456")
     );
+    // 停止の 1 枚の隣に `/profile?res=60` の全部 (T40.0): 名前の時刻は停止の 1 枚と同じで、上限は 6 MiB
+    set_profile_builder(Box::new(|limit| {
+        Some(format!("{{\"interval_secs\":60,\"limit\":{}}}", limit))
+    }));
+    let prof = take_shutdown_profile(&cache, Some(&stop)).expect("停止の隣の /profile");
+    let stem = |p: &Path| p.file_stem().unwrap().to_string_lossy().into_owned();
+    assert_eq!(
+        stem(&prof),
+        format!("{}-profile", stem(&stop)),
+        "停止の 1 枚と同じ時刻"
+    );
+    assert!(
+        fs::read_to_string(&prof)
+            .unwrap()
+            .contains("\"limit\":6291456")
+    );
+    // `/profile` の無い設定 (`--lite`) では組まないので書かない
+    set_profile_builder(Box::new(|_| None));
+    assert_eq!(take_shutdown_profile(&cache, None), None);
     let l = list();
     assert!(l.files.is_empty(), "日次の一覧には混ぜない");
     let kinds: Vec<Moment> = l.moments.iter().map(|m| m.kind).collect();
     assert!(kinds.contains(&Moment::Start) && kinds.contains(&Moment::Shutdown));
+    assert!(kinds.contains(&Moment::ShutdownProfile));
+    assert_eq!(
+        read(&stem(&prof)).unwrap(),
+        fs::read_to_string(&prof).unwrap()
+    );
     assert_eq!(l.moments_bytes, l.moments.iter().map(|m| m.bytes).sum());
     for m in &l.moments {
         assert!(parse_moment(&m.name).is_some(), "{}", m.name);
-        assert!(read(&m.name).unwrap().contains("\"taken_at\""));
+        let key = if m.kind == Moment::ShutdownProfile {
+            "\"interval_secs\""
+        } else {
+            "\"taken_at\""
+        };
+        assert!(read(&m.name).unwrap().contains(key), "{}", m.name);
     }
-    for p in [&start, &stop] {
+    for p in [&start, &stop, &prof] {
         fs::remove_file(p).unwrap();
     }
     let base = 20_600 * DAY;

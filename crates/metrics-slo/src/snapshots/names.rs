@@ -1,7 +1,8 @@
 //! スナップショットのファイル名の往復 (`snapshots` の一部。T34.2 で `snapshots.rs` から移した)。
 //!
 //! 日次の 1 枚は `YYYY-MM-DD` ([`day_name`] ↔ [`day_of`])、起動と停止の 1 枚は
-//! `<YYYY-MM-DDTHHMMSSZ>-start|shutdown` ([`moment_name`] ↔ [`parse_moment`])。
+//! `<YYYY-MM-DDTHHMMSSZ>-start|shutdown` ([`moment_name`] ↔ [`parse_moment`])。停止の 1 枚の隣に書く
+//! `/profile?res=60` の全部 (T40.0) は `<YYYY-MM-DDTHHMMSSZ>-shutdown-profile`。
 //! `/snapshots/<名前>` はここを通った文字列しかファイル名に使わない (`..` や `/` を書かれても
 //! 置き場所の外へ出ない)。**時計もディスクも触らない純粋な関数**だけ。
 //!
@@ -58,16 +59,20 @@ pub enum Moment {
     Start,
     /// 停止シグナルで状態ファイルを書く前 (締めの「前」)
     Shutdown,
+    /// 停止の 1 枚の隣に書く `/profile?res=60` の全部の標本 (締めの「前」の CPU の材料。T40.0)。
+    /// 名前の時刻は隣の停止の 1 枚と同じ
+    ShutdownProfile,
 }
 
 impl Moment {
-    pub(crate) const ALL: [Moment; 2] = [Moment::Start, Moment::Shutdown];
+    pub(crate) const ALL: [Moment; 3] = [Moment::Start, Moment::Shutdown, Moment::ShutdownProfile];
 
     /// 名前の終わりと `/snapshots` の `kind` に出す綴り。
     pub fn name(self) -> &'static str {
         match self {
             Moment::Start => "start",
             Moment::Shutdown => "shutdown",
+            Moment::ShutdownProfile => "shutdown-profile",
         }
     }
 }
@@ -89,7 +94,7 @@ pub(crate) fn moment_name(t: u64, m: Moment) -> String {
     )
 }
 
-/// `<YYYY-MM-DDTHHMMSSZ>-start|shutdown` として読めれば (撮った時刻, 種類)。
+/// `<YYYY-MM-DDTHHMMSSZ>-start|shutdown|shutdown-profile` として読めれば (撮った時刻, 種類)。
 ///
 /// `/snapshots/<名前>` はこれ (か [`is_date`]) を通った文字列しかファイル名に使わない
 /// (`..` や `/` を書かれても置き場所の外へ出ない)。
