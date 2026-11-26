@@ -48,6 +48,7 @@ SKIP = [
     ("scripts/check-words.py", None, "この検査そのもの (使わない言葉を書いている)"),
     (".github/workflows/*.yml", None,
      "コメントだけ。このセッションの push の鍵は workflow のファイルを書き換えられない (GitHub が `workflow` の権限の無い鍵を断る。T39.10)。"
+     "GitHub のツール (API) での書き込みも同じ権限が無くて断られた (T40.3)。"
      "利用者が手元から置き換えたら、この行を外す"),
     ("docs/measurements.md", None,
      "「デプロイ先の現在地の古い版」以下は、`TODO.md` の現在地から 1 文字も変えずに移した昔の記録 (T39.12 で残した 44 行はどれもこの節)"),
