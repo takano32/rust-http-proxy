@@ -15,7 +15,8 @@
 #   `t37.py`         T37 の行 (T37.1)
 #   `t38.py`         T38 の行 (T38.0・T38.1)
 #   `t39.py`         T39 の行 (T39.9)
-#   `rules.py`       閾の辞書 (`PHASE14`〜`T39_TH`)・`CRITERIA`・`FROZEN`・`RULES` (Phase の順に組む)
+#   `t40.py`         T40 の行 (T40.4)
+#   `rules.py`       閾の辞書 (`PHASE14`〜`T40_TH`)・`CRITERIA`・`FROZEN`・`RULES` (Phase の順に組む)
 # ここに残っているのは、`RULES` の行を順に呼ぶ `judge()` と、判定表の印字 (`render_criteria()`) だけ。
 #
 # 小物までこちら側にあるのは、`snapshot-diff.py` は名前に `-` があって `import` できないため
@@ -92,9 +93,12 @@ from criteria.t38 import (  # noqa: E402,F401
 from criteria.t39 import (  # noqa: E402,F401
     CONN_PRICE_MIN_HOURS, _t39_conn_priced, conn_hours, cross_index, fit_price, self_spread,
 )
+from criteria.t40 import (  # noqa: E402,F401
+    CONN_DAY_BAND_MAX, DAY_BAND_EVIDENCE, _t40_conn_priced, conn_priced_index,
+)
 from criteria.rules import (  # noqa: E402,F401
     CRITERIA, FROZEN, PHASE14, PHASE15, PHASE17, PHASE18, PHASE20, PHASE21, PHASE22, PHASE23, PHASE24,
-    PHASE25, PHASE26, PHASE27, PHASE28, PHASE29, PHASE30, T35_TH, T36_TH, T37_TH, T38_TH, T39_TH, RULES,
+    PHASE25, PHASE26, PHASE27, PHASE28, PHASE29, PHASE30, T35_TH, T36_TH, T37_TH, T38_TH, T39_TH, T40_TH, RULES,
     CRITERIA_ALIASES, criteria_name,
 )
 
@@ -341,6 +345,19 @@ INTRO = {
             "が、値付けし合った比は要求の量が変わっても 2 つの向きがそろいます (0.37.8 の締めで 1.19・1.16、0.38.10 の締めで"
             "0.65・0.61)。値段・決定係数・ぶれ・中継の秒/時と、T38 の読み方 (1 本あたりと要求の量) は表示だけです。"
             "ほかの 26 行は T38 と同じです。"),
+    # T40.4。T39 の 27 行のうち、`conn` 役の CPU を値付けし合う行に、同じ版の日ごとのぶれの帯を入れる
+    "T40": ("1〜27 行の並びと材料は T39 と同じです。直したのは 1 行 (T40.4): 5 行目の `conn` 役の CPU を値付けし合う行に、"
+            "**同じ版の日ごとのぶれの帯**を入れました。値付けし合った比 (機械の速さの物差しで割ったあと。計算は T39 のまま) が"
+            "前の版の 1.1 倍未満なら「満たした」、1.1 倍以上 1.3 倍以下なら「判定できず」(同じ版の日ごとのぶれの内)、"
+            "1.3 倍を越えたら「届かず」です。同じ版 0.39.13 の 2 つの 24 時間 (2026-11-24 と 2026-11-26 の `/profile?res=60`) を"
+            "比べると、同じバイナリなのに 0.80 倍、前と後を入れ替えると 1.25 倍でした (入れ替えた向きは T39 の読み方では"
+            "届かず。T39 の行が「同じ版の中のぶれ」として見ているのは 1 枚の中のぶれ (最大 1.11 倍) で、日をまたぐぶれを"
+            "見ていなかった。値段を決める回帰の決定係数は -0.02 と 0.45)。暇なときの費用の行は同じ 2 日で 1.00 倍と安定"
+            "しているので、帯を入れるのはこの行だけです。T39 の「前と後の 1 枚をそれぞれ半分ずつ・1 時間おきに割って"
+            "値付けし合った比のいちばん大きい外れの内なら判定できず」と、材料が足りないときの判定できずはそのまま残します "
+            "(帯より広いぶれが 1 枚の中に出ていれば、1.3 倍を越えていても判定できず)。"
+            "値段・決定係数・ぶれ・中継の秒/時と、T38 の読み方 (1 本あたりと要求の量) は表示だけです。"
+            "ほかの 26 行は T39 と同じです。"),
 }
 
 

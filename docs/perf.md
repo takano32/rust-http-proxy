@@ -167,7 +167,7 @@ CONNECT (`/clients` の起動からの通算と、`/recent` の窓の中の数)�
 要点の CPU の表の末尾には **`conn` 役の CPU の内訳** (`/profile` の `conn_split`: 要求・中継・空き。S22) の 1 行が付きます (T40.1):
 3 つの秒と割合、要求の分 ÷ その窓の要求の数 (us/要求)。材料は 24 時間ぶんの `/profile?res=60` (`snapshot-summary.py --profile`。
 `collect-deployed.sh` がスナップショットの隣に置いた `-profile_res_60.json` を渡します) があればそちら、無ければスナップショットの `/profile` の部
-(1 時間ぶん) で、どちらを使ったかと窓の長さを行に書きます。**表示だけで、判定には使いません** (判定表の `conn` 役の CPU の行は T39 のまま):
+(1 時間ぶん) で、どちらを使ったかと窓の長さを行に書きます。**表示だけで、判定には使いません** (判定表の `conn` 役の CPU の行は、T39 の値付けし合う読み方に T40 で同じ版の日ごとのぶれの帯を足したもの):
 us/要求 は、同じ版 0.39.13 の 24 時間 2 つ (2026-11-24 と 2026-11-26) で 65.5 → 32.9 と 2 倍ぶれました。CPU の読みは 10 ms 刻みで、
 1 秒に 1 回見た接続の状態で振り分けるためです (3 つの合計は 16.55 → 15.64 秒の 0.95 倍で、安定しています)。`conn_split` の無い版 (0.39.11 より前) では行ごと出ません。
 
@@ -203,6 +203,8 @@ scripts/snapshot-diff.py a.json b.json --criteria phase15 --daily b-daily.json
 # `/profile?res=60` もスナップショットに入らないので渡す (無ければスナップショットの `/profile` の部で「参考」)
 scripts/snapshot-diff.py a.json b.json --criteria phase17 --daily b-daily.json \
                          --profile b-profile_res_60.json   # 前も比べるなら --profile-before FILE
+# 2 枚は**取得の古い順に並べ直され**、`--profile` は新しい方、`--profile-before` は古い方に付く (引数の順ではない)。
+# 前と後を入れ替えた比を見たくて 4 つの引数を入れ替えても、`/profile` だけが入れ替わった組になる (T40.4)
 # phase18 の 10 行 (phase17 の 8 行 + `heap_used + mmap` の 0 時間のスナップショットからの増えが 5 MB 未満・
 # `ipv6.request_probes` が 0)。0 時間のスナップショット (再デプロイの直後の 1 枚) は `--zero` で渡す (無ければ「判定できず」)。
 # `--daily-snapshots DIR` は、DIR の日次のスナップショット (`<日付>T000000Z-snapshot.json`) のうち b と同じ版のものを
@@ -247,7 +249,7 @@ scripts/snapshot-diff.py a.json b.json --criteria phase22 --daily b-daily.json \
 # (死んだ名前の総当たりという使われ方の数字なので表示だけ)。heap の行は、`--zero` のスナップショットと起動が
 # 違うときに `/events` の `start` の時刻を添える (黙って「判定できず」にしない。2026-10-17 22:14:52Z の
 # 無言の再起動がこれで読める)。最後の行は無言の再起動 (`/events` の `start` の直前に `shutdown` が無い起動)
-# が 0 回 (T23.2)。**古い定義を出し直すときは `CRITERIA=phase23` を渡す** (collect-deployed.sh の既定は T39)
+# が 0 回 (T23.2)。**古い定義を出し直すときは `CRITERIA=phase23` を渡す** (collect-deployed.sh の既定は T40)
 scripts/snapshot-diff.py a.json b.json --criteria phase23 --daily b-daily.json \
                          --profile b-profile_res_60.json --profile-before a-profile_res_60.json \
                          --zero zero.json --daily-snapshots status
@@ -314,7 +316,7 @@ scripts/snapshot-diff.py a.json b.json --criteria phase30 --daily b-daily.json \
 scripts/snapshot-diff.py a.json b.json --criteria T35 --daily b-daily.json \
                          --profile b-profile_res_60.json --profile-before a-profile_res_60.json \
                          --zero zero.json --daily-snapshots status
-# T36 (T36.1・T36.2・T36.3。`collect-deployed.sh` の既定) は T35 の 26 行のうち heap の行を、キャッシュの持ち物に加えて名前解決の表の
+# T36 (T36.1・T36.2・T36.3) は T35 の 26 行のうち heap の行を、キャッシュの持ち物に加えて名前解決の表の
 # 持ち物 (`/status` の `dns.entries` × 1 名前あたり 1,070 B) も引いた残りで読むもの。表は上限 4,096 名前で止まる増えで、
 # 1 名前あたりの大きさは実バイナリの表を埋めて `/status` の `memory` を前後で読んで測った (答えのある名前 1,060 B・
 # 答えの無い名前 1,137 B・tokyo に似せた 2 対 1 の混ぜで 1,069 B)。`dns.entries` の無いスナップショットは 0〜上限ぶんの幅で引く。
@@ -422,6 +424,7 @@ CONNECT 確立 p50 8.3 / p95 80.7 ms、ミス 1 回 11.5 ms) が出ることを�
 T16.99 の数字 (`conn` 役 0.0013 コア、`dns_warm_max` 15、`warm_evicted` 0、`dns_slow` 0.61 件/時) が出ることを見ています
 (T17.16。名前は番号が前後で合わないので、`discord.com` を見張る行は「判定できず」になります)。
 `scripts/testdata/deployed-2026-11-26-profile_res_60.anon.json` (1.4 MiB。T40.1) は **0.39.13 の `/profile?res=60` の 24 時間ぶん** (2026-11-26、1,440 標本。`conn_split` のある版) だけの写しです (CPU の標本だけで、接続元も宛先も入っていません。スナップショットは入れていません)。要点の `conn` 役の内訳の行の試験 (要求 0.59 秒・中継 9.09 秒・空き 5.96 秒、要求 17,932 本) と、0.40.0 の締めの「前」の CPU の材料 (`PROFILE_BEFORE`) に使います。
+`scripts/testdata/deployed-2026-11-24-profile_res_60.anon.json` (1.4 MiB。T40.4) は、同じ版 0.39.13 の**もう 1 日** (2026-11-24、1,440 標本) の写しです。隣の `deployed-2026-11-24-history_dns.json` と `deployed-2026-11-26-history_dns.json` (3.4 KiB ずつ) は、その日のスナップショットの `/history` から、判定表の `conn` 役の CPU を値付けし合う行が読む数字 (名前解決の失敗の数 = `errors_by_cause` の `dns`。`res=60` の 1,440 標本と `res=3600` の最後の 72 標本) だけを抜いたものです (スナップショットそのものは入れていません)。この 4 つで、**同じ版の 2 日をどちらの向きで比べても、判定表 `T40` の値付けし合う行が届かずにならない**ことを見ています (2026-11-24 → 2026-11-26 は 0.799 倍で満たした、前と後を入れ替えると 1.251 倍で、同じ版の日ごとのぶれの帯 1.1〜1.3 倍の内の判定できず。`T39` の読み方では届かず。T40.4)。
 
 **いまの数字は 2026-11-24、tokyo (`tokyo.sorahost.net:60357`) に 0.39.13 をデプロイして 48 時間の実測**です ([`docs/status.md`](status.md) の「デプロイ先の現在地」と同じ版。
 `scripts/check-docs.sh` のいまの数字の版の検査が見ます。T32.28)。出どころはスナップショット 1 枚 (`VIA=$HTTPS_PROXY scripts/collect-deployed.sh --closeout tokyo.sorahost.net:60357 status/tokyo`

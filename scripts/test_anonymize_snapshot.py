@@ -9,7 +9,8 @@
 (`testdata/deployed-2026-09-16.anon.json` と T17.16 の `deployed-2026-09-26.anon.json`) に元の名前が残っていないことも見る
 (実データそのものはリポジトリに入れないので、突き合わせは作った人が 1 回やる。ここでは
 「匿名化済みの形になっているか」だけを見る)。T40.1 で入れた `/profile?res=60` だけの写し
-(`deployed-2026-11-26-profile_res_60.anon.json`) も同じ見方で見る。
+(`deployed-2026-11-26-profile_res_60.anon.json`) と、同じ版の 2 日目の写し (`deployed-2026-11-24-…`。T40.4) も
+同じ見方で見る。
 """
 
 import io
@@ -32,6 +33,8 @@ FIXTURE_0926_SIDES = tuple(os.path.join(DATA, "deployed-2026-09-26-{}.anon.json"
                            for n in ("daily", "profile_res_60"))
 # T40.1 の写し: 0.39.13 の 24 時間ぶんの `/profile?res=60` (`conn_split` のある版。スナップショットは入れていない)
 FIXTURE_1126_PROFILE = os.path.join(DATA, "deployed-2026-11-26-profile_res_60.anon.json")
+# 同じ版の 2 日目 (2026-11-24) の写し (T40.4。判定表 T40 の、同じ版の日ごとのぶれの試験の材料)
+FIXTURE_1124_PROFILE = os.path.join(DATA, "deployed-2026-11-24-profile_res_60.anon.json")
 # 文書用の範囲 (置き換え先) と、ループバック・未指定 (`0.0.0.0`) は残ってよい IP
 ALLOWED_NETS = tuple(ipaddress.ip_network(n) for n in (
     "198.51.100.0/24", "203.0.113.0/24", "192.0.2.0/24", "198.18.0.0/15", "2001:db8::/32",
@@ -663,17 +666,23 @@ class Fixture0926(FixtureNames, unittest.TestCase):
         self.assertEqual(self.snap["status"]["total_requests"], 114325)
 
 
-class Fixture1126Profile(unittest.TestCase):
-    """T40.1 で入れた 0.39.13 の `/profile?res=60` (2026-11-26 の 24 時間ぶん、1,440 標本) の匿名の写し。
+class ProfileCopy:
+    """0.39.13 の `/profile?res=60` (24 時間ぶん、1,440 標本) の匿名の写しの形 (T40.1。T40.4 で 2 日ぶんに当てられるよう割った)。
 
     `/profile` は CPU の標本だけで、接続元も宛先も入っていない (匿名化しても中身は同じ)。生の写しはリポジトリに
     無いので、ここでは**名前や番地が紛れていれば必ず残る形が、ファイルのどこにも無い**ことを見る。
-    無ければ飛ばさずに落とす (0.40.0 の締めの「前」の CPU の材料でもある)。
+    無ければ飛ばさずに落とす。
+
+    `unittest.TestCase` を継がない (これ自身は回らない)。下の 2 つが `PATH` と `THREADS` を決めて継ぐ。
     """
+
+    PATH = None
+    # 標本の上位スレッドの名前 (`threads_top` の `comm`) のうち、役割の名前でないもの
+    THREADS = set()
 
     @classmethod
     def setUpClass(cls):
-        with open(FIXTURE_1126_PROFILE, encoding="utf-8") as f:
+        with open(cls.PATH, encoding="utf-8") as f:
             cls.text = f.read()
         cls.body = json.loads(cls.text)
 
@@ -697,8 +706,7 @@ class Fixture1126Profile(unittest.TestCase):
         # 1,440 標本の中の文字列は上位スレッドの名前 (`threads_top` の `comm`) だけで、役割と同じ名前か、本体が
         # スレッドに付ける決まった名前 (名前の読めなかったスレッドは空)。点の無い名前が紛れてもここで落ちる
         in_samples = {value for _key, value in strings(self.body["samples"])}
-        self.assertEqual(in_samples - set(self.body["roles"]),
-                         {"canary", "dns-resolve", "env-reload", "rust-http-proxy", ""})
+        self.assertEqual(in_samples - set(self.body["roles"]), self.THREADS)
 
     def test_no_address_hides_among_the_numbers(self):
         # 数字の並びの中にも番地らしい形 (点で区切った 4 つの数) は無い。小数は `recent.cpu_per_request_us` の 1 つだけ
@@ -713,7 +721,30 @@ class Fixture1126Profile(unittest.TestCase):
         self.assertEqual((b["interval_secs"], len(b["samples"]), b["count"], b["truncated"], b["next_offset"]),
                          (60, 1440, 1440, False, None))
         self.assertEqual(b["conn_split"], ["request", "relay", "idle"])
-        self.assertLess(os.path.getsize(FIXTURE_1126_PROFILE), 2 << 20)
+        self.assertLess(os.path.getsize(self.PATH), 2 << 20)
+
+
+class Fixture1126Profile(ProfileCopy, unittest.TestCase):
+    """T40.1 で入れた 2026-11-26 の写し (0.40.0 の締めの「前」の CPU の材料でもある)。"""
+
+    PATH = FIXTURE_1126_PROFILE
+    THREADS = {"canary", "dns-resolve", "env-reload", "rust-http-proxy", ""}
+
+
+class Fixture1124Profile(ProfileCopy, unittest.TestCase):
+    """同じ版の 2 日目 (2026-11-24) の写し (T40.4)。この 24 時間は `dns-resolve` のスレッドが上位に入っていない。"""
+
+    PATH = FIXTURE_1124_PROFILE
+    THREADS = {"canary", "env-reload", "rust-http-proxy", ""}
+
+    def test_it_is_another_day_of_the_same_shape_as_the_first_copy(self):
+        with open(FIXTURE_1126_PROFILE, encoding="utf-8") as f:
+            other = json.load(f)
+        for key in ("keys", "roles", "stages", "states", "conn_split", "interval_secs", "schema"):
+            self.assertEqual(self.body[key], other[key], key)
+        ti = self.body["keys"].index("t")
+        # 2 日目の最後の標本は、1 日目の最初の標本より前 (窓が重ならない別の 24 時間)
+        self.assertLess(self.body["samples"][-1][ti], other["samples"][0][ti])
 
 
 @unittest.skipUnless(os.path.isfile(os.path.join(DATA, "snapshot-local.json")),

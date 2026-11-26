@@ -13,50 +13,18 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _criteria_testing import (  # noqa: E402
-    Criteria29Parts,
+    Criteria39Parts,
     sc,
     sd,
 )
 
-STAGES = ["queue", "client_read", "dns", "connect", "first_relay", "relay", "park"]
-# 1 時間ごとの要求と中継の揺れ (2 つが比例しないように別の並び)
-REQ_WAVE = [1.0, 1.4, 0.7, 1.2, 0.9, 1.5, 0.6, 1.1]
-RELAY_WAVE = [1.0, 0.8, 1.3, 0.6, 1.5, 1.1, 0.9, 1.2]
+# `/profile?res=60` の作り物 (`profile`・`snap`・`c`) は T40 の試験も使うので、`_criteria_testing.py` の
+# `Criteria39Parts` に出した (T40.4。中身は同じ)
+STAGES, REQ_WAVE, RELAY_WAVE = Criteria39Parts.STAGES, Criteria39Parts.REQ_WAVE, Criteria39Parts.RELAY_WAVE
 
 
-class Criteria39ConnPriced(unittest.TestCase):
+class Criteria39ConnPriced(Criteria39Parts, unittest.TestCase):
     """`--criteria T39` (T39.9): `conn` 役の CPU を、名前解決に成功した要求と中継の時間で値付けし合って読む。"""
-
-    T0 = Criteria29Parts.T0
-
-    def profile(self, req=30, relay=60.0, us_req=1000, us_relay=50, hours=24, history_us=4800, wobble=None,
-                stages=STAGES):
-        """`/profile?res=60` の作り物。`conn` 役の CPU = `us_req` × 名前解決に成功した要求 (要求の 6 割) + `us_relay` ×
-        中継の秒。要求と中継の秒は 1 分あたりの `req`・`relay` を時間ごとに `REQ_WAVE`・`RELAY_WAVE` で揺らす。
-        `wobble` は時間ごとの CPU に掛ける並び (同じ版の中のぶれ)。物差しの `history` 役は `history_us` / 60 us/秒。"""
-        roles = ["accept", "conn", "profile-sample", "other", "history"]
-        rows = []
-        for i in range(int(hours * 60)):
-            h = i // 60
-            q = round(req * REQ_WAVE[h % len(REQ_WAVE)])
-            secs = relay * RELAY_WAVE[h % len(RELAY_WAVE)]
-            conn = (us_req * q * 0.6 + us_relay * secs) * (wobble[h % len(wobble)] if wobble else 1)
-            threads = [[1000, 60, []], [conn, 120, []], [10000, 60, []], [30000, 300, []], [history_us, 60, []]]
-            connect = [0] * len(stages)
-            if "relay" in stages:
-                connect[stages.index("relay")] = [5, round(secs * 1000), 9000, []]
-            rows.append([self.T0 + 60 * i, q, 1000 + conn + 44800, threads, connect])
-        return {"interval_secs": 60, "keys": ["t", "requests", "cpu_us", "threads", "connect"], "roles": roles,
-                "stages": {"connect": stages, "forward": []}, "samples": rows}
-
-    def snap(self, p):
-        """名前解決の失敗が要求の 4 割になる `/history?res=3600` を添えたスナップショット。"""
-        total = sum(r[1] for r in p["samples"])
-        hours = len(p["samples"]) // 60
-        return Criteria29Parts.snap(self, p, round(total * 0.4 / hours))
-
-    def c(self, pa, pb):
-        return {"a": self.snap(pa), "b": self.snap(pb)}
 
     def row(self, c):
         return sc._t39_conn_priced(c, sc.T39_TH)

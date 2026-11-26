@@ -36,7 +36,7 @@
 #   6. その間の出来事 (`/events`。無い版では飛ばす)
 #   7. エラーの原因別の件数 (`/hosts` の `errors_by_cause` の差分と `/errors` の個票)
 #   8. バーストの写真 (`/bursts`。無ければ `/history` から山の数だけ出す)
-#   9. `--criteria phase14|phase15|phase17|phase18|phase20|phase21|phase22|phase23|phase24|phase25|phase26|phase27|phase28|phase29|phase30|T35|T36|T37|T38|T39` で **Phase の完了の定義に対する判定表**
+#   9. `--criteria phase14|phase15|phase17|phase18|phase20|phase21|phase22|phase23|phase24|phase25|phase26|phase27|phase28|phase29|phase30|T35|T36|T37|T38|T39|T40` で **Phase の完了の定義に対する判定表**
 #      (満たした / 届かず / 判定できず)。判定の 1 行 = 1 つの関数で、`RULES` に並べてある
 #      (**判定の部は `scripts/snapshot_criteria.py`**。T20.1 で割った)
 #      (T15.0。**材料の部がスナップショットに無ければ「判定できず」**で、0 とは書かない)。
@@ -1579,7 +1579,10 @@ def parser():
                         "宛先を外したもの。T38.0・T38.1。"
                         "T39 = T38 の 27 行のうち `conn` 役の CPU の行を、名前解決に成功した要求と中継の時間 (connect の段の "
                         "`relay`) で前と後の値段を 1 時間ごとに決め、互いの仕事を値付けし合った比で読むもの (同じ版の中の"
-                        "ぶれの内なら判定できず)。T39.9)")
+                        "ぶれの内なら判定できず)。T39.9。"
+                        "T40 = T39 の 27 行のうち `conn` 役の CPU を値付けし合う行に、同じ版の日ごとのぶれの帯を入れたもの "
+                        "(値付けし合った比が前の版の 1.1 倍未満なら満たした、1.1 倍以上 1.3 倍以下なら判定できず、1.3 倍を"
+                        "越えたら届かず。同じ版の中のぶれ (1 枚の中) の内も判定できず)。T40.4)")
     p.add_argument("--out", choices=["md", "json"], default="md", help="出力の形 (既定 md)")
     p.add_argument("--top", type=int, default=20, metavar="N", help="各表に出す行数 (既定 20)")
     p.add_argument("--burst-median-k", type=int, default=None, metavar="K",
