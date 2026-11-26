@@ -414,6 +414,136 @@ class Cpu(unittest.TestCase):
         self.assertNotIn("| 使用 |", md)
 
 
+# T40.1 の材料: 0.39.13 の 24 時間ぶんの `/profile?res=60` (1,440 標本。`conn_split` のある版) の匿名の写しと、
+# `conn_split` の無い版の同じ口 (T17.16 の 2026-09-26)。
+# **1126 の写しは無ければ飛ばさずに落とす** (0.40.0 の締めの「前」の CPU の材料でもある。`collect-deployed.sh` の `PROFILE_BEFORE`)
+PROFILE_1126 = os.path.join(DATA, "deployed-2026-11-26-profile_res_60.anon.json")
+PROFILE_0926 = os.path.join(DATA, "deployed-2026-09-26-profile_res_60.anon.json")
+
+
+def with_conn_split(snap, splits=((30000, 150000, 60000), (20000, 140000, 70000), (40000, 160000, 50000))):
+    """`/profile` の部に `conn_split` (T39.11。頭の名前と、標本の末尾の `[request, relay, idle]` の us) を足した写し。
+
+    既定の 3 行は、B の 3 標本の `conn` 役の CPU (240 / 230 / 250 ms) をそれぞれ 3 つに分けたもの。
+    """
+    out = json.loads(json.dumps(snap))
+    p = out["profile"]
+    p["conn_split"] = ["request", "relay", "idle"]
+    p["keys"] = p["keys"] + ["conn_split"]
+    for row, split in zip(p["samples"], splits):
+        row.append(list(split))
+    return out
+
+
+class ConnSplit(unittest.TestCase):
+    """CPU の表の末尾の `conn` 役の内訳の行 (`/profile` の `conn_split`。T40.1)。表示だけで、判定には使わない。"""
+
+    HEAD = "| `conn` 役の内訳 (`conn_split`) | "
+    NOTE = " (**ぶれが大きいので判定には使わない**: 同じ版の 24 時間 2 つで 2 倍違った。T40.1) |"
+
+    def row(self, md):
+        rows = [x for x in md.splitlines() if x.startswith(self.HEAD)]
+        self.assertEqual(len(rows), 1, md)
+        return rows[0]
+
+    def test_the_24_hours_of_0_39_13_come_from_the_profile_file(self):
+        """材料は `--profile` (24 時間ぶんの `/profile?res=60`) があればそちら。どちらを使ったかと窓の長さを書く。
+
+        数字は 0.39.13 の 2026-11-26 の 24 時間 (要求 0.59 秒・中継 9.09 秒・空き 5.96 秒、要求 17,932 本)。
+        同じ版の 2 日前の 24 時間は 要求 1.12 秒 ÷ 17,089 本 = 65.5 us/要求 で、us/要求 は 2 倍ぶれた (合計は
+        16.55 → 15.64 秒)。だから行に「判定には使わない」と書く。
+        """
+        md = run([B, "--profile", PROFILE_1126])
+        row = self.row(md)
+        self.assertEqual(row, self.HEAD + "要求 0.59 秒 (3.8%)・中継 9.09 秒 (58.1%)・空き 5.96 秒 (38.1%)、"
+                         "計 15.64 秒 (`--profile` の `/profile?res=60` 1,440 標本 × 60 秒 = 24.0 時間)。"
+                         "要求の分 ÷ 窓の要求 17,932 本 = 32.9 us/要求" + self.NOTE)
+        # CPU の表のいちばん下 (「走れずに待った」の次で、表はそこで終わる)。ほかの行は `--profile` で変わらない
+        lines = md.splitlines()
+        at = lines.index(row)
+        self.assertTrue(lines[at - 1].startswith("| 走れずに待った (`run_delay_us`) | "), lines[at - 1])
+        self.assertEqual(lines[at + 1], "")
+        self.assertEqual(lines[:at] + lines[at + 1:], run([B]).splitlines())
+
+    def test_the_split_of_the_fixture_adds_up_to_the_conn_role(self):
+        """`conn_split` の 3 つの和は `threads` の `conn` の `cpu_us` と同じ (S22)。写しの 24 時間は 15.64 秒。"""
+        p = read(PROFILE_1126)
+        got = ss.conn_split_totals(p)
+        self.assertEqual(got, {"names": ["request", "relay", "idle"], "us": [590000, 9090000, 5960000],
+                               "requests": 17932, "samples": 1440, "interval_secs": 60, "secs": 86400})
+        ti, ri = p["keys"].index("threads"), p["roles"].index("conn")
+        conn = sum(row[ti][ri][0] for row in p["samples"] if row[ti] and row[ti][ri])
+        self.assertEqual(sum(got["us"]), conn)
+
+    def test_without_the_profile_file_the_part_of_the_snapshot_is_used(self):
+        with written(b=with_conn_split(read(B))) as paths:
+            md = run([paths["b"]])
+        self.assertEqual(self.row(md), self.HEAD + "要求 0.09 秒 (12.5%)・中継 0.45 秒 (62.5%)・空き 0.18 秒 (25.0%)、"
+                         "計 0.72 秒 (スナップショットの `/profile` の部 3 標本 × 60 秒 = 3.0 分)。"
+                         "要求の分 ÷ 窓の要求 9 本 = 10,000.0 us/要求" + self.NOTE)
+
+    def test_a_version_without_the_split_has_no_row(self):
+        """`conn_split` の無い版 (0.39.11 より前) では行ごと出さない。`--profile` を渡しても、そこにも無ければ同じ。"""
+        md = run([B])
+        self.assertIn("| 走れずに待った (`run_delay_us`) | ", md)
+        self.assertNotIn("conn_split", md)
+        self.assertEqual(run([B, "--profile", PROFILE_0926]), md)
+
+    def test_a_profile_file_without_the_split_falls_back_to_the_snapshot(self):
+        with written(b=with_conn_split(read(B))) as paths:
+            md = run([paths["b"], "--profile", PROFILE_0926])
+        self.assertIn("計 0.72 秒 (スナップショットの `/profile` の部 3 標本 × 60 秒 = 3.0 分)。", self.row(md))
+
+    def test_a_window_without_requests_has_no_per_request_figure(self):
+        b = with_conn_split(read(B))
+        for row in b["profile"]["samples"]:
+            row[b["profile"]["keys"].index("requests")] = 0
+        with written(b=b) as paths:
+            row = self.row(run([paths["b"]]))
+        self.assertTrue(row.endswith("= 3.0 分)。窓の要求が 0 本なので us/要求 は出さない |"), row)
+
+    def test_a_window_without_cpu_has_no_shares(self):
+        """標本取りを止めた設定 (`PROXY_PROFILE_SAMPLE_MS=0`) では `conn_split` は 0 (S22)。割合は出さない (0 で割らない)。"""
+        with written(b=with_conn_split(read(B), [(0, 0, 0)] * 3)) as paths:
+            row = self.row(run([paths["b"]]))
+        self.assertIn(self.HEAD + "要求 0.00 秒・中継 0.00 秒・空き 0.00 秒、計 0.00 秒 (スナップショットの `/profile` の部 ", row)
+        self.assertIn("要求の分 ÷ 窓の要求 9 本 = 0.0 us/要求", row)
+
+    def test_the_row_alone_is_enough_for_the_table(self):
+        """スナップショットに `/profile` も `kernel` も無くても (A)、`--profile` に内訳があれば表はその 1 行で出す。"""
+        self.assertNotIn("| CPU | 値 |", run([A]))
+        lines = run([A, "--profile", PROFILE_1126]).splitlines()
+        at = lines.index("| CPU | 値 |")
+        self.assertEqual(lines[at + 1], "|---|---|")
+        self.assertTrue(lines[at + 2].startswith(self.HEAD + "要求 0.59 秒 (3.8%)・"), lines[at + 2])
+        self.assertEqual(lines[at + 3], "")
+
+    def test_the_columns_are_found_by_name(self):
+        """位置ではなく `keys` と頭の `conn_split` の名前で引く。知らない名前はそのまま出す。"""
+        p = {"interval_secs": 5, "conn_split": ["idle", "request", "later"],
+             "keys": ["conn_split", "t", "requests"],
+             "samples": [[[100, 300, 50], 10, 2], [[0, 700, 50], 15, 3], [0, 20, 9], [None]]}
+        got = ss.conn_split_totals(p)
+        # 内訳の入っていない標本 (列が `0` や `null`) は、要求の数にも窓の長さにも数えない
+        self.assertEqual((got["us"], got["requests"], got["samples"], got["secs"]), ([100, 1000, 100], 5, 2, 10))
+        row = ss.conn_split_line({}, p)
+        self.assertIn("空き 0.00 秒 (8.3%)・要求 0.00 秒 (83.3%)・later 0.00 秒 (8.3%)、計 0.00 秒 ", row)
+        self.assertIn(" 2 標本 × 5 秒 = 0.2 分)。要求の分 ÷ 窓の要求 5 本 = 200.0 us/要求", row)
+
+    def test_missing_pieces_give_no_totals(self):
+        base = {"interval_secs": 60, "conn_split": ["request", "relay", "idle"],
+                "keys": ["t", "requests", "conn_split"], "samples": [[1, 2, [3, 4, 5]]]}
+        self.assertEqual(ss.conn_split_totals(base)["us"], [3, 4, 5])
+        for broken in ({**base, "conn_split": None}, {**base, "keys": ["t", "requests"]},
+                       {**base, "samples": []}, {**base, "samples": [[1, 2]]}, {}, None, []):
+            self.assertIsNone(ss.conn_split_totals(broken), broken)
+        self.assertIsNone(ss.conn_split_line({}, None))
+
+    def test_the_span_is_in_hours_or_minutes(self):
+        self.assertEqual([ss.span_text(s) for s in (86400, 3600, 3599, 180, 0)],
+                         ["24.0 時間", "1.0 時間", "60.0 分", "3.0 分", "0.0 分"])
+
+
 class MissKinds(unittest.TestCase):
     """名前解決のミスの種類別と引き直しの様子 (T15.0)。"""
 

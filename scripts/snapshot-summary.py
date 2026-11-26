@@ -33,7 +33,14 @@
 #   T28.18 の形に戻る。0.28.48 の日次 `2026-10-26` は 4 MiB の 88% だった)。`--size-check FILE...` は
 #   この 1 行だけを並べる (`collect-deployed.sh --from-server` が取り寄せたスナップショットに使う)
 #
+# **T40.1 で足した行** (CPU の表の末尾): `conn` 役の CPU の内訳 (要求・中継・空き。`/profile` の `conn_split`。T39.11)
+#   を秒と割合で、要求の分 ÷ その窓の要求の数 (us/要求) を添えて。**表示だけ** (判定表は変えない)。材料は
+#   `--profile` (24 時間ぶんの `/profile?res=60`。`collect-deployed.sh` がスナップショットの隣に置く
+#   `-profile_res_60.json`) があればそちら、無ければスナップショットの `/profile` の部で、どちらを使ったかと
+#   窓の長さを行に書く。`conn_split` の無い版 (0.39.11 より前) では行ごと出さない
+#
 # 使い方: scripts/snapshot-summary.py SNAP.json [--prev PREV.json] [--status-before STATUS.json]
+#                                     [--profile PROFILE60.json]
 #         scripts/snapshot-summary.py --size-check FILE [FILE ...]
 # 依存は Python 3 の標準ライブラリだけ (このリポジトリの方針どおり外部パッケージを使わない)。
 
@@ -67,6 +74,8 @@ SIZE_WARN = 0.90
 # キャッシュの命中率を出す母数の下限 (1 日あたりの命中 + ミス。T29.19)
 HIT_RATIO_MIN_PER_DAY = 100
 DEFAULT_LIMIT_BYTES = 4 * 1024 * 1024
+# `conn` 役の CPU の内訳の名前 (`/profile` の頭の `conn_split`。T39.11) の読み方 (T40.1)。知らない名前はそのまま出す
+CONN_SPLIT_LABELS = {"request": "要求", "relay": "中継", "idle": "空き"}
 
 
 # 包みを開かずに読む (`proxydata.load_json`。T34.134 で寄せた)
@@ -352,6 +361,82 @@ def profile_totals(snap):
 def cores(cpu_us, secs):
     """CPU の us と窓の秒から「何コアぶん」か (窓が 0 秒なら None)。"""
     return (cpu_us / 1e6 / secs) if secs else None
+
+
+def conn_split_totals(p):
+    """`/profile` の JSON 1 つから、`conn` 役の CPU の内訳 (`conn_split`。T39.11) の合計を出す (T40.1)。
+
+    標本の `conn_split` の列は `[request, relay, idle]` の us で、並びの名前は頭の `conn_split`
+    (`crates/endpoints/src/endpoints/profile.rs`)。**位置ではなく `keys` と頭の名前で引く**。
+    `conn_split` の無い版 (0.39.11 より前) と、その列の入った標本が 1 本も無いときは None (呼ぶ側が行ごと出さない)。
+    要求の数と窓の長さは、内訳と同じ標本だけで数える (内訳の us を割る相手なので)。
+    """
+    if not isinstance(p, dict):
+        return None
+    names = p.get("conn_split")
+    keys = p.get("keys") or []
+    if not isinstance(names, list) or not names or "conn_split" not in keys:
+        return None
+    ci = keys.index("conn_split")
+    qi = keys.index("requests") if "requests" in keys else None
+    us, requests, samples = [0] * len(names), 0, 0
+    for r in p.get("samples") or []:
+        split = r[ci] if ci < len(r) else None
+        if not isinstance(split, list):
+            continue
+        samples += 1
+        for i, v in enumerate(split[:len(us)]):
+            us[i] += v or 0
+        if qi is not None and qi < len(r):
+            requests += r[qi] or 0
+    if not samples:
+        return None
+    interval = p.get("interval_secs") or 0
+    return {"names": names, "us": us, "requests": requests, "samples": samples,
+            "interval_secs": interval, "secs": samples * interval}
+
+
+def span_text(secs):
+    """窓の長さの書き方 (1 時間以上は時間、それより短ければ分)。"""
+    return f"{secs / 3600:.1f} 時間" if secs >= 3600 else f"{secs / 60:.1f} 分"
+
+
+def conn_split_line(d, profile60):
+    """CPU の表の `conn` 役の内訳の 1 行 (T40.1)。材料が無ければ None (行ごと出さない)。
+
+    材料は 24 時間ぶんの `/profile?res=60` (`--profile`。`collect-deployed.sh` がスナップショットの隣に置く
+    `-profile_res_60.json`) に `conn_split` があればそちら、無ければスナップショットの `/profile` の部
+    (5 秒の標本で 1 時間)。どちらを使ったかと窓の長さを行に書く。
+
+    **表示だけで、判定には使わない** (判定表の `conn` 役の CPU の行は T39 の値付けし合う読み方のまま)。
+    要求の分 ÷ 要求の数 は、同じ版 0.39.13 の 24 時間 2 つ (2026-11-24 と 2026-11-26 の `/profile?res=60`) で
+    65.5 → 32.9 us/要求 と 2 倍ぶれた。CPU の読みは 10 ms 刻みで、標本を取るスレッドが 1 秒に 1 回見た接続の
+    状態で振り分ける (S22) ので、1 秒より短い要求に使った CPU の行き先は、刻みが進んだ 1 秒の終わりにその
+    スレッドがまだ要求を持っていたかで決まる。3 つの合計 (= `conn` 役の CPU) は 16.55 → 15.64 秒 (0.95 倍) で
+    安定していた。
+    """
+    for p, src in ((profile60, "`--profile` の `/profile?res=60`"),
+                   (part(d, "profile"), "スナップショットの `/profile` の部")):
+        t = conn_split_totals(p)
+        if t:
+            break
+    else:
+        return None
+    total = sum(t["us"])
+    shown = "・".join(
+        f"{CONN_SPLIT_LABELS.get(name, name)} {us / 1e6:,.2f} 秒"
+        + (f" ({us / total * 100:.1f}%)" if total else "")
+        for name, us in zip(t["names"], t["us"]))
+    text = (f"{shown}、計 {total / 1e6:,.2f} 秒 ({src} {num(t['samples'])} 標本 × {t['interval_secs']} 秒"
+            f" = {span_text(t['secs'])})")
+    if "request" in t["names"]:
+        if t["requests"]:
+            per = t["us"][t["names"].index("request")] / t["requests"]
+            text += (f"。要求の分 ÷ 窓の要求 {num(t['requests'])} 本 = {per:,.1f} us/要求"
+                     " (**ぶれが大きいので判定には使わない**: 同じ版の 24 時間 2 つで 2 倍違った。T40.1)")
+        else:
+            text += "。窓の要求が 0 本なので us/要求 は出さない"
+    return f"| `conn` 役の内訳 (`conn_split`) | {text} |"
 
 
 def idle_tunnels(conns, edge=IDLE_TUNNEL_SECS):
@@ -736,14 +821,18 @@ def overall_lines(d, st, before, delta, reqs, secs, restarted):
     return out
 
 
-def cpu_lines(d, st):
-    """「CPU」の表 (`/profile` と cgroup のどちらも無い版では空)。"""
+def cpu_lines(d, st, profile60=None):
+    """「CPU」の表 (`/profile` と cgroup のどちらも無い版では空)。
+
+    `profile60` は `--profile` で渡された `/profile?res=60` (末尾の `conn` 役の内訳の行の材料。T40.1)。
+    """
     out = []
-    # CPU (割り当てに対する使用率・絞られた周期の割合・上位スレッド・走れずに待った時間)。
-    # **どちらの源も無い版では表ごと出さない** (T15.0)
+    # CPU (割り当てに対する使用率・絞られた周期の割合・上位スレッド・走れずに待った時間・`conn` 役の内訳)。
+    # **どの源も無い版では表ごと出さない** (T15.0)
     prof = profile_totals(d)
     cg = (st.get("kernel") or {}).get("cgroup_cpu") or {}
-    if prof or cg:
+    conn_row = conn_split_line(d, profile60)
+    if prof or cg or conn_row:
         out.append("| CPU | 値 |")
         out.append("|---|---|")
         if prof:
@@ -780,6 +869,9 @@ def cpu_lines(d, st):
             pairs = sorted(zip(prof["roles"], prof["run_delay_us"]), key=lambda kv: -kv[1])
             shown = "、".join(f"{r} {us / 1000:,.1f} ms" for r, us in pairs[:3] if us) or "—"
             out.append(f"| 走れずに待った (`run_delay_us`) | {shown} |")
+        # `conn` 役の CPU の内訳 (T40.1)。`conn_split` の無い版 (0.39.11 より前) では行ごと出さない
+        if conn_row:
+            out.append(conn_row)
         out.append("")
     return out
 
@@ -943,6 +1035,11 @@ def main(argv=None):
     # 取った `/status` を使う (T15.0。ほかの通算は 1 秒差で意味が変わらない)
     p.add_argument("--status-before", metavar="STATUS.json",
                    help="スナップショットの前に取った /status (**RSS だけ**こちらの値を使う)")
+    # `conn` 役の CPU の内訳 (T40.1) は、1 時間ぶんしか無いスナップショットの `/profile` の部より、24 時間ぶんの
+    # `/profile?res=60` で読む (`snapshot-diff.py --profile` と同じファイル)
+    p.add_argument("--profile", metavar="PROFILE60.json",
+                   help="/profile?res=60 の応答 (スナップショットの隣の -profile_res_60.json)。CPU の表の conn 役の内訳の行の材料 "
+                        "(無ければスナップショットの /profile の部で出す。T40.1)")
     args = p.parse_args(argv)
     if args.size_check:
         for path in args.size_check:
@@ -958,6 +1055,7 @@ def main(argv=None):
     d = load(args.snapshot)
     prev = load(args.prev) if args.prev else None
     before = load(args.status_before) if args.status_before else None
+    profile60 = load(args.profile) if args.profile else None
     if "parts" not in d:
         print("(これは /snapshot の JSON ではない)")
         return 1
@@ -978,7 +1076,7 @@ def main(argv=None):
     # 節ごとに行の list を作って、作ったそばから印字する (T34.132 で割った。印字の順と文は割る前と同じ)
     emit(head_lines(d, st, args.snapshot, window))
     emit(overall_lines(d, st, before, delta, reqs, secs, restarted))
-    emit(cpu_lines(d, st))
+    emit(cpu_lines(d, st, profile60))
     emit(dns_lines(st, pst, prev, restarted, reqs))
     emit(wait_lines(d))
     emit(error_lines(d, prev))

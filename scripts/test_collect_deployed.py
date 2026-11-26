@@ -2,17 +2,19 @@
 """`scripts/collect-deployed.sh` が `/profile?res=60` を `offset=` で追って 1 つに繋ぐ試験 (T17.0b) と、
 スナップショットの隣に匿名化した写しを置く試験 (T17.16)、判定表の相手を `BEFORE` / `ZERO` で渡す試験 (T18.2)、
 スナップショットの切れた `recent`・`hosts` を既定で追ってスナップショットに繋ぐ試験 (T22.5)、`--from-server` が締めの「前」と
-「0 時間」を版で選び、`--closeout` が 1 回で取り寄せ・本番・前提まで出す試験 (T29.26)。
+「0 時間」を版で選び、`--closeout` が 1 回で取り寄せ・本番・前提まで出す試験 (T29.26)、「前」の `/profile?res=60` を
+`PROFILE_BEFORE` で手で渡す試験と、繋いだ `/profile?res=60` を要点の `conn` 役の内訳の行に渡す試験 (T40.1)。
 
     python3 -m unittest discover -s scripts        # リポジトリの根から
 
 手元のプロキシは標本を 60 秒に 1 本しか作らず、環も保存されないので、起動して数分では
 1 枚 (256 KiB) に収まってしまい、続きを追う枝を通らない。そこで**プロキシの頁の切り方
 (`Profile::rows_within_page` と `next_offset`) を写した偽のサーバー**を 127.0.0.1 に立てて回す。
-標本の中身は架空 (時刻と詰め物だけ)。デプロイ先には行かない。
+標本の中身は架空 (時刻と詰め物だけ)。デプロイ先には行かない。`PROFILE_BEFORE` の試験の一部だけは、
+`scripts/testdata/` に入れた 0.39.13 の `/profile?res=60` の匿名の写し (T40.1) を手で渡すファイルとして読む。
 
 **この 1 本の試験は並べて回す** (T28.29。下の `load_tests`)。時間のほとんどは `collect-deployed.sh` を
-起こす 41 回 (1 回 0.6〜2 秒。中で `python3` と `curl` を合わせて 20 本ほど起こす) で、偽のサーバーを立てる
+起こす 81 回 (T40.1 の時点。1 回 0.6〜2 秒。中で `python3` と `curl` を合わせて 20 本ほど起こす) で、偽のサーバーを立てる
 のは数 ms なので、使い回しても縮まない。試験どうしは偽のサーバー・一時ディレクトリ・環境変数の
 写しをそれぞれ持ち、何も分け合わないので、`CPU の数` 本 (`COLLECT_TEST_JOBS` で変えられる。
 `1` で今までどおり 1 本ずつ) を同時に回し、結果は元の順に流し直す (`-v` の並びも同じ)。
@@ -31,10 +33,19 @@ from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
+import _testing
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 SCRIPT = os.path.join(HERE, "collect-deployed.sh")
 SNAPSHOT = os.path.join(HERE, "testdata", "snapshot-a.json")
 SNAPSHOT_B = os.path.join(HERE, "testdata", "snapshot-b.json")
+# T40.1 で入れた 0.39.13 の 24 時間ぶんの `/profile?res=60` の匿名の写し。**リポジトリの根からの相対パス**
+# (0.40.0 の締めで `PROFILE_BEFORE` に渡すときの書き方のまま) と、その長さ・標本の数・標本の時刻の端
+PROFILE_1126 = "scripts/testdata/deployed-2026-11-26-profile_res_60.anon.json"
+PROFILE_1126_NOTE = "24.0 時間、1,440 標本、標本は 2026-11-25 09:56Z 〜 2026-11-26 09:55Z"
+
+# `collect-deployed.sh` が呼ぶ Python の部 (手で渡された `/profile?res=60` が使えるかの見方だけ、関数を直に試す)
+cf = _testing.load("collect_follow", "collect_follow.py")
 
 KEYS = ["t", "requests", "cpu_us", "threads", "pad"]
 
@@ -45,10 +56,12 @@ BUDGET = 256 * 1024 - 4096
 class FakeProfile:
     """`/profile?res=60` の頁の切り方だけを写したもの。"""
 
-    def __init__(self, count, pad=800):
+    def __init__(self, count, pad=800, split=None):
         # 1 標本 ≈ 850 B (T16.99 の実測: 256 KiB に 308 標本)
-        # 並びは `keys` のとおり: 時刻・要求・プロセスの CPU (us)・役割ごとの `[cpu_us, 標本, 状態]`・詰め物
-        self.samples = [[1_000_000 + 60 * i, 10, 2000, [0, [500, 60, 0]], "x" * pad]
+        # 並びは `keys` のとおり: 時刻・要求・プロセスの CPU (us)・役割ごとの `[cpu_us, 標本, 状態]`・詰め物。
+        # `split` (`[request, relay, idle]` の us) を渡すと、T39.11 の `conn_split` の列と頭の名前も付ける
+        self.split = split
+        self.samples = [[1_000_000 + 60 * i, 10, 2000, [0, [500, 60, 0]], "x" * pad] + ([list(split)] if split else [])
                         for i in range(count)]
         self.busy_once = set()  # この offset の 1 回目は `busy` で断る
         self.grow_after_first = False  # 1 枚目のあとに新しい標本を 1 本足す (頁の間の重なり)
@@ -66,11 +79,11 @@ class FakeProfile:
         rows.reverse()
         shown = len(rows)
         nxt = offset + shown if offset + shown < total else None
-        return {
+        out = {
             "schema": 1,
             "interval_secs": 60,
             "roles": ["accept", "conn"],
-            "keys": KEYS,
+            "keys": KEYS + (["conn_split"] if self.split else []),
             "samples": rows,
             "count": total,
             "shown": shown,
@@ -79,6 +92,9 @@ class FakeProfile:
             "offset": offset,
             "next_offset": nxt,
         }
+        if self.split:
+            out["conn_split"] = ["request", "relay", "idle"]
+        return out
 
 
 def serve(profile, snapshot=SNAPSHOT):
@@ -131,6 +147,7 @@ class CollectProfileTest(unittest.TestCase):
                 json.dump(body, f)
         e = dict(os.environ, PROBE="0", DASHBOARD="0", DIFF="0", CRITERIA="off",
                  COLLECT_STAMP="2026-01-01T000000Z")
+        e.pop("PROFILE_BEFORE", None)   # 回す人の環境の `PROFILE_BEFORE` (T40.1) を前の材料にしない
         e.update(env)
         r = subprocess.run(
             [SCRIPT, "127.0.0.1:%d" % srv.server_address[1], d],
@@ -210,6 +227,22 @@ class CollectProfileTest(unittest.TestCase):
         self.assertIn("後: `--profile` 20 標本", out)
         self.assertNotIn("前: `--profile`", out)
 
+    def test_the_summary_reads_the_conn_split_of_the_joined_profile(self):
+        # T40.1: 繋いだ 24 時間ぶんの `-profile_res_60.json` は要点 (`snapshot-summary.py --profile`) にも渡り、CPU の表に
+        # `conn` 役の内訳の行が出る (偽のサーバーのスナップショットには `/profile` の部が無いので、材料は `--profile` だけ)
+        p = FakeProfile(1440, split=(100, 300, 100))
+        got, out = self.run_collect(p)
+        self.assertEqual(got["conn_split"], ["request", "relay", "idle"])    # 繋いでも頭の名前は残る
+        self.assertEqual(got["keys"], KEYS + ["conn_split"])
+        summary = out[out.index("## 要点"):out.index("## 前回との差分")]
+        self.assertIn("| `conn` 役の内訳 (`conn_split`) | 要求 0.14 秒 (20.0%)・中継 0.43 秒 (60.0%)・空き 0.14 秒 (20.0%)、"
+                      "計 0.72 秒 (`--profile` の `/profile?res=60` 1,440 標本 × 60 秒 = 24.0 時間)。"
+                      "要求の分 ÷ 窓の要求 14,400 本 = 10.0 us/要求 (**ぶれが大きいので判定には使わない**", summary)
+        # `conn_split` の無い版の `/profile?res=60` では、行は出ない
+        _, out = self.run_collect(FakeProfile(10))
+        self.assertIn("## 要点", out)
+        self.assertNotIn("conn_split", out)
+
 
 class CollectBeforeZeroTest(unittest.TestCase):
     """判定表の相手を `BEFORE`、0 時間のスナップショットを `ZERO` で渡す (T18.2)。
@@ -249,11 +282,15 @@ class CollectBeforeZeroTest(unittest.TestCase):
         files.setdefault(self.PREV, self.a)
         for name, body in files.items():
             with open(os.path.join(d, name), "w") as f:
-                json.dump(body, f)
+                # 文字列はそのまま書く (JSON として読めないファイルの試験。T40.1)
+                if isinstance(body, str):
+                    f.write(body)
+                else:
+                    json.dump(body, f)
         # 時刻は 00:00:00 にしない (いま撮る 1 枚が日次のスナップショットの名前になって、下の表に並んでしまう)
         e = dict(os.environ, PROBE="0", DASHBOARD="0", DIFF="1", ANON="0",
                  COLLECT_STAMP="2026-01-01T120000Z")
-        for name in ("CRITERIA", "BEFORE", "ZERO", "AAAA"):
+        for name in ("CRITERIA", "BEFORE", "ZERO", "AAAA", "PROFILE_BEFORE"):
             e.pop(name, None)
         if criteria:
             e["CRITERIA"] = criteria
@@ -449,6 +486,110 @@ class CollectBeforeZeroTest(unittest.TestCase):
         self.assertIn("(CRITERIA=off なので出していない)", off)
         _, nodiff, _ = self.run_collect(files={before: self.a}, BEFORE="{dir}/" + before, DIFF="0")
         self.assertIn("(前回のスナップショットが無いか DIFF=0 なので判定できない)", nodiff)
+
+    # --- 「前」の `/profile?res=60` を手で渡す口 (`PROFILE_BEFORE`。T40.1) ---------------------------------
+    # 前の版の 24 時間ぶんの `/profile?res=60` が手元の `status/` にしか無いと、コンテナが入れ替わったあとの締めで
+    # CPU の 2 行が判定できずになる (T39.99)。保存先の外に取ってあるファイルを渡せるようにした。
+    # 下の `GIVEN` は、道具が自分では選ばない名前 (`<時刻>-profile_res_60.json` の形でない)
+
+    GIVEN = "kept-profile.json"
+
+    def test_a_profile_given_by_hand_goes_before_the_one_next_to_before(self):
+        # `BEFORE` の隣に同じ時刻の `-profile_res_60.json` があっても、手で渡したものを判定表の `--profile-before` に使う
+        before = "2025-12-30T101010Z-snapshot.json"
+        d, out, err = self.run_collect(files={
+            before: self.a,
+            "2025-12-30T101010Z-profile_res_60.json": FakeProfile(50).page(0),
+            self.GIVEN: FakeProfile(70).page(0),
+        }, BEFORE="{dir}/" + before, PROFILE_BEFORE="{dir}/" + self.GIVEN)
+        # 頭の箇条に「手で渡された」と、長さ・標本の数・標本の時刻の端を書く (12 時間に満たなければそうも書く)
+        self.assertIn("- 前の `/profile?res=60` (`PROFILE_BEFORE`): 手で渡された `%s` (1.2 時間、70 標本、標本は "
+                      "1970-01-12 13:46Z 〜 1970-01-12 14:55Z。12 時間に満たない) を判定表の `--profile-before` に使う\n"
+                      % os.path.join(d, self.GIVEN), out)
+        tail = self.judged(out)
+        self.assertIn("前: `--profile` 70 標本", tail)
+        self.assertNotIn("50 標本", tail)
+        self.assertNotIn("PROFILE_BEFORE", err)
+
+    def test_a_profile_given_by_hand_is_used_without_before_too(self):
+        # `BEFORE` の無い普段の 1 回 (判定表の相手は直前の 1 枚) でも、前回の隣のものより先に使う
+        d, out, _ = self.run_collect(files={
+            "2025-12-31T120000Z-profile_res_60.json": FakeProfile(100).page(0),
+            self.GIVEN: FakeProfile(70).page(0),
+        }, PROFILE_BEFORE="{dir}/" + self.GIVEN)
+        self.assertIn("手で渡された `%s` (1.2 時間、70 標本、" % os.path.join(d, self.GIVEN), out)
+        tail = self.judged(out)
+        self.assertIn("前: `--profile` 70 標本", tail)
+        self.assertNotIn("100 標本", tail)
+
+    def test_a_profile_given_by_hand_goes_before_the_one_beside_the_shutdown(self):
+        # 「前」が停止の 1 枚で、その隣に 12 時間以上の `/profile?res=60` (T40.0) があっても、手で渡したものが先
+        before = "2025-12-30T101010Z-shutdown-snapshot.json"
+        _, out, _ = self.run_collect(files={
+            before: self.a,
+            "2025-12-30T101010Z-shutdown-profile_res_60.json": FakeProfile(1440, pad=0).page(0),
+            self.GIVEN: FakeProfile(800, pad=0).page(0),
+        }, BEFORE="{dir}/" + before, PROFILE_BEFORE="{dir}/" + self.GIVEN)
+        self.assertIn("(13.3 時間、800 標本、標本は 1970-01-12 13:46Z 〜 1970-01-13 03:05Z) を判定表の `--profile-before` に使う\n", out)
+        self.assertIn("前: `--profile` 800 標本", self.judged(out))
+
+    def test_a_profile_given_by_hand_that_cannot_be_used_is_told(self):
+        # 渡されたファイルが無い・読めないときは黙って無視しない: 頭の箇条と標準エラーで知らせて、渡されなかったときと
+        # 同じに選ぶ (ここでは `BEFORE` の隣のもの)
+        before = "2025-12-30T101010Z-snapshot.json"
+        for body, why in ((None, "ファイルが無い"), ("{", "JSON として読めない"),
+                          (FakeProfile(0).page(0), "標本が 1 本も無い")):
+            with self.subTest(why=why):
+                files = {before: self.a, "2025-12-30T101010Z-profile_res_60.json": FakeProfile(50).page(0)}
+                if body is not None:
+                    files[self.GIVEN] = body
+                d, out, err = self.run_collect(files=files, BEFORE="{dir}/" + before,
+                                               PROFILE_BEFORE="{dir}/" + self.GIVEN)
+                path = os.path.join(d, self.GIVEN)
+                self.assertIn("- **`PROFILE_BEFORE` の `/profile?res=60` が使えない**: `%s` (%s。判定表の "
+                              "`--profile-before` は渡されなかったときと同じに選ぶ)\n" % (path, why), out)
+                self.assertIn("PROFILE_BEFORE=%s is not a usable /profile?res=60 JSON" % path, err)
+                self.assertNotIn("手で渡された", out)
+                self.assertIn("前: `--profile` 50 標本", self.judged(out))
+
+
+class GivenProfileTest(unittest.TestCase):
+    """手で渡された「前」の `/profile?res=60` (`PROFILE_BEFORE`。T40.1) が使えるかの見方 (`collect_follow.py` の `given_profile`)。
+
+    返すのは `(使えるか, 長さ・標本の数・標本の時刻の端か、使えない理由)`。`collect-deployed.sh` はこれをそのまま箇条に出す。
+    """
+
+    def check(self, body):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "p.json")
+            if body is not None:
+                with open(path, "w") as f:
+                    f.write(body if isinstance(body, str) else json.dumps(body))
+            return cf.given_profile(path)
+
+    def test_what_can_be_used(self):
+        self.assertEqual(self.check(FakeProfile(70).page(0)),
+                         (True, "1.2 時間、70 標本、標本は 1970-01-12 13:46Z 〜 1970-01-12 14:55Z。12 時間に満たない"))
+        # ちょうど 12 時間 (判定表の CPU の行が要る長さ) なら、満たないとは書かない
+        self.assertEqual(self.check(FakeProfile(720, pad=0).page(0)),
+                         (True, "12.0 時間、720 標本、標本は 1970-01-12 13:46Z 〜 1970-01-13 01:45Z"))
+        # 標本に時刻の列が無ければ、端は書かない
+        self.assertEqual(self.check({"interval_secs": 60, "keys": ["requests"], "samples": [[1]] * 720}),
+                         (True, "12.0 時間、720 標本"))
+
+    def test_the_committed_copy_of_0_39_13(self):
+        # 0.40.0 の締めで `PROFILE_BEFORE` に渡す写し (T40.1 で `scripts/testdata/` に入れた)
+        self.assertEqual(cf.given_profile(os.path.join(HERE, "..", PROFILE_1126)), (True, PROFILE_1126_NOTE))
+
+    def test_what_cannot_be_used_and_why(self):
+        shape = "`/profile` の応答の形でない (`samples` と `interval_secs` が要る)"
+        for body, why in ((None, "ファイルが無い"), ("{", "JSON として読めない"), ("", "JSON として読めない"),
+                          ([1, 2], shape), ({"parts": ["status"], "status": {}}, shape),
+                          ({"samples": [[1]], "interval_secs": 0}, shape), ({"samples": [[1]]}, shape),
+                          ({"samples": {"a": 1}, "interval_secs": 60}, shape),
+                          (FakeProfile(0).page(0), "標本が 1 本も無い")):
+            with self.subTest(body=body):
+                self.assertEqual(self.check(body), (False, why))
 
 
 
@@ -983,13 +1124,16 @@ class CollectFromServerTest(unittest.TestCase):
         self.addCleanup(srv.shutdown)
         return srv
 
-    def run_from_server(self, listing, d=None, versions=None, pad=None, extra=None):
+    def run_from_server(self, listing, d=None, versions=None, pad=None, extra=None, **env):
         srv = self.serve(listing, versions, pad=pad, extra=extra)
         if d is None:
             d = tempfile.mkdtemp(prefix="t2820-")
             self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
+        e = dict(os.environ)
+        e.pop("PROFILE_BEFORE", None)   # 回す人の環境の `PROFILE_BEFORE` (T40.1) で選び方の箇条を変えない
+        e.update(env)
         r = subprocess.run([SCRIPT, "--from-server", "127.0.0.1:%d" % srv.server_address[1], d],
-                           capture_output=True, text=True, timeout=60)
+                           env=e, capture_output=True, text=True, timeout=60)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         return d, r.stdout
 
@@ -1089,7 +1233,7 @@ class CollectFromServerTest(unittest.TestCase):
     def run_closeout(self, d, live, **env):
         srv = self.serve(self.t2899_listing(), self.t2899_versions(), live=live)
         e = dict(os.environ, PROBE="0", DASHBOARD="0", DIFF="0", ANON="0", CRITERIA="off")
-        for name in ("BEFORE", "ZERO", "COLLECT_STAMP", "VIA", "FULL"):
+        for name in ("BEFORE", "ZERO", "COLLECT_STAMP", "VIA", "FULL", "PROFILE_BEFORE"):
             e.pop(name, None)
         e.update(env)
         r = subprocess.run([SCRIPT, "--closeout", "127.0.0.1:%d" % srv.server_address[1], d],
@@ -1185,6 +1329,48 @@ class CollectFromServerTest(unittest.TestCase):
         self.assertIn("- 判定表の相手 (`BEFORE`): `%s`" % mine, out)
         self.assertIn("`BEFORE` は渡されたもの (`%s`) を使う" % mine, out)
         self.assertIn("- 0 時間のスナップショット (`ZERO`): `%s/2026-10-25T212745Z-start-snapshot.json`" % d, out)
+
+    def test_from_server_writes_a_profile_given_by_hand_in_the_choice(self):
+        # T40.1: `PROFILE_BEFORE` で手で渡されていれば、「前の CPU の材料」の箇条は「手で渡された」と書き、道具が選ぶはず
+        # だったものを添える (比べられるように)。相対パスはリポジトリの根から (`scripts/testdata/` の写しをそのまま渡せる)
+        choice = "- 前の CPU の材料 (`--profile-before`): "
+        given = "手で渡された `%s` (%s。`PROFILE_BEFORE`。T40.1) を使う " % (PROFILE_1126, PROFILE_1126_NOTE)
+        _, out = self.run_from_server(self.t2899_listing(), versions=self.t2899_versions(), PROFILE_BEFORE=PROFILE_1126)
+        self.assertIn(choice + given + "(道具が選ぶのは 無し)\n", out)
+        # 停止の隣に `/profile?res=60` (T40.0) があれば、それが道具の選ぶもの
+        listing = self.t2899_listing()
+        side = "2026-10-25T203134Z-shutdown-profile"
+        listing["moments"].append({"name": side, "kind": "shutdown-profile", "bytes": 10, "t": 9})
+        d, out = self.run_from_server(listing, versions=self.t2899_versions(),
+                                      extra={side: FakeProfile(1440, pad=0).page(0)}, PROFILE_BEFORE=PROFILE_1126)
+        self.assertIn(choice + given + "(道具が選ぶのは `%s`)\n" % os.path.join(d, side + "_res_60.json"), out)
+        # 使えないものは理由を書いて (黙って無視しない)、渡されなかったときと同じ選び方を続けて書く
+        _, out = self.run_from_server(self.t2899_listing(), versions=self.t2899_versions(),
+                                      PROFILE_BEFORE="nowhere/profile.json")
+        self.assertIn(choice + "**`PROFILE_BEFORE` で手で渡された `nowhere/profile.json` は使えない** (ファイルが無い)。"
+                      "渡されなかったときと同じに選ぶ: 無い (前の停止の隣の `/profile?res=60` も、手元の前の版の 12 時間以上の "
+                      "`-profile_res_60.json` も無い。判定表は `--profile-before` 無しで読む。"
+                      "別の置き場に取ってあれば `PROFILE_BEFORE=<ファイル>` で手で渡せる)\n", out)
+
+    def test_closeout_uses_a_profile_given_by_hand(self):
+        # T40.1: 0.40.0 の締めの形。前の版の 24 時間ぶんの `/profile?res=60` は手元の保存先に無く (コンテナが入れ替わると
+        # `status/` ごと消える)、`scripts/testdata/` に入れた匿名の写しを `PROFILE_BEFORE` で渡す。取り寄せの箇条にも
+        # 本番の頭の箇条にも「手で渡された」と出て、判定表の「前」の材料になる
+        d = tempfile.mkdtemp(prefix="t401-")
+        self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
+        # 起動と停止の 1 枚を、偽のサーバーの「いまのスナップショット」(2026-09-10 に撮った形) より前の日付にする
+        # (`snapshot-diff.py` は 2 枚のうち古い方を「前」にする)
+        self.T2899 = [(name.replace("2026-10-", "2026-08-"), ver, boot, pid) for name, ver, boot, pid in self.T2899]
+        out = self.run_closeout(d, {"schema": 1, "version": "0.28.48+c0ffee1"}, DIFF="1", CRITERIA="phase18",
+                                PROFILE_BEFORE=PROFILE_1126)
+        self.assertIn("- 前の CPU の材料 (`--profile-before`): 手で渡された `%s` (%s。`PROFILE_BEFORE`。T40.1) を使う "
+                      "(道具が選ぶのは 無し)\n" % (PROFILE_1126, PROFILE_1126_NOTE), out)
+        self.assertIn("- 前の `/profile?res=60` (`PROFILE_BEFORE`): 手で渡された `%s` (%s) を判定表の `--profile-before` に使う\n"
+                      % (PROFILE_1126, PROFILE_1126_NOTE), out)
+        self.assertEqual(out.count("手で渡された"), 2, out)
+        tail = out[out.index("## 完了の定義に対する判定"):]
+        self.assertIn("相手は `BEFORE` のスナップショット `%s/2026-08-25T203134Z-shutdown-snapshot.json` です" % d, tail)
+        self.assertIn("前: `--profile` 1440 標本 (24.0 時間、要求 17,932 本)", tail)
 
     def test_without_a_start_after_the_last_shutdown_only_before_is_offered(self):
         listing = self.listing()

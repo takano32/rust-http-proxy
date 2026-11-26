@@ -129,6 +129,7 @@ scripts/collect-deployed.sh tokyo.sorahost.net:60357 status/tokyo > today.md   #
 PROBE=0 scripts/collect-deployed.sh tokyo.sorahost.net:60357 status/tokyo      # 本物の要求を送らずに取る
 scripts/collect-deployed.sh --from-server tokyo.sorahost.net:60357 status/tokyo  # 回し忘れた日を取り寄せる
 scripts/collect-deployed.sh --closeout tokyo.sorahost.net:60357 status/tokyo     # 締め: 取り寄せ → 前と 0 時間を版で選ぶ → 本番 → 前提 (T29.26)
+PROFILE_BEFORE=scripts/testdata/deployed-2026-11-26-profile_res_60.anon.json scripts/collect-deployed.sh --closeout tokyo.sorahost.net:60357 status/tokyo  # 前の版の `/profile?res=60` を手で渡す (T40.1)
 scripts/collect-deployed.sh --full tokyo.sorahost.net:60357 status/tokyo       # 切れた部の続きも `offset=` で追う
 scripts/collect-deployed.sh --no-follow tokyo.sorahost.net:60357 status/tokyo  # 切れた `recent`・`hosts`・`dns`・`profile` を追わない (T22.5 より前の既定)
 VIA=$HTTPS_PROXY scripts/collect-deployed.sh tokyo.sorahost.net:60357 status/tokyo  # CONNECT しか通さないプロキシの内側 (クラウドのセッション) から。探りは飛ばす (T27.2)
@@ -146,6 +147,13 @@ scripts/status-diff.py status/*-snapshot.json --group domain  # eTLD+1 でまと
 `DIR/<UTC 時刻>-shutdown-snapshot.json` / `-start-snapshot.json` に置き、**最後の停止とその後の最初の起動**を
 `BEFORE=… ZERO=…` の形で 1 行出します (締めの「前」と「0 時間」を撮り忘れても、再デプロイのあとにこれで埋まります)。
 
+**前の版の `/profile?res=60` は `PROFILE_BEFORE=<ファイル>` で手で渡せます** (T40.1)。締めの CPU の 2 行 (`conn` 役の CPU を値付けし合う行と、
+暇なときの裏の役割の行) は、前の版の 12 時間以上の `/profile?res=60` が要ります。0.40.0 からは止めるときにプロキシが書き残したもの
+(S16 の「停止の 1 枚の隣の `/profile?res=60`」) を `--closeout` が選びますが、それより前の版は書き残さないので、手元の `status/` に取ってあった
+写しがコンテナの入れ替えで消えると、2 行とも判定できずになります (0.39.13 の締めがそうでした。T39.99)。渡したファイルは、`--closeout` でも普段の 1 回でも
+判定表の `--profile-before` になり (隣のものや道具が選ぶものより先)、要約の頭の箇条に「手で渡された」と長さ・標本の数・標本の時刻の端が出ます。
+ファイルが無い・JSON として読めない・`/profile` の応答の形でない・標本が無いときは、要約の頭と標準エラーで知らせて、渡されなかったときと同じに選びます。
+
 要点 (`snapshot-summary.py`) の**頭には「無言の再起動」の 1 行**が付きます (T23.2): `/events` の `start` の直前が `shutdown` でない起動 (落とされたか、止め方が違う) を時刻・前の起動の長さ・版つきで数え、0 件なら「0 件 (直前が `shutdown` の起動 N 件)」、`/events` の部が無いスナップショットでは「判定できず」と書きます
 (2026-10-20 の tokyo は 2026-10-17 22:14:52Z の 1 回で、前の起動は 19.2 時間。10-15 のスナップショットは 0 件)。同じ判定は `--criteria phase23` の判定表にも 1 行で入ります (行を足すのは T23.1。判定の関数は要点と同じ `scripts/snapshot_criteria.py` の `silent_restarts()`)。
 
@@ -155,6 +163,13 @@ scripts/status-diff.py status/*-snapshot.json --group domain  # eTLD+1 でまと
 CONNECT (`/clients` の起動からの通算と、`/recent` の窓の中の数)・`/events` の `new_client`・**`/readers` に居て `/clients` に居ない
 接続元** (プロキシを使わず `GET /` などで内部の口だけを引いた走査)。認証なしのプロキシで実際に起きる危険は乱用なので、その手がかりを
 1 か所に集めています。IP とホスト名はそのまま出ます。
+
+要点の CPU の表の末尾には **`conn` 役の CPU の内訳** (`/profile` の `conn_split`: 要求・中継・空き。S22) の 1 行が付きます (T40.1):
+3 つの秒と割合、要求の分 ÷ その窓の要求の数 (us/要求)。材料は 24 時間ぶんの `/profile?res=60` (`snapshot-summary.py --profile`。
+`collect-deployed.sh` がスナップショットの隣に置いた `-profile_res_60.json` を渡します) があればそちら、無ければスナップショットの `/profile` の部
+(1 時間ぶん) で、どちらを使ったかと窓の長さを行に書きます。**表示だけで、判定には使いません** (判定表の `conn` 役の CPU の行は T39 のまま):
+us/要求 は、同じ版 0.39.13 の 24 時間 2 つ (2026-11-24 と 2026-11-26) で 65.5 → 32.9 と 2 倍ぶれました。CPU の読みは 10 ms 刻みで、
+1 秒に 1 回見た接続の状態で振り分けるためです (3 つの合計は 16.55 → 15.64 秒の 0.95 倍で、安定しています)。`conn_split` の無い版 (0.39.11 より前) では行ごと出ません。
 
 保存先は**リポジトリの外**にしてください (個票には接続元 IP と宛先ホストが並びます)。
 
@@ -406,6 +421,7 @@ CONNECT 確立 p50 8.3 / p95 80.7 ms、ミス 1 回 11.5 ms) が出ることを�
 `hosts_series` と T16.0 の 3 列が入っています。2026-09-16 → 2026-09-26 で `--criteria phase15` / `phase17` の判定表が出て、
 T16.99 の数字 (`conn` 役 0.0013 コア、`dns_warm_max` 15、`warm_evicted` 0、`dns_slow` 0.61 件/時) が出ることを見ています
 (T17.16。名前は番号が前後で合わないので、`discord.com` を見張る行は「判定できず」になります)。
+`scripts/testdata/deployed-2026-11-26-profile_res_60.anon.json` (1.4 MiB。T40.1) は **0.39.13 の `/profile?res=60` の 24 時間ぶん** (2026-11-26、1,440 標本。`conn_split` のある版) だけの写しです (CPU の標本だけで、接続元も宛先も入っていません。スナップショットは入れていません)。要点の `conn` 役の内訳の行の試験 (要求 0.59 秒・中継 9.09 秒・空き 5.96 秒、要求 17,932 本) と、0.40.0 の締めの「前」の CPU の材料 (`PROFILE_BEFORE`) に使います。
 
 **いまの数字は 2026-11-24、tokyo (`tokyo.sorahost.net:60357`) に 0.39.13 をデプロイして 48 時間の実測**です ([`docs/status.md`](status.md) の「デプロイ先の現在地」と同じ版。
 `scripts/check-docs.sh` のいまの数字の版の検査が見ます。T32.28)。出どころはスナップショット 1 枚 (`VIA=$HTTPS_PROXY scripts/collect-deployed.sh --closeout tokyo.sorahost.net:60357 status/tokyo`

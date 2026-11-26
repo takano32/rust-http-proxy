@@ -8,7 +8,8 @@
 「同じ入力からは同じ出力」を見る。あわせて、**コミットしてある匿名化済みの実データ**
 (`testdata/deployed-2026-09-16.anon.json` と T17.16 の `deployed-2026-09-26.anon.json`) に元の名前が残っていないことも見る
 (実データそのものはリポジトリに入れないので、突き合わせは作った人が 1 回やる。ここでは
-「匿名化済みの形になっているか」だけを見る)。
+「匿名化済みの形になっているか」だけを見る)。T40.1 で入れた `/profile?res=60` だけの写し
+(`deployed-2026-11-26-profile_res_60.anon.json`) も同じ見方で見る。
 """
 
 import io
@@ -29,6 +30,8 @@ FIXTURE = os.path.join(DATA, "deployed-2026-09-16.anon.json")
 FIXTURE_0926 = os.path.join(DATA, "deployed-2026-09-26.anon.json")
 FIXTURE_0926_SIDES = tuple(os.path.join(DATA, "deployed-2026-09-26-{}.anon.json".format(n))
                            for n in ("daily", "profile_res_60"))
+# T40.1 の写し: 0.39.13 の 24 時間ぶんの `/profile?res=60` (`conn_split` のある版。スナップショットは入れていない)
+FIXTURE_1126_PROFILE = os.path.join(DATA, "deployed-2026-11-26-profile_res_60.anon.json")
 # 文書用の範囲 (置き換え先) と、ループバック・未指定 (`0.0.0.0`) は残ってよい IP
 ALLOWED_NETS = tuple(ipaddress.ip_network(n) for n in (
     "198.51.100.0/24", "203.0.113.0/24", "192.0.2.0/24", "198.18.0.0/15", "2001:db8::/32",
@@ -658,6 +661,59 @@ class Fixture0926(FixtureNames, unittest.TestCase):
         self.assertEqual(len(self.snap["parts"]), 17)
         self.assertEqual(self.snap["dropped"], [])
         self.assertEqual(self.snap["status"]["total_requests"], 114325)
+
+
+class Fixture1126Profile(unittest.TestCase):
+    """T40.1 で入れた 0.39.13 の `/profile?res=60` (2026-11-26 の 24 時間ぶん、1,440 標本) の匿名の写し。
+
+    `/profile` は CPU の標本だけで、接続元も宛先も入っていない (匿名化しても中身は同じ)。生の写しはリポジトリに
+    無いので、ここでは**名前や番地が紛れていれば必ず残る形が、ファイルのどこにも無い**ことを見る。
+    無ければ飛ばさずに落とす (0.40.0 の締めの「前」の CPU の材料でもある)。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        with open(FIXTURE_1126_PROFILE, encoding="utf-8") as f:
+            cls.text = f.read()
+        cls.body = json.loads(cls.text)
+
+    def test_every_string_is_a_plain_name(self):
+        # 文字列 (鍵も値も) は役割・スレッド・システムコール・段階・列の名前だけ。点 (ホスト名・IPv4)・コロン (IPv6・
+        # ポート)・`/` (URL・UA)・`@`・空白・大文字のどれかが 1 つでもあれば落ちる
+        def keys_of(node, acc):
+            if isinstance(node, dict):
+                acc.update(node)
+            for v in (node.values() if isinstance(node, dict) else node if isinstance(node, list) else ()):
+                keys_of(v, acc)
+            return acc
+
+        names = keys_of(self.body, set()) | {value for _key, value in strings(self.body)}
+        for name in names:
+            self.assertRegex(name, r"\A[a-z0-9_-]*\Z")
+        # 種類は 100 に満たない (宛先や接続元が並べば桁が変わる)
+        self.assertLess(len(names), 100)
+
+    def test_the_samples_hold_only_thread_names(self):
+        # 1,440 標本の中の文字列は上位スレッドの名前 (`threads_top` の `comm`) だけで、役割と同じ名前か、本体が
+        # スレッドに付ける決まった名前 (名前の読めなかったスレッドは空)。点の無い名前が紛れてもここで落ちる
+        in_samples = {value for _key, value in strings(self.body["samples"])}
+        self.assertEqual(in_samples - set(self.body["roles"]),
+                         {"canary", "dns-resolve", "env-reload", "rust-http-proxy", ""})
+
+    def test_no_address_hides_among_the_numbers(self):
+        # 数字の並びの中にも番地らしい形 (点で区切った 4 つの数) は無い。小数は `recent.cpu_per_request_us` の 1 つだけ
+        self.assertIsNone(re.search(r"\d{1,3}(?:\.\d{1,3}){3}", self.text))
+        self.assertEqual(len(re.findall(r"\d\.\d", self.text)), 1)
+
+    def test_it_does_not_change_if_it_is_anonymized_again(self):
+        self.assertEqual(an.Anonymizer().run(json.loads(json.dumps(self.body))), self.body)
+
+    def test_the_whole_day_is_there_and_it_is_under_2_mib(self):
+        b = self.body
+        self.assertEqual((b["interval_secs"], len(b["samples"]), b["count"], b["truncated"], b["next_offset"]),
+                         (60, 1440, 1440, False, None))
+        self.assertEqual(b["conn_split"], ["request", "relay", "idle"])
+        self.assertLess(os.path.getsize(FIXTURE_1126_PROFILE), 2 << 20)
 
 
 @unittest.skipUnless(os.path.isfile(os.path.join(DATA, "snapshot-local.json")),

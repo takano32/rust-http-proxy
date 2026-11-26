@@ -37,7 +37,8 @@
 #     最初の起動**を `BEFORE=… ZERO=…` の形で 1 行出す (締めの「前」と「0 時間」にそのまま渡せる)。
 #     停止の 1 枚の隣の `/profile?res=60` (T40.0。`moments` の種類 `shutdown-profile`) も手元に無ければ取り寄せて
 #     `<UTC 時刻>-shutdown-profile_res_60.json` に置き、「前」に合わせる `--profile-before` の選び方を 1 行出す
-#     (停止の隣のものが 12 時間以上あればそれ、無ければ手元の前の版の 12 時間以上の `-profile_res_60.json`)。
+#     (停止の隣のものが 12 時間以上あればそれ、無ければ手元の前の版の 12 時間以上の `-profile_res_60.json`。
+#     `PROFILE_BEFORE` で手で渡されていれば、それを使うと書く。T40.1)。
 #     T29.26 から**版で選ぶ**: 前 = いまの版と系列 (`0.<Phase>`) の違う版の最後の停止 (同じ系列の途中の
 #     デプロイは飛ばす)、0 時間 = その後のいまの版の最初の起動。候補は全部、選んだ / 外した理由つきで並べる。
 #
@@ -45,7 +46,7 @@
 #     締めを 1 コマンドで (T29.26): `--from-server` で取り寄せ → 上の決まりで「前」と「0 時間」を選ぶ →
 #     それを `BEFORE` / `ZERO` にして普段の 1 回 (本番) → 要約の頭に**前提の 1 行** (版・ビルド・起動時刻・
 #     `boot.id`・前の版の停止時刻・窓の途中の起動 (ホストの再起動かプロセスだけか)・後の期間の始まり。T39.7)
-#     と取り寄せ・選択の箇条。`BEFORE` / `ZERO` を渡せばそちらを使う。
+#     と取り寄せ・選択の箇条。`BEFORE` / `ZERO` / `PROFILE_BEFORE` を渡せばそちらを使う。
 #
 #   scripts/collect-deployed.sh --full HOST:PORT [DIR]
 #     スナップショットで `truncated` が立った部 (`recent` / `hosts` / `profile`) の**続き**を `offset=` で
@@ -119,7 +120,14 @@
 #                         渡す (phase25 / phase24 / phase22 / phase21 / phase20 / phase18 の `heap_used + mmap` の増えの行と、
 #                         phase22 / phase21 の IPv6 の探りの行。phase24 は `memory.baseline` が無いスナップショットのときだけ
 #                         こちらで読む。無ければ「判定できず」)。
-#                         BEFORE も ZERO も、相対パスはリポジトリの根から (`DIR` と同じ)
+#   PROFILE_BEFORE (無指定) … 「前」の `/profile?res=60` を**手で渡す** (T40.1)。`--closeout` でも普段の 1 回でも、
+#                         判定表の `--profile-before` にこれを使い (`BEFORE` の隣のものや、道具が停止の隣・手元の
+#                         `status/` から選ぶものより先)、要約の頭の箇条に「手で渡された」と長さ・標本の時刻の端を書く。
+#                         手元の `status/` の写しはコンテナが入れ替わると消えるので、前の版の 12 時間以上の
+#                         `/profile?res=60` を別の置き場 (`scripts/testdata/` に入れた匿名の写しなど) から渡すのに使う。
+#                         ファイルが無い・JSON として読めない・`/profile` の応答の形でない・標本が無いときは、要約の頭と
+#                         標準エラーで知らせて、渡されなかったときと同じに選ぶ (黙って無視しない)
+#                         BEFORE も ZERO も PROFILE_BEFORE も、相対パスはリポジトリの根から (`DIR` と同じ)
 #   MAX_TIME (既定 30)  … `/snapshot` を取る上限 (秒)。6 MiB まであるので長めに (T39.8)
 #   MAX_PAGES (既定 8)  … `--full` が 1 つの部について追う続きの枚数の上限。`/profile?res=60` と
 #                         既定で追う `recent`・`hosts`・`dns`・`profile` を繋ぐ枚数の上限 (1 枚目を含む) にも使う
@@ -195,6 +203,10 @@ CRITERIA=${CRITERIA:-T39}
 # 判定表の相手 (「前」のスナップショット) と 0 時間のスナップショット (T18.2)。どちらも無指定なら今までどおり
 JUDGE_BEFORE=${BEFORE:-}
 ZERO=${ZERO:-}
+# 「前」の `/profile?res=60` を手で渡す口 (T40.1)。無指定なら今までどおり道具が選ぶ。
+# 中の変数は `GIVEN_PROFILE` (前回のスナップショットの隣のものは `PREV_PROFILE`、`BEFORE` に合わせて選んだものは
+# `JUDGE_PROFILE`)。環境変数と同じ名前の変数を中で書き換えると、自分をもう 1 回呼ぶときに子へ伝わってしまう
+GIVEN_PROFILE=${PROFILE_BEFORE:-}
 MAX_TIME=${MAX_TIME:-30}
 MAX_PAGES=${MAX_PAGES:-8}
 FOLLOW_SECS=${FOLLOW_SECS:-60}
@@ -234,6 +246,8 @@ now_ms() {
 # 0 時間の起動より後の起動 (ホストの再起動か、プロセスだけか) と、後の期間の始まり・長さ (最初に取った
 # `/status` の `uptime_secs`) も前提に書く (T39.7。T38.99 では手で足した)。
 # 前は 2 枚を選び、前提を手で打っていた (T28.99)。`BEFORE` / `ZERO` を自分で渡したときはそちらを使う。
+# `PROFILE_BEFORE` (「前」の `/profile?res=60` を手で渡す口。T40.1) は取り寄せにも本番にもそのまま渡し、取り寄せの
+# 「前の CPU の材料」の箇条と本番の頭の箇条の両方に「手で渡された」と出る。
 # いまの版は `/status` の `version` (読めなければ手元の最後の起動の版)
 closeout() {
   if [ "$FROM_SERVER" = 1 ]; then
@@ -249,7 +263,8 @@ closeout() {
   CO_STATUS="$CO/status-before.json"
   curl -s --max-time "$MAX_TIME" "http://$PROXY/status" -o "$CO_STATUS" || { rm -f "$CO_STATUS"; CO_STATUS=; }
   CUR=$(python3 scripts/collect_follow.py status-version <"${CO_STATUS:-/dev/null}" 2>/dev/null) || CUR=
-  CURRENT_VERSION=$CUR CURRENT_STATUS=$CO_STATUS CLOSEOUT_PICK="$CO/pick" "$SELF" --from-server "$PROXY" "$DIR" >"$CO/fetch.md"
+  CURRENT_VERSION=$CUR CURRENT_STATUS=$CO_STATUS CLOSEOUT_PICK="$CO/pick" PROFILE_BEFORE=$GIVEN_PROFILE \
+    "$SELF" --from-server "$PROXY" "$DIR" >"$CO/fetch.md"
   fetch_rc=$?
   touch "$CO/pick"
   pick_before=$(sed -n 's/^BEFORE=//p' "$CO/pick")
@@ -266,7 +281,8 @@ closeout() {
   args=()
   [ "$FULL" = 1 ] && args+=(--full)
   [ "$FOLLOW" = 0 ] && args+=(--no-follow)
-  BEFORE=${JUDGE_BEFORE:-$pick_before} ZERO=${ZERO:-$pick_zero} CLOSEOUT_HEAD="$CO/head.md" \
+  BEFORE=${JUDGE_BEFORE:-$pick_before} ZERO=${ZERO:-$pick_zero} PROFILE_BEFORE=$GIVEN_PROFILE \
+    CLOSEOUT_HEAD="$CO/head.md" \
     CLOSEOUT_STATUS=$([ -s "$CO_STATUS" ] && echo "$CO_STATUS") \
     "$SELF" "${args[@]}" "$PROXY" "$DIR"
   exit $?
@@ -336,8 +352,10 @@ from_server() {
   #   0 時間  = 前より後の、**いまの版** (`+<コミット>` は見ない) の最初の起動
   # 候補は全部、選んだ / 外した理由つきで並べる。どの 1 枚にも版が無ければ (T28.20 より前の形) 今までどおり
   # 時刻だけで選ぶ。名前の先頭 18 文字 (`YYYY-MM-DDTHHMMSSZ`) は時刻なので、文字列の並びがそのまま時刻の並び。
-  # `CLOSEOUT_PICK` があれば、選んだ 2 枚を `BEFORE=…` / `ZERO=…` の 2 行で、前提の 1 行を `PREMISE=…` で書く
-  CURRENT_VERSION=${CURRENT_VERSION:-} CURRENT_STATUS=${CURRENT_STATUS:-} CLOSEOUT_PICK=${CLOSEOUT_PICK:-} python3 scripts/collect_follow.py pick "$DIR"
+  # `CLOSEOUT_PICK` があれば、選んだ 2 枚を `BEFORE=…` / `ZERO=…` の 2 行で、前提の 1 行を `PREMISE=…` で書く。
+  # `PROFILE_BEFORE` (手で渡された「前」の `/profile?res=60`。T40.1) があれば、「前の CPU の材料」の箇条はそれを使うと書く
+  CURRENT_VERSION=${CURRENT_VERSION:-} CURRENT_STATUS=${CURRENT_STATUS:-} CLOSEOUT_PICK=${CLOSEOUT_PICK:-} \
+    PROFILE_BEFORE=$GIVEN_PROFILE python3 scripts/collect_follow.py pick "$DIR"
   [ "$failed" = 0 ] || exit 1
   exit 0
 }
@@ -539,6 +557,9 @@ fetch_extras() {
       PROFILE_NOTE=$(python3 scripts/collect_follow.py profile-join "$PROFILE60" "${pages[@]}") || PROFILE_NOTE='繋げなかった (1 枚目のまま)'
     fi
   fi
+  # 取れた (繋いだあとの) `/profile?res=60`。要点の `conn` 役の内訳の行 (T40.1) と、判定表の「後」の材料に渡す
+  PROFILE_AFTER=$PROFILE60
+  [ -f "$PROFILE_AFTER" ] || PROFILE_AFTER=
   [ -f "$DAILY" ] || DAILY=
 }
 fetch_extras
@@ -568,7 +589,7 @@ write_anon() {
 }
 write_anon
 
-# 要約の頭の箇条 (スナップショット・隣の口・続き・匿名化・前回・判定表の相手と 0 時間)
+# 要約の頭の箇条 (スナップショット・隣の口・続き・匿名化・前回・判定表の相手と 0 時間・手で渡された「前」の `/profile?res=60`)
 print_head() {
   # 前回のスナップショット (名前が UTC 時刻なので、名前順の 1 つ前が前回)
   # shellcheck disable=SC2010  # 名前は自分で付けた UTC 時刻 (英数字と - だけ) なので ls | grep で足りる
@@ -603,6 +624,18 @@ print_head() {
       printf -- '- **`ZERO` のスナップショットが無い**: `%s`\n' "$ZERO"
       echo "ZERO=$ZERO is not a file (the heap row cannot be judged)" >&2
       ZERO=
+    fi
+  fi
+  # 手で渡された「前」の `/profile?res=60` (`PROFILE_BEFORE`。T40.1)。使えるかは `collect_follow.py given-profile` が見て、
+  # 長さ・標本の数・標本の時刻の端か、使えない理由 (ファイルが無い・JSON として読めない・`/profile` の応答の形でない・
+  # 標本が無い) を 1 行で返す。使えないものは 1 行断って、渡されなかったことにする (黙って無視しない)
+  if [ -n "$GIVEN_PROFILE" ]; then
+    if GIVEN_NOTE=$(python3 scripts/collect_follow.py given-profile "$GIVEN_PROFILE"); then
+      printf -- '- 前の `/profile?res=60` (`PROFILE_BEFORE`): 手で渡された `%s` (%s) を判定表の `--profile-before` に使う\n' "$GIVEN_PROFILE" "$GIVEN_NOTE"
+    else
+      printf -- '- **`PROFILE_BEFORE` の `/profile?res=60` が使えない**: `%s` (%s。判定表の `--profile-before` は渡されなかったときと同じに選ぶ)\n' "$GIVEN_PROFILE" "${GIVEN_NOTE:-確かめられなかった}"
+      echo "PROFILE_BEFORE=$GIVEN_PROFILE is not a usable /profile?res=60 JSON (choosing --profile-before as if it were not given)" >&2
+      GIVEN_PROFILE=
     fi
   fi
 }
@@ -667,10 +700,13 @@ fetch_full_pages() {
 fetch_full_pages
 
 # --- 要点 ---------------------------------------------------------------------
+# CPU の表の `conn` 役の内訳の行 (T40.1) は、取れていれば 24 時間ぶんの `/profile?res=60` (`--profile`) で出す
+# (無ければスナップショットの `/profile` の部の 1 時間ぶん。どちらを使ったかは行に出る)
 section_summary() {
   printf '## 要点\n\n'
   python3 scripts/snapshot-summary.py "$OUT" ${PREV:+--prev "$PREV"} \
-    ${STATUS_BEFORE:+--status-before "$STATUS_BEFORE"} || echo '(要点を組めなかった)'
+    ${STATUS_BEFORE:+--status-before "$STATUS_BEFORE"} \
+    ${PROFILE_AFTER:+--profile "$PROFILE_AFTER"} || echo '(要点を組めなかった)'
   printf '\n'
 }
 section_summary
@@ -680,11 +716,11 @@ section_summary
 section_diff() {
   DIFFMD=
   CRIT=
-  PROFILE_AFTER=
-  [ -f "$PROFILE60" ] && PROFILE_AFTER=$PROFILE60
-  PROFILE_BEFORE=
-  [ -n "$PREV" ] && [ -f "${PREV%-snapshot.json}-profile_res_60.json" ] &&
-    PROFILE_BEFORE=${PREV%-snapshot.json}-profile_res_60.json
+  # 判定表の「前」の `/profile?res=60`: 手で渡されたもの (`PROFILE_BEFORE`。T40.1。頭の箇条で使えると確かめた) があれば
+  # それ、無ければ前回のスナップショットの隣の同じ時刻のもの (`BEFORE` があるときは下の `JUDGE_PROFILE`)
+  PREV_PROFILE=$GIVEN_PROFILE
+  [ -z "$PREV_PROFILE" ] && [ -n "$PREV" ] && [ -f "${PREV%-snapshot.json}-profile_res_60.json" ] &&
+    PREV_PROFILE=${PREV%-snapshot.json}-profile_res_60.json
   [ "$CRITERIA" = off ] || CRIT="--criteria $CRITERIA"
   # phase18 の 2 行の材料 (T18.2): `ZERO` があれば `--zero` で、日次のスナップショットの表は保存先 (`--from-server`
   # が `<日付>T000000Z-snapshot.json` を置く所) を `--daily-snapshots` で渡す。**phase18 と、同じ材料を
@@ -718,11 +754,12 @@ section_diff() {
     # `/daily` はスナップショットに無いので、取れていれば判定表のミスの行に日ごとの幅を並べる (T15.15)
     # `/profile?res=60` (上で繋いだ 24 時間ぶん) は phase17 の conn 役の CPU/要求 の材料 (T17.0a)。
     # 前回のスナップショットの隣に同じ時刻の `-profile_res_60.json` があれば `--profile-before` で前にも渡す
-    # (`--from-server` で取り寄せた日のスナップショットには無いので、そのときはスナップショットの `/profile` の部で参考になる)
+    # (`--from-server` で取り寄せた日のスナップショットには無いので、そのときはスナップショットの `/profile` の部で参考になる。
+    # `PROFILE_BEFORE` で手で渡されていれば、隣のものより先にそれ。T40.1)
     python3 scripts/snapshot-diff.py "$PREV" "$OUT" ${AAAA:+--aaaa "$AAAA"} $DIFF_CRIT "${MEDIAN_K[@]}" \
       ${DIFF_CRIT:+${DAILY:+--daily "$DAILY"}} \
       ${DIFF_CRIT:+${PROFILE_AFTER:+--profile "$PROFILE_AFTER"}} \
-      ${DIFF_CRIT:+${PROFILE_BEFORE:+--profile-before "$PROFILE_BEFORE"}} \
+      ${DIFF_CRIT:+${PREV_PROFILE:+--profile-before "$PREV_PROFILE"}} \
       "${DIFF_P18[@]}" \
       >"$DIFFMD" 2>&1 || echo '(snapshot-diff.py が失敗した)' >>"$DIFFMD"
   fi
@@ -732,15 +769,18 @@ section_diff() {
   CRITMD=$DIFFMD
   if [ "$DIFF" = 1 ] && [ -n "$JUDGE_BEFORE" ] && [ -n "$CRIT" ]; then
     CRITMD=$work/snapshot-criteria.md
-    JUDGE_PROFILE=
-    case "$JUDGE_BEFORE" in
-      *-shutdown-snapshot.json) ;;
-      *)
-        [ -f "${JUDGE_BEFORE%-snapshot.json}-profile_res_60.json" ] &&
-          [ "${JUDGE_BEFORE%-snapshot.json}" != "$JUDGE_BEFORE" ] &&
-          JUDGE_PROFILE=${JUDGE_BEFORE%-snapshot.json}-profile_res_60.json
-        ;;
-    esac
+    # 手で渡された「前」の `/profile?res=60` (`PROFILE_BEFORE`。T40.1) があれば、`BEFORE` の隣のものや道具が選ぶものより先にそれ
+    JUDGE_PROFILE=$GIVEN_PROFILE
+    if [ -z "$JUDGE_PROFILE" ]; then
+      case "$JUDGE_BEFORE" in
+        *-shutdown-snapshot.json) ;;
+        *)
+          [ -f "${JUDGE_BEFORE%-snapshot.json}-profile_res_60.json" ] &&
+            [ "${JUDGE_BEFORE%-snapshot.json}" != "$JUDGE_BEFORE" ] &&
+            JUDGE_PROFILE=${JUDGE_BEFORE%-snapshot.json}-profile_res_60.json
+          ;;
+      esac
+    fi
     # 「前」が停止の 1 枚なら (普段の 1 回の隣の `-profile_res_60.json` は無い)、`collect_follow.py judge-profile` が選ぶ
     # (取り寄せの箇条の「前の CPU の材料」と同じ関数): **前の停止の隣の `/profile?res=60`** (プロキシが止めるときに
     # 書いたもの。`--from-server` が `<時刻>-shutdown-profile_res_60.json` に置く。T40.0) が 12 時間以上あればそれ、

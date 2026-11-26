@@ -146,8 +146,9 @@ def pick(argv):
             print("  - `%s` %s `%s`%s → %s" % (os.path.basename(m["path"]), m["kind"], m["ver"] or "?",
                   " boot.id `%s`" % m["boot"] if m["boot"] else "", tag))
     if before:
-        # 前の CPU の材料 (`--profile-before`) の選び方 (T40.0)。本番の 1 回 (`judge-profile`) も同じ関数で選ぶ
-        print("- 前の CPU の材料 (`--profile-before`): " + choose_profile_before(before["path"], d)[1])
+        # 前の CPU の材料 (`--profile-before`) の選び方 (T40.0)。本番の 1 回 (`judge-profile`) も同じ関数で選ぶ。
+        # `PROFILE_BEFORE` で手で渡されていれば、どちらもそれを使う (T40.1)
+        print("- 前の CPU の材料 (`--profile-before`): " + profile_before_note(before["path"], d))
     if before and zero:
         print("- 締めの判定に渡せる 2 枚 (前と 0 時間): `BEFORE=%s ZERO=%s`" % (before["path"], zero["path"]))
     elif before:
@@ -451,6 +452,8 @@ def choose_profile_before(before, d):
     2. 無いか短ければ、手元の前の版の 12 時間以上の最後の `-profile_res_60.json` (T32.29)
     3. それも無ければ、短くても停止の隣のもの
     どれも無ければ (None, 説明)。
+    `PROFILE_BEFORE` で手で渡されたものがあれば、呼ぶ側がこの選び方より先にそれを使う (T40.1。取り寄せの箇条は
+    `profile_before_note`、本番の 1 回は `collect-deployed.sh` の判定表の節)。
     """
     side = None
     m = re.match(r"^(.*)-shutdown-snapshot\.json$", before)
@@ -471,7 +474,8 @@ def choose_profile_before(before, d):
         return side, ("前の停止の隣の `/profile?res=60` `%s` を選んだ (%.1f 時間で 12 時間に満たないが、"
                       "手元にも前の版の 12 時間以上の `-profile_res_60.json` が無い)" % (side, side_h or 0))
     return None, ("無い (前の停止の隣の `/profile?res=60` も、手元の前の版の 12 時間以上の "
-                  "`-profile_res_60.json` も無い。判定表は `--profile-before` 無しで読む)")
+                  "`-profile_res_60.json` も無い。判定表は `--profile-before` 無しで読む。"
+                  "別の置き場に取ってあれば `PROFILE_BEFORE=<ファイル>` で手で渡せる)")
 
 
 def judge_profile(argv):
@@ -479,6 +483,66 @@ def judge_profile(argv):
     path, _ = choose_profile_before(argv[1], argv[2])
     if path:
         print(path)
+
+
+def given_profile(path):
+    """手で渡された「前」の `/profile?res=60` (`PROFILE_BEFORE`。T40.1) が使えるかと、その中身か使えない理由。
+
+    返すのは `(使えるか, 説明)`。使えるときの説明は長さ・標本の数・標本の時刻の端 (渡されたファイルには版も
+    名前の時刻も無いので、どの期間のものかはここで確かめる)。12 時間に満たなければそう添える (判定表の CPU の行は
+    前も後も 12 時間以上の材料が要る)。使えないときの説明は理由 (ファイルが無い・JSON として読めない・`/profile` の
+    応答の形でない・標本が無い)。呼ぶ側が説明をそのまま出す (黙って無視しない)。
+    """
+    if not os.path.isfile(path):
+        return False, "ファイルが無い"
+    try:
+        with open(path, encoding="utf-8") as f:
+            p = json.load(f)
+    except (OSError, ValueError):
+        return False, "JSON として読めない"
+    rows = p.get("samples") if isinstance(p, dict) else None
+    interval = p.get("interval_secs") if isinstance(p, dict) else None
+    if (not isinstance(rows, list) or not isinstance(interval, (int, float)) or isinstance(interval, bool)
+            or interval <= 0):
+        return False, "`/profile` の応答の形でない (`samples` と `interval_secs` が要る)"
+    if not rows:
+        return False, "標本が 1 本も無い"
+    hours = len(rows) * interval / 3600
+    text = "%.1f 時間、%s 標本" % (hours, format(len(rows), ","))
+    keys = p.get("keys") or []
+    ti = keys.index("t") if "t" in keys else None
+    ends = [r[ti] for r in (rows[0], rows[-1])
+            if ti is not None and isinstance(r, list) and ti < len(r) and isinstance(r[ti], (int, float))]
+    if len(ends) == 2:
+        text += "、標本は %s 〜 %s" % tuple(time.strftime("%Y-%m-%d %H:%MZ", time.gmtime(t)) for t in ends)
+    if hours < 12:
+        text += "。12 時間に満たない"
+    return True, text
+
+
+def profile_before_note(before, d):
+    """取り寄せの箇条の「前の CPU の材料」の文 (T40.0)。`PROFILE_BEFORE` で手で渡されていれば、それを先に書く (T40.1)。
+
+    手で渡されたものが使えれば「手で渡された」と、道具が選ぶはずだったもの (比べられるように) を、使えなければ理由と、
+    渡されなかったときと同じ選び方を書く。本番の 1 回 (`collect-deployed.sh` の判定表の節) も同じ決まりで使う。
+    """
+    path, how = choose_profile_before(before, d)
+    given = os.environ.get("PROFILE_BEFORE") or None
+    if not given:
+        return how
+    ok, text = given_profile(given)
+    if ok:
+        return "手で渡された `%s` (%s。`PROFILE_BEFORE`。T40.1) を使う (道具が選ぶのは %s)" % (
+            given, text, "`%s`" % path if path else "無し")
+    return "**`PROFILE_BEFORE` で手で渡された `%s` は使えない** (%s)。渡されなかったときと同じに選ぶ: %s" % (
+        given, text, how)
+
+
+def given_profile_cmd(argv):
+    """手で渡された「前」の `/profile?res=60` の中身か、使えない理由を 1 行で出す。使えなければ exit 1 (T40.1)。"""
+    ok, text = given_profile(argv[1])
+    print(text)
+    return 0 if ok else 1
 
 
 def dashboard_inputs(argv):
@@ -498,6 +562,7 @@ COMMANDS = {
     "profile-join": profile_join,
     "full-plan": full_plan,
     "judge-profile": judge_profile,
+    "given-profile": given_profile_cmd,
     "dashboard-inputs": dashboard_inputs,
 }
 
