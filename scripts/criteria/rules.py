@@ -33,7 +33,7 @@ from .t35 import _t35_events, _t35_heap
 from .t37 import _t37_dns_slow
 from .t38 import CONN_REQUEST_BAND, _t38_conn_per_resolved_request, _t38_connect_errors
 from .t39 import _t39_conn_priced
-from .t40 import CONN_DAY_BAND_MAX, _t40_conn_priced
+from .t40 import CONN_DAY_BAND_MAX, CONN_HISTORY_COVER_MIN, _t40_conn_priced, _t40_refresh_total
 from .t36 import (
     _t36_conn_per_resolved_request, _t36_connect_errors, _t36_dns_slow, _t36_heap, _t36_idle_cost,
     _t36_machine_speed,
@@ -330,11 +330,14 @@ RULES["T39"] = replaced(RULES["T38"], {5: _t39_conn_priced})
 T39_TH = dict(T38_TH)
 CRITERIA["T39"] = T39_TH
 
-# T40 = T39 の 27 行のうち 5 番目 (`conn` 役の CPU を値付けし合う行) に、同じ版の日ごとのぶれの帯を入れたもの (T40.4)。
-# 値付けし合った比が 1.1 倍未満なら満たした、1.1 倍以上 `conn_day_band_max` (1.3) 倍以下なら判定できず、越えたら届かず。
-# 1 枚の中のぶれの内と材料の不足は T39 と同じく判定できず。並びは同じ。**T39 以前の並びと文面は 1 つも動かない**
-RULES["T40"] = replaced(RULES["T39"], {5: _t40_conn_priced})
-T40_TH = dict(T39_TH, conn_day_band_max=CONN_DAY_BAND_MAX)
+# T40 = T39 の 27 行のうち 5 番目 (`conn` 役の CPU を値付けし合う行) に、同じ版の日ごとのぶれの帯を入れ (T40.4)、
+# 15 番目 (裏の引き直し) を、答えのある名前 1 つあたりではなく合計 (回/時) で前の期間と比べる行に差し替えたもの (T40.5)。
+# 5 番目は、値付けし合った比が 1.1 倍未満なら満たした、1.1 倍以上 `conn_day_band_max` (1.3) 倍以下なら判定できず、越えたら
+# 届かず。1 枚の中のぶれの内と材料の不足は T39 と同じく判定できずで、前か後の `/profile?res=60` の窓のうち同じスナップショットの
+# `/history` が覆っているのが `conn_history_cover_min` (99%) に満たないときも判定できず (T40.5)。15 番目の閾は T33.2 と同じ
+# `refresh_per_name_factor` (1.5 倍)。並びは同じ。**T39 以前の並びと文面は 1 つも動かない**
+RULES["T40"] = replaced(RULES["T39"], {5: _t40_conn_priced, 15: _t40_refresh_total})
+T40_TH = dict(T39_TH, conn_day_band_max=CONN_DAY_BAND_MAX, conn_history_cover_min=CONN_HISTORY_COVER_MIN)
 CRITERIA["T40"] = T40_TH
 
 # 判定表の名前は「足したタスクの番号」(2026-11-07、利用者の指示。T35.14)。phase14〜phase30 は過去の締めを
