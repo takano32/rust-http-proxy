@@ -42,6 +42,13 @@
 # 名前解決の表の名前は起動から増え続けるので、名前 1 つあたりは起動からの時間で値が変わる (`REFRESH_EVIDENCE`)。
 # 0.40.0 の締めは前 = 94 時間・後 = 48 時間で、何も変わっていなくても 1.6 倍で届かずになる (締めの予行演習で見つけた)。
 # 利用者が「合計で比べる行に直す」を選んだ (2026-11-26)。閾は T33.2 と同じ `refresh_per_name_factor` (1.5 倍)。
+#
+# なぜ割った時間が 3 時間に満たなければ判定しないか (T40.7): 合計は `dns.refreshes` ÷ 時間 (起動から、または 2 枚の間) で、
+# 起動してすぐは落ち着いていない。tokyo の起動の 1 枚 (起動から 60 秒) は 0.40.0 が 0 回・0.39.13 が 1 回 (0〜60 回/時)、
+# 0.40.0 の 2.7 時間は 413.2 回/時、0.39.13 の 12.0 時間は 358.5 回/時で、そのあとは 336〜359 回/時。起動してすぐの 1 枚が
+# 「前」に来る (ホストの再起動の直後にデプロイしたとき) と、後が何倍にも見えて届かずになる (前が 0 回なら後が 1 回でも)。
+# 利用者が歯止めの形を任せた (2026-11-26「いい感じにする」)。線は、同じ判定表の IPv6 の行が「0 時間のスナップショットから
+# 3 時間」を起動直後として扱っているのに合わせて 3 時間にした (確かめてある 2.7 時間の 1.15 倍は、まだ落ち着く前の値)。
 
 import math
 
@@ -68,6 +75,11 @@ CONN_HISTORY_COVER_MIN = 0.99
 REFRESH_EVIDENCE = ((36.0, 0.383), (48.1, 0.309), (60.0, 0.250), (84.0, 0.208), (93.9, 0.191))
 REFRESH_EVIDENCE_TOTAL = (336, 359)
 REFRESH_EVIDENCE_NAMES = (876, 1880)
+# 引き直しの合計を判定するのに要る、前と後を割った時間 (起動から、または 2 枚の間) の下の端 (時間)。前か後がこれに
+# 満たなければ判定できず (T40.7。線の決め方はこのファイルの頭)
+REFRESH_MIN_HOURS = 3.0
+# 起動してすぐは合計が落ち着いていない根拠 (行の理由と前置きに書く。T40.7): tokyo の (起動からの時間の書き方, 合計 回/時)
+REFRESH_STARTUP_EVIDENCE = (("1 分", "0〜60"), ("2.7 時間", "413"), ("12.0 時間", "359"))
 
 
 def conn_priced_index(c, th):
@@ -257,6 +269,18 @@ def refresh_evidence_text():
             f"(合計は {lo}〜{hi} 回/時で一定、答えのある名前は {n(first)} → {n(last)} と増える)")
 
 
+def refresh_startup_text():
+    """起動してすぐは引き直しの合計が落ち着いていない根拠の文 (行の理由と前置きが同じ数字を書く。T40.7)。"""
+    lo, hi = REFRESH_EVIDENCE_TOTAL
+    first = "、".join(f"{at}で {rate} 回/時" for at, rate in REFRESH_STARTUP_EVIDENCE)
+    return f"起動から {first}、そのあとは {lo}〜{hi} 回/時"
+
+
+def span_hours_text(hours):
+    """割った時間の書き方: 1 時間に満たなければ分で、それ以上は時間で (T40.7)。"""
+    return f"{hours * 60:,.0f} 分" if hours < 1 else f"{hours:,.1f} 時間"
+
+
 def refresh_hours(c):
     """`counter_rates` が `dns.refreshes` を割る時間 (`(前の時間, 後の時間, その間か)`。時間は時間単位)。
 
@@ -274,11 +298,15 @@ def _t40_refresh_total(c, th):
     T33.2 の行 (`_p30_refresh_per_name`) が `/dns` の一覧の切れているときにしていた比べ方を、いつも使う: 合計は
     `counter_rates` の `dns.refreshes` ÷ 時間で、前の `refresh_per_name_factor` 倍未満なら満たした (前が 0 なら後も 0 の
     ときだけ)。答えのある名前 1 つあたり (起動からの時間で値が変わる)・表の名前の数あたり・`expired` + `warm_stale` は表示だけ。
+
+    T40.7: 前か後を割った時間 (起動から、または 2 枚の間) が `refresh_min_hours` に満たなければ、数字は出して判定できずにする
+    (起動してすぐは合計が落ち着いていない)。
     """
-    k = th["refresh_per_name_factor"]
+    k, m = th["refresh_per_name_factor"], th["refresh_min_hours"]
     label = (f"裏の引き直しの**合計** (回/時) が前の期間の {k} 倍未満 (T40.5。答えのある名前 1 つあたりは起動からの時間で値が"
-             "変わるので表示だけ。表の名前の数あたりと `expired` + `warm_stale` も表示だけ)")
-    limit = f"< 前 ×{k} (引き直しの合計)"
+             "変わるので表示だけ。表の名前の数あたりと `expired` + `warm_stale` も表示だけ。"
+             f"前か後を割った時間が {m:g} 時間に満たなければ判定できず。T40.7)")
+    limit = f"< 前 ×{k} (引き直しの合計。割った時間が {m:g} 時間に満たなければ判定できず)"
     rb, ra = counter_rates(c, "refreshes")
     if rb is None or ra is None:
         return (label, limit, "—", UNKNOWN, "前か後の `/status` に `dns.refreshes` か `uptime_secs` が無い")
@@ -318,4 +346,10 @@ def _t40_refresh_total(c, th):
             "表示だけの答えのある名前の数は、`/dns` の一覧 (切れていない) の `addrs` のある行の数。")
     src += ("合計で読む理由 (T40.5): 名前解決の表の名前は起動から増え続けるので、名前 1 つあたりは起動からの時間で値が変わる。"
             + refresh_evidence_text())
+    short = [(side, h) for side, h in (("前", hb), ("後", ha)) if h < m]
+    if short:
+        src = ("・".join(f"{side}を割った時間が {span_hours_text(h)}" for side, h in short)
+               + f"で、{m:g} 時間に満たない (T40.7)。短い時間の合計は当てにならないので判定しない "
+               f"(起動してすぐは引き直しがまだ落ち着いていない: {refresh_startup_text()})。" + src)
+        return (label, limit, shown, UNKNOWN, src)
     return (label, limit, shown, MET if ok else MISSED, src)

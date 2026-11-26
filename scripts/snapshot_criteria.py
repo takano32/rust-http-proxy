@@ -15,7 +15,7 @@
 #   `t37.py`         T37 の行 (T37.1)
 #   `t38.py`         T38 の行 (T38.0・T38.1)
 #   `t39.py`         T39 の行 (T39.9)
-#   `t40.py`         T40 の行 (T40.4・T40.5)
+#   `t40.py`         T40 の行 (T40.4・T40.5・T40.7)
 #   `rules.py`       閾の辞書 (`PHASE14`〜`T40_TH`)・`CRITERIA`・`FROZEN`・`RULES` (Phase の順に組む)
 # ここに残っているのは、`RULES` の行を順に呼ぶ `judge()` と、判定表の印字 (`render_criteria()`) だけ。
 #
@@ -95,8 +95,9 @@ from criteria.t39 import (  # noqa: E402,F401
 )
 from criteria.t40 import (  # noqa: E402,F401
     CONN_DAY_BAND_MAX, CONN_HISTORY_COVER_MIN, DAY_BAND_EVIDENCE, REFRESH_EVIDENCE, REFRESH_EVIDENCE_NAMES,
-    REFRESH_EVIDENCE_TOTAL, _t40_conn_priced, _t40_refresh_total, conn_priced_index, history_cover_secs,
-    profile_history_cover, refresh_evidence_text, refresh_hours, window_mismatch,
+    REFRESH_EVIDENCE_TOTAL, REFRESH_MIN_HOURS, REFRESH_STARTUP_EVIDENCE, _t40_conn_priced, _t40_refresh_total,
+    conn_priced_index, history_cover_secs, profile_history_cover, refresh_evidence_text, refresh_hours,
+    refresh_startup_text, span_hours_text, window_mismatch,
 )
 from criteria.rules import (  # noqa: E402,F401
     CRITERIA, FROZEN, PHASE14, PHASE15, PHASE17, PHASE18, PHASE20, PHASE21, PHASE22, PHASE23, PHASE24,
@@ -348,8 +349,8 @@ INTRO = {
             "0.65・0.61)。値段・決定係数・ぶれ・中継の秒/時と、T38 の読み方 (1 本あたりと要求の量) は表示だけです。"
             "ほかの 26 行は T38 と同じです。"),
     # T40.4・T40.5。T39 の 27 行のうち、`conn` 役の CPU を値付けし合う行に、同じ版の日ごとのぶれの帯と材料の窓の見方を入れ、
-    # 裏の引き直しの行を合計で比べる (まだ締めに使っていなかったので、T40.5 は T40 の中で直した)
-    "T40": ("1〜27 行の並びと材料は T39 と同じです。直したのは 2 行の 3 か所です (T40.4・T40.5)。"
+    # 裏の引き直しの行を合計で比べる (まだ締めに使っていなかったので、T40.5 と T40.7 は T40 の中で直した)
+    "T40": ("1〜27 行の並びと材料は T39 と同じです。直したのは 2 行の 4 か所です (T40.4・T40.5・T40.7)。"
             "T40.4: 5 行目の `conn` 役の CPU を値付けし合う行に、"
             "**同じ版の日ごとのぶれの帯**を入れました。値付けし合った比 (機械の速さの物差しで割ったあと。計算は T39 のまま) が"
             "前の版の 1.1 倍未満なら「満たした」、1.1 倍以上 1.3 倍以下なら「判定できず」(同じ版の日ごとのぶれの内)、"
@@ -372,6 +373,9 @@ INTRO = {
             "増え続けるので、名前 1 つあたりは起動からの時間で値が変わります。" + refresh_evidence_text() + "。"
             "起動からの時間が違う 2 枚を名前あたりで比べると、動きが同じでも 1.5 倍を越えます (前 94 時間・後 48 時間なら 1.6 倍)。"
             "答えのある名前 1 つあたり・表の名前の数あたり・`expired` + `warm_stale` は表示だけです。"
+            f"T40.7: 同じ 15 行目は、前か後を割った時間 (起動から、または 2 枚の間) が {REFRESH_MIN_HOURS:g} 時間に満たなければ"
+            "「判定できず」です (数字は出します)。起動してすぐは引き直しがまだ落ち着いていません (" + refresh_startup_text() + ")。"
+            "起動してすぐの 1 枚が前に来ると、動きが同じでも後が何倍にも見えます。"
             "ほかの 25 行は T39 と同じです。"),
 }
 

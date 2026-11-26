@@ -309,7 +309,7 @@ class CollectBeforeZeroTest(unittest.TestCase):
         d, out, _ = self.run_collect(criteria=None)
         tail = self.judged(out)
         self.assertIn("## 完了の定義に対する判定 (snapshot-diff.py --criteria T40)", tail)
-        self.assertIn("1〜27 行の並びと材料は T39 と同じです。直したのは 2 行の 3 か所です (T40.4・T40.5)。", tail)
+        self.assertIn("1〜27 行の並びと材料は T39 と同じです。直したのは 2 行の 4 か所です (T40.4・T40.5・T40.7)。", tail)
         # T39.9: `conn` 役の CPU の行は、名前解決に成功した要求と中継の時間で値付けし合って読む。
         # T40.4: その比が 1.1 倍以上 1.3 倍以下なら、同じ版の日ごとのぶれの内で判定できず。
         # T40.5: `/profile?res=60` の窓を同じスナップショットの `/history` が覆っていなければ判定できず

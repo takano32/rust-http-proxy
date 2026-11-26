@@ -6,11 +6,12 @@
 
 作り物は `scripts/_criteria_testing.py` にある (T38.6。`/profile?res=60` の作り物は T39 の試験と同じ `Criteria39Parts`)。
 
-判定表 T40 が T39 から直したのは 2 行の 3 か所で、試験の組もそれに合わせてある:
+判定表 T40 が T39 から直したのは 2 行の 4 か所で、試験の組もそれに合わせてある:
 
     Criteria40ConnDayBand     5 行目 (`conn` 役の CPU を値付けし合う行) の、同じ版の日ごとのぶれの帯 (T40.4)
     Criteria40WindowCover     同じ行の、材料の窓 (`/profile?res=60` の窓と同じスナップショットの `/history`) の見方 (T40.5)
-    Criteria40RefreshTotal    15 行目 (裏の引き直し) を合計で読むこと (T40.5)。実物の数字は、数だけを作り物に入れる
+    Criteria40RefreshTotal    15 行目 (裏の引き直し) を合計で読むこと (T40.5) と、割った時間が 3 時間に満たなければ
+                              判定できずにすること (T40.7)。実物の数字は、数だけを作り物に入れる
     TwoDaysOfTheSameVersion   実物の 2 日の組 (下)
     DeployedTwoDays・DeployedCloseout   手元に実物があるときだけ回る
 
@@ -120,7 +121,10 @@ class Criteria40ConnDayBand(Criteria39Parts, unittest.TestCase):
         self.assertIs(t39[14], sc._p30_refresh_per_name)
         # 閾は T39 のものに、帯の上の端と、窓を覆う割合の線を名前つきで足しただけ (帯の下の端は「満たした」の閾 1.1 と同じ。
         # 引き直しの閾は T33.2 から同じ鍵の 1.5 倍)
-        self.assertEqual(sc.T40_TH, dict(sc.T39_TH, conn_day_band_max=1.3, conn_history_cover_min=0.99))
+        self.assertEqual(sc.T40_TH, dict(sc.T39_TH, conn_day_band_max=1.3, conn_history_cover_min=0.99,
+                                         refresh_min_hours=3.0))
+        self.assertEqual(sc.REFRESH_MIN_HOURS, 3.0)
+        self.assertNotIn("refresh_min_hours", sc.T39_TH)
         self.assertEqual(sc.CONN_DAY_BAND_MAX, 1.3)
         self.assertEqual(sc.CONN_HISTORY_COVER_MIN, 0.99)
         self.assertEqual(sc.T40_TH["conn_per_resolved_factor"], 1.1)
@@ -134,7 +138,7 @@ class Criteria40ConnDayBand(Criteria39Parts, unittest.TestCase):
     def test_the_intro_says_the_three_steps_with_the_same_numbers_as_the_thresholds(self):
         k, hi = sc.T40_TH["conn_per_resolved_factor"], sc.T40_TH["conn_day_band_max"]
         intro = sc.INTRO["T40"]
-        self.assertTrue(intro.startswith("1〜27 行の並びと材料は T39 と同じです。直したのは 2 行の 3 か所です (T40.4・T40.5)。"
+        self.assertTrue(intro.startswith("1〜27 行の並びと材料は T39 と同じです。直したのは 2 行の 4 か所です (T40.4・T40.5・T40.7)。"
                                          "T40.4: 5 行目の `conn` 役の CPU を値付けし合う行に、**同じ版の日ごとのぶれの帯**を入れました。"), intro)
         self.assertIn(f"前の版の {k} 倍未満なら「満たした」、{k} 倍以上 {hi} 倍以下なら「判定できず」(同じ版の日ごとのぶれの内)、"
                       f"{hi} 倍を越えたら「届かず」です。", intro)
@@ -568,8 +572,11 @@ class Criteria40RefreshTotal(unittest.TestCase):
     """
 
     LABEL = ("裏の引き直しの**合計** (回/時) が前の期間の 1.5 倍未満 (T40.5。答えのある名前 1 つあたりは起動からの時間で値が"
-             "変わるので表示だけ。表の名前の数あたりと `expired` + `warm_stale` も表示だけ)")
-    LIMIT = "< 前 ×1.5 (引き直しの合計)"
+             "変わるので表示だけ。表の名前の数あたりと `expired` + `warm_stale` も表示だけ。"
+             "前か後を割った時間が 3 時間に満たなければ判定できず。T40.7)")
+    LIMIT = "< 前 ×1.5 (引き直しの合計。割った時間が 3 時間に満たなければ判定できず)"
+    STARTUP = ("短い時間の合計は当てにならないので判定しない (起動してすぐは引き直しがまだ落ち着いていない: "
+               "起動から 1 分で 0〜60 回/時、2.7 時間で 413 回/時、12.0 時間で 359 回/時、そのあとは 336〜359 回/時)。")
     EVIDENCE = ("同じ版 0.39.13 で、起動から 36.0・48.1・60.0・84.0・93.9 時間の名前 1 つあたりは 0.383・0.309・0.250・0.208・0.191 回/時 "
                 "(合計は 336〜359 回/時で一定、答えのある名前は 876 → 1,880 と増える)")
     WHY = "合計で読む理由 (T40.5): 名前解決の表の名前は起動から増え続けるので、名前 1 つあたりは起動からの時間で値が変わる。" + EVIDENCE
@@ -727,18 +734,73 @@ class Criteria40RefreshTotal(unittest.TestCase):
                                           "(前 0.309、0.65 倍。答えのある名前 1,881、前 1,107)"), row[2])
         self.assertIn("(前は前のスナップショットの起動からの 48.1 時間、後はその間の 46.0 時間)", row[4])
 
-    def test_the_first_hours_of_the_next_version_are_met_by_the_total(self):
+    def test_the_first_hours_of_the_next_version_are_not_judged(self):
         # 手元の実物の組: 前 = 0.39.13 の停止の 1 枚、後 = 0.40.0 の起動から 2.7 時間 (表の名前がまだ 282)。
-        # 名前 1 つあたりは 11.10 倍、合計は 1.15 倍
+        # 名前 1 つあたりは 11.10 倍、合計は 1.15 倍。後を割った時間が 3 時間に満たないので、数字は出して判定できず (T40.7)
         a, b = dns_snap(*SHUTDOWN), dns_snap(*NEXT_VERSION)
         t39, row = self.t39(a, b), self.row(a, b)
         self.assertEqual(t39[3], sd.MISSED)
         self.assertTrue(t39[2].startswith("**2.12** 回/時/答えのある名前 (前 0.19、11.10 倍)。表示だけ: 合計 413.2 回/時 (前 359.2)"), t39[2])
-        self.assertEqual(row[3], sd.MET, row)
+        self.assertEqual(row[3], sd.UNKNOWN, row)
+        self.assertTrue(row[4].startswith("後を割った時間が 2.7 時間で、3 時間に満たない (T40.7)。" + self.STARTUP
+                                          + "`/status` の `dns.refreshes` を 1 時間あたりにした"), row[4])
         self.assertEqual(row[2], "合計 **413.2** 回/時 (前 359.2、**1.15** 倍)。表示だけ: 答えのある名前 1 つあたり 2.119 回/時 "
                                  "(前 0.191、11.10 倍。答えのある名前 195、前 1,881)、表の名前あたり 1.47 回/時/名前 "
                                  "(前 0.12、名前 282、前 3,009)、`expired` + `warm_stale` 0.0 回/日 (前 252.6)")
         self.assertIn("後は後のスナップショットの起動からの 2.7 時間)", row[4])
+
+    def test_a_side_divided_by_less_than_3_hours_is_not_judged(self):
+        # T40.7: 起動してすぐの 1 枚が前に来ると、動きが同じでも後が何倍にも見える (前が 0 回なら、後が 1 回でも届かず)。
+        # 前か後を割った時間が 3 時間に満たなければ、数字は出して判定できずにする
+        settled = self.hours(48, 350, 1_175)
+        just_started = dns_snap(60, 0, 8, 12)           # 0.40.0 の起動の 1 枚 (起動から 60 秒、0 回)
+        one_refresh = dns_snap(60, 1, 7, 7)             # 0.39.13 の起動の 1 枚 (起動から 60 秒、1 回 = 60 回/時)
+        for name, a, b, who, shown in (
+                ("前が起動 1 分・0 回", just_started, settled, "前を割った時間が 1 分", "合計 **350.0** 回/時 (前 0.0)。"),
+                ("前が起動 1 分・1 回", one_refresh, settled, "前を割った時間が 1 分", "合計 **350.0** 回/時 (前 60.0、**5.83** 倍)。"),
+                ("後が起動 1 分", settled, just_started, "後を割った時間が 1 分", "合計 **0.0** 回/時 (前 350.0、**0.00** 倍)。"),
+                ("両方", one_refresh, just_started, "前を割った時間が 1 分・後を割った時間が 1 分", "合計 **0.0** 回/時 (前 60.0、**0.00** 倍)。")):
+            with self.subTest(name):
+                row = self.row(a, b)
+                self.assertEqual(row[:2], (self.LABEL, self.LIMIT))
+                self.assertEqual(row[3], sd.UNKNOWN, row)
+                self.assertTrue(row[2].startswith(shown), row[2])
+                self.assertTrue(row[4].startswith(who + "で、3 時間に満たない (T40.7)。" + self.STARTUP), row[4])
+                self.assertTrue(row[4].endswith(self.WHY), row[4])
+
+    def test_the_line_is_3_hours_and_longer_sides_are_judged_as_before(self):
+        # ちょうど 3 時間は判定する (満たなければ、が判定できず)。線は閾の表の `refresh_min_hours`
+        settled = self.hours(48, 350, 1_175)
+        self.assertEqual(self.row(self.hours(3, 350, 100), settled)[3], sd.MET)
+        self.assertEqual(self.row(settled, self.hours(3, 560, 100))[3], sd.MISSED)
+        under = dns_snap(3 * 3600 - 1, 1_050, 100, 100)
+        self.assertEqual(self.row(under, settled)[3], sd.UNKNOWN)
+        self.assertTrue(self.row(under, settled)[4].startswith("前を割った時間が 3.0 時間で、3 時間に満たない (T40.7)。"))
+        # 2 時間 30 分は時間で、30 分は分で書く
+        self.assertTrue(self.row(self.hours(2.5, 350, 100), settled)[4].startswith("前を割った時間が 2.5 時間で、"))
+        self.assertTrue(self.row(self.hours(0.5, 350, 100), settled)[4].startswith("前を割った時間が 30 分で、"))
+        # 線を変えると判定も文面も変わる
+        loose = sc._t40_refresh_total(self.c(self.hours(2.5, 350, 100), settled), dict(sc.T40_TH, refresh_min_hours=2))
+        self.assertEqual(loose[3], sd.MET)
+        self.assertIn("前か後を割った時間が 2 時間に満たなければ判定できず。T40.7)", loose[0])
+
+    def test_a_short_time_between_two_snapshots_of_the_same_run_is_not_judged_either(self):
+        # 同じ起動の 2 枚の間が短いときも同じ (後は 2 枚の間の時間で割る)
+        a, b = self.hours(48, 350, 1_175), self.hours(50, 350, 1_200)
+        row = self.row(a, b, {"restarted": False, "wall_secs": 2 * 3600})
+        self.assertEqual(row[3], sd.UNKNOWN, row)
+        self.assertTrue(row[4].startswith("後を割った時間が 2.0 時間で、3 時間に満たない (T40.7)。" + self.STARTUP), row[4])
+        self.assertIn("後はその間の 2.0 時間)", row[4])
+
+    def test_the_intro_says_the_3_hours_with_the_same_numbers_as_the_row(self):
+        intro = sc.INTRO["T40"]
+        self.assertIn("T40.7: 同じ 15 行目は、前か後を割った時間 (起動から、または 2 枚の間) が 3 時間に満たなければ「判定できず」です "
+                      "(数字は出します)。起動してすぐは引き直しがまだ落ち着いていません (起動から 1 分で 0〜60 回/時、2.7 時間で 413 回/時、"
+                      "12.0 時間で 359 回/時、そのあとは 336〜359 回/時)。", intro)
+        # 根拠の数字は実物の 3 枚: 起動の 1 枚 (60 秒で 0 回と 1 回)、0.40.0 の 2.7 時間、0.39.13 の 12.0 時間
+        self.assertEqual(round(NEXT_VERSION[1] / (NEXT_VERSION[0] / 3600)), 413)
+        self.assertEqual(sc.refresh_startup_text(), "起動から 1 分で 0〜60 回/時、2.7 時間で 413 回/時、12.0 時間で 359 回/時、"
+                                                    "そのあとは 336〜359 回/時")
 
     def test_no_pair_of_the_same_version_is_missed_by_the_total(self):
         # 同じ版の 6 枚 (起動から 36.0〜94.1 時間) のどの 2 枚を前と後に置いても (それぞれ別の起動の 1 枚として読む)、
@@ -1121,19 +1183,20 @@ class DeployedCloseout(unittest.TestCase):
 
     def test_the_refresh_row_from_the_numbers_is_the_row_from_the_real_snapshots(self):
         day = self.day["2026-11-24"]
+        # 最後の組は、後を割った時間が 2.7 時間で 3 時間に満たないので、数字は出して判定できず (T40.7)
         cases = (("締めの形 (前 = 停止の 1 枚、後 = 48.1 時間)", self.shutdown, day, {"restarted": True},
-                  SHUTDOWN, SAME_VERSION["48.1"], sd.MISSED, "0.95"),
+                  SHUTDOWN, SAME_VERSION["48.1"], sd.MISSED, "0.95", sd.MET),
                  ("取得の古い順", day, self.shutdown, sd.restart_info(day, self.shutdown),
-                  SAME_VERSION["48.1"], SHUTDOWN, sd.MET, "1.10"),
+                  SAME_VERSION["48.1"], SHUTDOWN, sd.MET, "1.10", sd.MET),
                  ("手元の実物の組 (後 = 0.40.0 の 2.7 時間)", self.shutdown, self.next, sd.restart_info(self.shutdown, self.next),
-                  SHUTDOWN, NEXT_VERSION, sd.MISSED, "1.15"))
-        for name, a, b, info, na, nb, t39_verdict, ratio in cases:
+                  SHUTDOWN, NEXT_VERSION, sd.MISSED, "1.15", sd.UNKNOWN))
+        for name, a, b, info, na, nb, t39_verdict, ratio, t40_verdict in cases:
             with self.subTest(name=name):
                 real = {"a": a, "b": b, "info": info}
                 small = {"a": dns_snap(*na), "b": dns_snap(*nb), "info": info}
                 row = sc._t40_refresh_total(real, sc.T40_TH)
                 self.assertEqual(row, sc._t40_refresh_total(small, sc.T40_TH))
-                self.assertEqual(row[3], sd.MET)
+                self.assertEqual(row[3], t40_verdict)
                 self.assertIn("、**%s** 倍)。表示だけ: " % ratio, row[2])
                 t39 = sc._p30_refresh_per_name(real, sc.T39_TH)
                 self.assertEqual(t39, sc._p30_refresh_per_name(small, sc.T39_TH))
@@ -1181,8 +1244,8 @@ class DeployedCloseout(unittest.TestCase):
         self.assertEqual(t40["rows"][4][2:], t39["rows"][4][2:])
         self.assertEqual(t40["rows"][4][2:], ["—", sd.UNKNOWN, "後の `/profile` が 2.7 時間 (164 標本) で 12 時間に満たない "
                                               "(`--closeout` は前の版の最後の 12 時間以上の `-profile_res_60.json` を選ぶ)"])
-        # 15 行目: 名前 1 つあたりは 11.10 倍の届かず、合計は 1.15 倍の満たした
-        self.assertEqual((t39["rows"][14][3], t40["rows"][14][3]), (sd.MISSED, sd.MET))
+        # 15 行目: 名前 1 つあたりは 11.10 倍の届かず。合計は 1.15 倍だが、後を割った時間が 2.7 時間なので判定できず (T40.7)
+        self.assertEqual((t39["rows"][14][3], t40["rows"][14][3]), (sd.MISSED, sd.UNKNOWN))
         self.assertTrue(t39["rows"][14][2].startswith("**2.12** 回/時/答えのある名前 (前 0.19、11.10 倍)。"), t39["rows"][14][2])
         self.assertTrue(t40["rows"][14][2].startswith("合計 **413.2** 回/時 (前 359.2、**1.15** 倍)。"), t40["rows"][14][2])
         self.assertEqual(tuple(t40["rows"][14]), sc._t40_refresh_total(
